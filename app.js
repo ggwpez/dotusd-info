@@ -102,7 +102,8 @@ async function refresh() {
   loading = false; chartDirty = true; summary(); draw();
 }
 function draw() {
-  const rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  // Render at least two pixels per CSS pixel for smoother thin lines.
+  const rect = canvas.getBoundingClientRect(), dpr = Math.max(2, window.devicePixelRatio || 1);
   const width = Math.round(rect.width*dpr), height = Math.round(rect.height*dpr);
   if (canvas.width !== width || canvas.height !== height) chartDirty = true;
   canvas.width = width; canvas.height = height;
@@ -139,7 +140,7 @@ function draw() {
   const lineColor = ratingGradient(ctx, top, bottom, extent);
   const areaColor = ratingGradient(ctx, top, bottom, extent, '20');
   const area = new Path2D();
-  ctx.strokeStyle=lineColor;ctx.lineWidth=1.5;ctx.beginPath();let previous;
+  ctx.strokeStyle=lineColor;ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();let previous;
   // Consecutive blocks remain connected regardless of estimated timestamp spacing.
   for(const row of state.rows) {
     const px=x(row[0]),py=y((row[1]-1)*10000);
