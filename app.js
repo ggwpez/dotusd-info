@@ -23,35 +23,42 @@ function summary() {
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples`;
   $('message').textContent = state.error || (last ? '' : 'No price samples in this window');
   $('message').hidden = !state.error && !!last;
-  if (state.error) status('Connection error', 'error');
-  else if (!state.live || state.zoom) status('Historical view', 'paused');
-  else if (!last) status('Waiting for finalized prices', 'stale');
-  else {
-    const now = Date.now()/1000;
-    const age = Math.max(0, Math.round(now - last[0]));
-    // Finality normally trails wall time. Cache freshness is a separate signal.
-    if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > 30)
-      status('Updates delayed · showing cached prices', 'stale');
-    else if (age > 180)
-      status(`Data delayed · last finalized sample ~${age}s ago`, 'stale');
-    else status(`● Live · finalized ~${age}s ago`, 'live');
-  }
+  updateFreshness();
 }
+function updateFreshness() {
+  const last = state.rows.at(-1);
+  const now = Date.now()/1000;
+  const age = last ? Math.max(0, Math.round(now - last[0])) : null;
+  const sampleAge = last ? ` · last finalized ~${age}s ago` : '';
+  if (!state.live || state.zoom) status('Historical view', 'paused');
+  else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
+  else if (state.error) status(`Connection error${sampleAge}`, 'error');
+  else if (!last) status('Waiting for finalized prices', 'stale');
+  else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > 30)
+    status(`Updates delayed${sampleAge}`, 'stale');
+  else if (age > 180) status(`Data delayed${sampleAge}`, 'stale');
+  else status(`● Live · finalized ~${age}s ago`, 'live');
+}
+
 async function refresh() {
   controller?.abort(); controller = new AbortController(); const ticket = ++generation; loading = true;
+  const requestController = controller;
+  const timeout = setTimeout(() => requestController.abort(), 15000);
   const end = state.zoom?.[1] ?? (state.live || !state.end ? Date.now()/1000 : state.end);
   const start = state.zoom?.[0] ?? end - state.range;
   try {
-    const response = await fetch(`/api/prices?start=${start}&end=${end}`, {signal: controller.signal});
+    const response = await fetch(`/api/prices?start=${start}&end=${end}`, {signal: requestController.signal});
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Unable to load prices');
     if (ticket !== generation) return;
     state.fetchedAt = result.fetchedAt;
     state.rows = result.samples; state.start = start; state.end = end; state.error = null; state.hover = null;
   } catch (error) {
-    if (error.name === 'AbortError' || ticket !== generation) return;
-    state.error = error.message;
+    if (ticket !== generation) return;
+    state.error = error.name === 'AbortError' ? 'Request timed out. Retrying…' : error.message;
     if (!state.start) {state.start = start; state.end = end;}
+  } finally {
+    clearTimeout(timeout);
   }
   loading = false; chartDirty = true; summary(); draw();
 }
@@ -215,5 +222,15 @@ $('live').onclick=()=>{state.live=!state.live;$('live').setAttribute('aria-press
 $('refresh').onclick=refresh;
 new ResizeObserver(draw).observe($('plot'));
 setInterval(()=>{if(state.live&&!state.zoom&&!document.hidden&&!loading)refresh();},6000);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state.live&&!state.zoom)refresh();});
+// Age the last received timestamps independently of network requests or chart redraws.
+setInterval(updateFreshness, 1000);
+window.addEventListener('offline', updateFreshness);
+window.addEventListener('online', () => {
+  updateFreshness();
+  if (state.live && !state.zoom) refresh();
+});
+document.addEventListener('visibilitychange', () => {
+  updateFreshness();
+  if (!document.hidden && state.live && !state.zoom) refresh();
+});
 refresh();
