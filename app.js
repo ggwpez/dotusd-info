@@ -1,6 +1,8 @@
 const $ = id => document.getElementById(id);
+const resolutions = new Map([['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]);
+const linkedRange = () => resolutions.get(new URLSearchParams(location.search).get('resolution')) ?? 3600;
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: 3600, start: 0, end: 0, live: true, zoom: null, hover: null, drag: null, error: null, fetchedAt: null};
+const state = {rows: [], range: linkedRange(), start: 0, end: 0, live: true, zoom: null, hover: null, drag: null, error: null, fetchedAt: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -190,7 +192,26 @@ canvas.addEventListener('pointercancel',()=>{state.drag=null;draw();});
 function reset(){state.zoom=null;$('reset').hidden=true;refresh();}
 canvas.addEventListener('dblclick',reset);$('reset').onclick=reset;
 canvas.addEventListener('keydown',event=>{if(event.key==='Escape')reset();if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();state.hover=Math.max(0,Math.min(state.rows.length-1,(state.hover??state.rows.length-1)+(event.key==='ArrowRight'?1:-1)));draw();}});
-document.querySelectorAll('[data-range]').forEach(button=>button.onclick=()=>{state.range=Number(button.dataset.range);document.querySelectorAll('[data-range]').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));reset();});
+function updateRangeButtons() {
+  document.querySelectorAll('[data-range]').forEach(button =>
+    button.setAttribute('aria-pressed', String(Number(button.dataset.range) === state.range)));
+}
+document.querySelectorAll('[data-range]').forEach(button => button.onclick = () => {
+  state.range = Number(button.dataset.range);
+  const resolution = [...resolutions].find(([, seconds]) => seconds === state.range)[0];
+  // Share only the rolling window size, never absolute timestamps or a zoom.
+  const url = new URL(location.pathname, location.origin);
+  url.searchParams.set('resolution', resolution);
+  if (url.href !== location.href) history.pushState(null, '', url);
+  updateRangeButtons();
+  reset();
+});
+window.addEventListener('popstate', () => {
+  state.range = linkedRange();
+  updateRangeButtons();
+  reset();
+});
+updateRangeButtons();
 $('live').onclick=()=>{state.live=!state.live;$('live').setAttribute('aria-pressed',String(state.live));$('live').lastChild.textContent=state.live?' Live · 6s':' Paused';if(state.live)reset();else summary();};
 $('refresh').onclick=refresh;
 new ResizeObserver(draw).observe($('plot'));
