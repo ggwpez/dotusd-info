@@ -1,0 +1,32 @@
+[Unit]
+Description=dotUSD peg monitor
+After=network-online.target arb-prometheus.service arb-peg.service
+Wants=network-online.target arb-prometheus.service arb-peg.service
+
+[Service]
+Type=simple
+DynamicUser=true
+WorkingDirectory=/opt/dotusd-info
+ExecStart=/usr/bin/python3 /opt/dotusd-info/server.py --bind 127.0.0.1 --port 3001 --upstream http://127.0.0.1:9090/api/v1 --no-browser
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0027
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
