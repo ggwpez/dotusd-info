@@ -1,6 +1,6 @@
 const $ = id => document.getElementById(id);
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: 3600, start: 0, end: 0, live: true, zoom: null, hover: null, drag: null, error: null};
+const state = {rows: [], range: 3600, start: 0, end: 0, live: true, zoom: null, hover: null, drag: null, error: null, fetchedAt: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -24,8 +24,17 @@ function summary() {
   $('message').hidden = !state.error && !!last;
   if (state.error) status('Connection error', 'error');
   else if (!state.live || state.zoom) status('Historical view', 'paused');
-  else if (!last || Date.now()/1000 - last[0] > 30) status('Data delayed', 'stale');
-  else status('● Live · finalized prices', 'live');
+  else if (!last) status('Waiting for finalized prices', 'stale');
+  else {
+    const now = Date.now()/1000;
+    const age = Math.max(0, Math.round(now - last[0]));
+    // Finality normally trails wall time. Cache freshness is a separate signal.
+    if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > 30)
+      status('Updates delayed · showing cached prices', 'stale');
+    else if (age > 180)
+      status(`Data delayed · last finalized sample ~${age}s ago`, 'stale');
+    else status(`● Live · finalized ~${age}s ago`, 'live');
+  }
 }
 async function refresh() {
   controller?.abort(); controller = new AbortController(); const ticket = ++generation; loading = true;
@@ -36,6 +45,7 @@ async function refresh() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Unable to load prices');
     if (ticket !== generation) return;
+    state.fetchedAt = result.fetchedAt;
     state.rows = result.samples; state.start = start; state.end = end; state.error = null; state.hover = null;
   } catch (error) {
     if (error.name === 'AbortError' || ticket !== generation) return;
