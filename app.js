@@ -13,6 +13,7 @@ const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
 function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
 const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Critical'];
+const ratingBands = ['≤ 5 bps', '> 5–20 bps', '> 20–50 bps', '> 50–100 bps', '> 100 bps'];
 function ratingForBps(bps) {
   if (!Number.isFinite(bps)) return -1;
   const magnitude = Math.round(Math.abs(bps) * 1e6) / 1e6;
@@ -29,12 +30,12 @@ function updateRating() {
     if (active) segment.setAttribute('aria-current', 'true');
     else segment.removeAttribute('aria-current');
   });
-  $('rating-value').textContent = current < 0 ? 'Waiting for prices' : `${ratingNames[current]} · ${Math.abs(bps).toFixed(2)} bps`;
+  $('rating-value').textContent = current < 0 ? '—' : ratingNames[current];
   const historical = !state.live || state.zoom;
   const stale = state.error || navigator.onLine === false || !Number.isFinite(state.fetchedAt) ||
     Date.now()/1000 - state.fetchedAt > 30 || (last && Date.now()/1000 - last[0] > 180);
   const context = historical ? 'historical sample' : stale ? 'last available sample' : 'latest sample';
-  $('rating-caption').textContent = `Absolute deviation · ${context}`;
+  $('rating-caption').textContent = current < 0 ? 'Waiting for prices' : `${ratingBands[current]} · ${context}`;
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
