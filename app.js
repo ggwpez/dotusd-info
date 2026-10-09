@@ -22,7 +22,7 @@ const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
 function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
-const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Critical'];
+const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Horrible'];
 const ratingBands = ['≤ 5 bps', '> 5–20 bps', '> 20–50 bps', '> 50–100 bps', '> 100 bps'];
 let hoveredRating = null, focusedRating = null;
 function ratingForBps(bps) {
