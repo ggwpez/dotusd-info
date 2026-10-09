@@ -7,8 +7,8 @@ let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
 const signed = v => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
-const positiveColor = '#73bf69', negativeColor = '#f2495c';
-const deviationColor = v => v > 0 ? positiveColor : v < 0 ? negativeColor : '#b7c0cf';
+const ratingColors = ['#73bf69', '#63c8ae', '#dfc464', '#f29b58', '#f2495c'];
+const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
 function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
@@ -20,6 +20,16 @@ function ratingForBps(bps) {
   const magnitude = Math.round(Math.abs(bps) * 1e6) / 1e6;
   const index = [5, 20, 50, 100].findIndex(limit => magnitude <= limit);
   return index === -1 ? 4 : index;
+}
+function ratingGradient(context, top, bottom, extent, alpha = '') {
+  const gradient = context.createLinearGradient(0, top, 0, bottom);
+  const levels = [extent, ...[100, 50, 20, 5, -5, -20, -50, -100].filter(v => v < extent && v > -extent), -extent];
+  for (let i = 0; i < levels.length - 1; i++) {
+    const color = deviationColor((levels[i] + levels[i + 1]) / 2) + alpha;
+    gradient.addColorStop((extent - levels[i]) / (2 * extent), color);
+    gradient.addColorStop((extent - levels[i + 1]) / (2 * extent), color);
+  }
+  return gradient;
 }
 function updateRating() {
   const last = state.rows.at(-1);
@@ -125,14 +135,9 @@ function draw() {
     ctx.fillText(state.end-state.start>86400 ? date(t).slice(5,16) : clock(t).slice(0,5),px,bottom+23);
   }
   ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
-  // A hard color stop splits every segment precisely at the zero baseline.
-  const lineColor = ctx.createLinearGradient(0,top,0,bottom);
-  const zeroStop = (y(0)-top)/(bottom-top);
-  lineColor.addColorStop(0,positiveColor);lineColor.addColorStop(zeroStop,positiveColor);
-  lineColor.addColorStop(zeroStop,negativeColor);lineColor.addColorStop(1,negativeColor);
-  const areaColor = ctx.createLinearGradient(0,top,0,bottom);
-  areaColor.addColorStop(0,positiveColor+'38');areaColor.addColorStop(zeroStop,positiveColor+'10');
-  areaColor.addColorStop(zeroStop,negativeColor+'10');areaColor.addColorStop(1,negativeColor+'38');
+  // Symmetric hard stops color both sides by absolute peg deviation.
+  const lineColor = ratingGradient(ctx, top, bottom, extent);
+  const areaColor = ratingGradient(ctx, top, bottom, extent, '20');
   const area = new Path2D();
   ctx.strokeStyle=lineColor;ctx.lineWidth=1.5;ctx.beginPath();let previous;
   // Consecutive blocks remain connected regardless of estimated timestamp spacing.
@@ -194,11 +199,11 @@ function draw() {
   if(state.hover!==null && state.rows[state.hover]) {
     const row=state.rows[state.hover],px=x(row[0]),py=y((row[1]-1)*10000);
     ctx.strokeStyle='#7e899b';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle=deviationColor(row[1]-1);ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=deviationColor((row[1]-1)*10000);ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);ctx.fill();
     const tip=$('tooltip');tip.hidden=false;tip.replaceChildren();
     const stamp=document.createElement('div');stamp.textContent=`${date(row[0])} UTC`;
     const value=document.createElement('strong');value.textContent=`${signed((row[1]-1)*10000)} bps`;
-    value.style.color=deviationColor(row[1]-1);
+    value.style.color=deviationColor((row[1]-1)*10000);
     const price=document.createElement('div');price.textContent=`${row[1].toFixed(8)} USDT`;
     tip.append(stamp,value,price);tip.style.left=`${Math.max(0,Math.min(px+16,w-230))}px`;tip.style.top=`${Math.max(0,Math.min(py+16,h-100))}px`;
   }
