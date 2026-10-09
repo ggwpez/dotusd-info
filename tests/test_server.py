@@ -93,6 +93,9 @@ class PageTests(unittest.TestCase):
             for result in results:
                 self.assertEqual(result['samples'], [[now - 10, 1.001, 50]])
                 self.assertEqual(result['fetchedAt'], now)
+                self.assertFalse(result['historyReady'])
+            server.cache.history_ready = True
+            self.assertTrue(read()['historyReady'])
         finally:
             server.shutdown()
             server.server_close()
@@ -105,7 +108,7 @@ class CacheTests(unittest.TestCase):
         now = time.time()
         cache.merge([[now - 604801, 1, 1], [now - 20, 1, 2], [now - 10, 1, 4]], now)
         cache.merge([[now - 10, 1.01, 4], [now - 5, .99, 5]], now)
-        rows, _ = cache.read(now - 20, now - 5)
+        rows, _, _ = cache.read(now - 20, now - 5)
         self.assertEqual(rows, [(now - 10, 1.01, 4), (now - 5, .99, 5)])
         self.assertEqual(len(cache.rows), 3)
         with patch.object(page, 'MAX_SAMPLES', 2):
@@ -144,10 +147,29 @@ class CacheTests(unittest.TestCase):
         worker.cursor = now
         worker.backfill_end = now - page.HISTORY_SECONDS
         worker.fetch = Mock(side_effect=OSError('offline'))
-        with self.assertRaises(OSError):
-            worker.poll()
+        with patch.object(page.time, 'time', return_value=now + 6):
+            with self.assertRaises(OSError):
+                worker.poll()
         self.assertEqual(worker.cursor, now)
         self.assertEqual(cache.read(now - 20, now)[0], [(now - 1, 1.01, 50)])
+
+    def test_startup_drains_history_without_live_poll_delays(self):
+        cache = page.HistoryCache()
+        worker = page.HistoryWorker(cache, 'http://unused')
+        worker.fetch = Mock()
+        waits = []
+        def wait(delay):
+            waits.append(delay)
+            if delay == 6:
+                worker.stop.set()
+        with patch.object(worker.stop, 'wait', side_effect=wait):
+            worker.run()
+        self.assertTrue(cache.history_ready)
+        self.assertTrue(all(delay == 0.05 for delay in waits[:-1]))
+        self.assertEqual(waits[-1], 6)
+        self.assertLess(sum(waits[:-1]), 2)
+        # One recent request, then 28 historical pages; no repeated live requests.
+        self.assertEqual(worker.fetch.call_count, 29)
 
     def test_upstream_response_limit(self):
         http = Mock()

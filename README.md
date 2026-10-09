@@ -11,7 +11,9 @@ arbitrage Asset Hub RPC at `http://127.0.0.1:9944` and writes history into
 a bounded `/api/prices` endpoint backed entirely by an in-process cache.
 One background worker fetches recent prices at startup, then refreshes every six
 seconds with a five-minute overlap for delayed ingestion. Seven days of older
-history are seeded in six-hour chunks, one per refresh cycle (about three minutes).
+history are seeded in six-hour chunks without waiting between polling cycles.
+The API flags incomplete startup history; browsers retry those chunks, including
+fixed shared ranges, and show chunk progress until history is complete.
 Visitor requests never query Prometheus. The cache retains at most seven days and
 350,000 samples, preserves raw timestamps and gaps, and remains readable during
 upstream outages. Restarts rebuild the cache; the API returns 503 until the first

@@ -115,6 +115,7 @@ class HistoryCache:
         self.lock = threading.Lock()
         self.rows = []
         self.fetched_at = None
+        self.history_ready = False
 
     def merge(self, rows, now, mark_fresh=True):
         with self.lock:
@@ -133,7 +134,7 @@ class HistoryCache:
             start = max(start, time.time() - HISTORY_SECONDS)
             left = bisect_right(self.rows, start, key=lambda row: row[0])
             right = bisect_right(self.rows, end, key=lambda row: row[0])
-            return self.rows[left:right], self.fetched_at
+            return self.rows[left:right], self.fetched_at, self.history_ready
 
 
 class HistoryWorker:
@@ -166,14 +167,14 @@ class HistoryWorker:
             self.fetch(now - 3600, now)
             self.cursor = now
             self.backfill_end = now - 3600
-        else:
+        elif now - self.cursor >= 6:
             start = max(self.cursor - 300, now - HISTORY_SECONDS)
             while start < now and not self.stop.is_set():
                 end = min(now, start + FETCH_SECONDS)
                 self.fetch(start, end)
                 self.cursor = end
                 start = end
-        # One old-history chunk per cycle keeps live updates responsive.
+        # Bounded startup chunks share the worker with live updates.
         if self.backfill_end > now - HISTORY_SECONDS and not self.stop.is_set():
             start = max(now - HISTORY_SECONDS, self.backfill_end - FETCH_SECONDS)
             self.fetch(start, self.backfill_end)
@@ -181,7 +182,7 @@ class HistoryWorker:
 
     def load_archive(self):
         if self.archive is None or not self.archive.exists():
-            return
+            return True
         with closing(sqlite3.connect(f'file:{self.archive}?mode=ro', uri=True, timeout=1)) as db:
             rows = db.execute('SELECT seq,sample_time,price,number FROM samples WHERE seq>? ORDER BY seq LIMIT 2000',
                               (self.archive_seq,)).fetchall()
@@ -189,18 +190,28 @@ class HistoryWorker:
             self.cache.merge([(stamp / 1000, price, number) for _, stamp, price, number in rows
                               if price is not None], time.time(), mark_fresh=False)
             self.archive_seq = rows[-1][0]
+        return len(rows) < 2000
 
     def run(self):
         while not self.stop.is_set():
+            failed = False
+            archive_ready = False
             try:
                 self.poll()
             except Exception:
+                failed = True
                 logging.exception('Background price history refresh failed')
             try:
-                self.load_archive()
+                archive_ready = self.load_archive()
             except (sqlite3.Error, OSError):
+                failed = True
                 logging.exception('Archive history load failed')
-            self.stop.wait(6)
+            ready = (archive_ready and self.backfill_end is not None and
+                     self.backfill_end <= time.time() - HISTORY_SECONDS)
+            with self.cache.lock:
+                self.cache.history_ready = ready
+            # Stored history needs no six-second live polling delay during startup.
+            self.stop.wait(6 if ready or failed else 0.05)
 
 
 class CacheServer(ThreadingHTTPServer):
@@ -241,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
                 return
             try:
-                rows, fetched_at = self.server.cache.read(start, end)
+                rows, fetched_at, history_ready = self.server.cache.read(start, end)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                 return
@@ -252,7 +263,8 @@ class Handler(BaseHTTPRequestHandler):
                 for offset in range(0, len(rows), 256):
                     batch = json.dumps(rows[offset:offset + 256], allow_nan=False).encode()[1:-1]
                     self.wfile.write((b',' if offset else b'') + batch)
-                self.wfile.write(b'],"fetchedAt":' + json.dumps(fetched_at).encode() + b'}')
+                self.wfile.write(b'],"fetchedAt":' + json.dumps(fetched_at).encode() +
+                                 b',"historyReady":' + json.dumps(history_ready).encode() + b'}')
             except (OSError, TimeoutError):
                 pass
             return

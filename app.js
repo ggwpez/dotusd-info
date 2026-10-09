@@ -12,7 +12,7 @@ function linkedView() {
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false};
+const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, historyProgress: null, serverWarming: false};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -68,7 +68,7 @@ function summary() {
   const values = rows.map(r => (r[1] - 1) * 10000);
   const low = values.reduce((a,b) => Math.min(a,b), Infinity), high = values.reduce((a,b) => Math.max(a,b), -Infinity);
   $('extremes').textContent = last ? `${signed(low)} / ${signed(high)}` : '—';
-  $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ' · loading history…' : ''}`;
+  $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history${state.historyProgress ? ` · ${state.historyProgress[0]}/${state.historyProgress[1]}` : '…'}${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
   $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading recent samples…' : 'No price samples in this window');
   $('message').hidden = !state.error && !!last;
   updateFreshness();
@@ -98,11 +98,11 @@ class BrowserHistory {
     // Recheck old history periodically so late backfill is not cached as an empty gap.
     if (now - this.checkedAt >= 60) { this.coverage = []; this.checkedAt = now; }
   }
-  merge(rows, start, end, fetchedAt) {
+  merge(rows, start, end, fetchedAt, complete = true) {
     const byTime = new Map(this.rows.map(row => [row[0], row]));
     for (const row of rows) byTime.set(row[0], row);
     this.rows = [...byTime.values()].sort((a, b) => a[0] - b[0]).slice(-350000);
-    const intervals = [...this.coverage, [start, end]].sort((a, b) => a[0] - b[0]);
+    const intervals = [...this.coverage, ...(complete ? [[start, end]] : [])].sort((a, b) => a[0] - b[0]);
     this.coverage = [];
     for (const interval of intervals) {
       const previous = this.coverage.at(-1);
@@ -141,7 +141,7 @@ async function refresh(force = false) {
   const start = state.zoom?.[0] ?? end - state.range;
   historyCache.expire(Date.now()/1000);
   if (force) historyCache.coverage = [];
-  state.start = start; state.end = end; state.error = null;
+  state.start = start; state.end = end; state.error = null; state.historyProgress = null;
   const publish = () => {
     state.rows = historyCache.rows.filter(row => row[0] > start && row[0] <= end);
     state.fetchedAt = historyCache.fetchedAt; state.hover = null;
@@ -154,7 +154,8 @@ async function refresh(force = false) {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to load prices');
       if (ticket !== generation) return;
-      historyCache.merge(result.samples, left, right, result.fetchedAt);
+      state.serverWarming = result.historyReady === false;
+      historyCache.merge(result.samples, left, right, result.fetchedAt, !state.serverWarming);
     } finally { clearTimeout(timeout); }
   };
   try {
@@ -168,10 +169,12 @@ async function refresh(force = false) {
       publish();
     }
     const chunks = historyChunks(historyCache.missing(start, end));
+    state.historyProgress = [0, chunks.length];
     for (let i = 0; i < chunks.length; i++) {
       await fetchChunk(...chunks[i]);
       if (ticket !== generation) return;
-      state.historyLoading = i < chunks.length - 1;
+      state.historyProgress = [i + 1, chunks.length];
+      state.historyLoading = i < chunks.length - 1 || state.serverWarming;
       publish();
     }
   } catch (error) {
@@ -179,7 +182,7 @@ async function refresh(force = false) {
     state.error = error.name === 'AbortError' ? 'Request timed out. Retrying…' : error.message;
   } finally {
     if (ticket === generation) {
-      loading = false; state.historyLoading = false; summary();
+      loading = false; state.historyLoading = historyCache.missing(start, end).length > 0; summary();
     }
   }
 }
@@ -355,7 +358,7 @@ $('live').onclick = () => {
   if (state.end - state.start < 1) return;
   controller?.abort(); generation++; loading = false; state.historyLoading = false;
   state.live = false; state.zoom = [state.start, state.end];
-  writeViewUrl(); updateViewControls(); summary();
+  writeViewUrl(); updateViewControls(); refresh();
 };
 document.querySelectorAll('[data-rating]').forEach(segment => {
   const index = Number(segment.dataset.rating);
@@ -369,16 +372,16 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
 });
 $('refresh').onclick=()=>refresh(true);
 new ResizeObserver(draw).observe($('plot'));
-setInterval(()=>{if(state.live&&!state.zoom&&!document.hidden&&!loading)refresh();},6000);
+setInterval(()=>{if(((state.live&&!state.zoom)||state.historyLoading)&&!document.hidden&&!loading)refresh();},6000);
 // Age the last received timestamps independently of network requests or chart redraws.
 setInterval(updateFreshness, 1000);
 window.addEventListener('offline', updateFreshness);
 window.addEventListener('online', () => {
   updateFreshness();
-  if (state.live && !state.zoom) refresh();
+  if ((state.live && !state.zoom) || state.historyLoading) refresh();
 });
 document.addEventListener('visibilitychange', () => {
   updateFreshness();
-  if (!document.hidden && state.live && !state.zoom) refresh();
+  if (!document.hidden && ((state.live && !state.zoom) || state.historyLoading)) refresh();
 });
 refresh();
