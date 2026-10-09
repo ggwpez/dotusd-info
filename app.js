@@ -14,6 +14,7 @@ const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19
 function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
 const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Critical'];
 const ratingBands = ['≤ 5 bps', '> 5–20 bps', '> 20–50 bps', '> 50–100 bps', '> 100 bps'];
+let hoveredRating = null, focusedRating = null;
 function ratingForBps(bps) {
   if (!Number.isFinite(bps)) return -1;
   const magnitude = Math.round(Math.abs(bps) * 1e6) / 1e6;
@@ -24,18 +25,21 @@ function updateRating() {
   const last = state.rows.at(-1);
   const bps = last ? (last[1] - 1) * 10000 : NaN;
   const current = ratingForBps(bps);
+  const preview = hoveredRating ?? focusedRating;
+  const displayed = preview ?? current;
   document.querySelectorAll('[data-rating]').forEach(segment => {
     const active = Number(segment.dataset.rating) === current;
     segment.classList.toggle('is-current', active);
+    segment.classList.toggle('is-preview', Number(segment.dataset.rating) === preview);
     if (active) segment.setAttribute('aria-current', 'true');
     else segment.removeAttribute('aria-current');
   });
-  $('rating-value').textContent = current < 0 ? '—' : ratingNames[current];
+  $('rating-value').textContent = displayed < 0 ? '—' : ratingNames[displayed];
   const historical = !state.live || state.zoom;
   const stale = state.error || navigator.onLine === false || !Number.isFinite(state.fetchedAt) ||
     Date.now()/1000 - state.fetchedAt > 30 || (last && Date.now()/1000 - last[0] > 180);
   const context = historical ? 'historical sample' : stale ? 'last available sample' : 'latest sample';
-  $('rating-caption').textContent = current < 0 ? 'Waiting for prices' : `${ratingBands[current]} · ${context}`;
+  $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : `${ratingBands[displayed]} · ${preview === null ? context : 'rating band'}`;
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
@@ -244,6 +248,16 @@ window.addEventListener('popstate', () => {
 });
 updateRangeButtons();
 $('live').onclick=()=>{state.live=!state.live;$('live').setAttribute('aria-pressed',String(state.live));$('live').lastChild.textContent=state.live?' Live · 6s':' Paused';if(state.live)reset();else summary();};
+document.querySelectorAll('[data-rating]').forEach(segment => {
+  const index = Number(segment.dataset.rating);
+  segment.addEventListener('pointerenter', () => { hoveredRating = index; updateRating(); });
+  segment.addEventListener('pointerleave', () => { hoveredRating = null; updateRating(); });
+  segment.addEventListener('focus', () => { focusedRating = index; updateRating(); });
+  segment.addEventListener('blur', () => { focusedRating = null; updateRating(); });
+  segment.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { hoveredRating = null; segment.blur(); updateRating(); }
+  });
+});
 $('refresh').onclick=refresh;
 new ResizeObserver(draw).observe($('plot'));
 setInterval(()=>{if(state.live&&!state.zoom&&!document.hidden&&!loading)refresh();},6000);

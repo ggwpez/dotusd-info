@@ -6,3 +6,6 @@
 .rating-segment[data-rating="1"]{--rating-color:#63c8ae}.rating-segment[data-rating="2"]{--rating-color:#dfc464}.rating-segment[data-rating="3"]{--rating-color:#f29b58}.rating-segment[data-rating="4"]{--rating-color:#f2495c}
 .rating-segment.is-current{flex-grow:2.4;opacity:1;width:14px;transform:translateX(-2px)}.rating-segment:hover{opacity:1}.rating-segment:focus-visible{opacity:1;outline:2px solid #dce1e9;outline-offset:3px}
 @media(prefers-reduced-motion:reduce){.rating-segment{transition:none}}
+
+#rating-value{font-family:inherit;font-size:clamp(24px,2.5vw,38px);font-weight:500;line-height:1.1;letter-spacing:-1px;margin-bottom:10px}
+.rating-segment{cursor:help}.rating-segment.is-preview{opacity:1;outline:1px solid var(--rating-color);outline-offset:2px}
