@@ -12,6 +12,30 @@ const deviationColor = v => v > 0 ? positiveColor : v < 0 ? negativeColor : '#b7
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
 function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
+const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Critical'];
+function ratingForBps(bps) {
+  if (!Number.isFinite(bps)) return -1;
+  const magnitude = Math.round(Math.abs(bps) * 1e6) / 1e6;
+  const index = [5, 20, 50, 100].findIndex(limit => magnitude <= limit);
+  return index === -1 ? 4 : index;
+}
+function updateRating() {
+  const last = state.rows.at(-1);
+  const bps = last ? (last[1] - 1) * 10000 : NaN;
+  const current = ratingForBps(bps);
+  document.querySelectorAll('[data-rating]').forEach(segment => {
+    const active = Number(segment.dataset.rating) === current;
+    segment.classList.toggle('is-current', active);
+    if (active) segment.setAttribute('aria-current', 'true');
+    else segment.removeAttribute('aria-current');
+  });
+  $('rating-value').textContent = current < 0 ? 'Waiting for prices' : `${ratingNames[current]} · ${Math.abs(bps).toFixed(2)} bps`;
+  const historical = !state.live || state.zoom;
+  const stale = state.error || navigator.onLine === false || !Number.isFinite(state.fetchedAt) ||
+    Date.now()/1000 - state.fetchedAt > 30 || (last && Date.now()/1000 - last[0] > 180);
+  const context = historical ? 'last sample in selected view' : stale ? 'last available sample' : 'latest finalized sample';
+  $('rating-caption').textContent = `Absolute deviation from 1 USDT · ${context}`;
+}
 function summary() {
   const rows = state.rows, last = rows.at(-1);
   $('latest').textContent = last ? signed((last[1] - 1) * 10000) : '—';
@@ -26,6 +50,7 @@ function summary() {
   updateFreshness();
 }
 function updateFreshness() {
+  updateRating();
   const last = state.rows.at(-1);
   const now = Date.now()/1000;
   const age = last ? Math.max(0, Math.round(now - last[0])) : null;
