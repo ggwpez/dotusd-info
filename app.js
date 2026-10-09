@@ -40,7 +40,6 @@ function updateRating() {
 function summary() {
   const rows = state.rows, last = rows.at(-1);
   $('latest').textContent = last ? signed((last[1] - 1) * 10000) : '—';
-  $('latest').style.color = deviationColor(last ? last[1]-1 : 0);
   $('price').textContent = last ? last[1].toFixed(6) : '—';
   const values = rows.map(r => (r[1] - 1) * 10000);
   const low = values.reduce((a,b) => Math.min(a,b), Infinity), high = values.reduce((a,b) => Math.max(a,b), -Infinity);
