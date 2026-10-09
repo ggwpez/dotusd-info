@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import json
 import math
 import socket
+import sqlite3
 import subprocess
 import threading
 import time
@@ -114,14 +115,15 @@ class HistoryCache:
         self.rows = []
         self.fetched_at = None
 
-    def merge(self, rows, now):
+    def merge(self, rows, now, mark_fresh=True):
         with self.lock:
             # Merge by timestamp to deduplicate overlapping refreshes and preserve gaps.
             by_time = {row[0]: row for row in self.rows if row[0] > now - HISTORY_SECONDS}
             by_time.update({row[0]: tuple(row) for row in rows
                             if now - HISTORY_SECONDS < row[0] <= now})
             self.rows = [by_time[t] for t in sorted(by_time)][-MAX_SAMPLES:]
-            self.fetched_at = now
+            if mark_fresh:
+                self.fetched_at = now
 
     def read(self, start, end):
         with self.lock:
@@ -134,7 +136,7 @@ class HistoryCache:
 
 
 class HistoryWorker:
-    def __init__(self, cache, upstream, http=None):
+    def __init__(self, cache, upstream, http=None, archive=None):
         self.cache = cache
         self.upstream = upstream
         self.http = http or urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -142,6 +144,8 @@ class HistoryWorker:
         self.thread = threading.Thread(target=self.run, name='price-history', daemon=True)
         self.cursor = None
         self.backfill_end = None
+        self.archive = archive
+        self.archive_seq = 0
 
     def fetch(self, start, end):
         query = query_window({'start': [start], 'end': [end]})
@@ -174,12 +178,27 @@ class HistoryWorker:
             self.fetch(start, self.backfill_end)
             self.backfill_end = start
 
+    def load_archive(self):
+        if self.archive is None or not self.archive.exists():
+            return
+        with sqlite3.connect(f'file:{self.archive}?mode=ro', uri=True, timeout=1) as db:
+            rows = db.execute('SELECT seq,sample_time,price,number FROM samples WHERE seq>? ORDER BY seq LIMIT 2000',
+                              (self.archive_seq,)).fetchall()
+        if rows:
+            self.cache.merge([(stamp / 1000, price, number) for _, stamp, price, number in rows
+                              if price is not None], time.time(), mark_fresh=False)
+            self.archive_seq = rows[-1][0]
+
     def run(self):
         while not self.stop.is_set():
             try:
                 self.poll()
             except Exception:
                 logging.exception('Background price history refresh failed')
+            try:
+                self.load_archive()
+            except (sqlite3.Error, OSError):
+                logging.exception('Archive history load failed')
             self.stop.wait(6)
 
 
@@ -266,6 +285,7 @@ def main():
     parser.add_argument('--port', type=int, default=3001)
     parser.add_argument('--ssh-host', default='server', help='SSH config host or user@host (default: server)')
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
+    parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
@@ -273,7 +293,7 @@ def main():
     worker = None
     try:
         with price_source(args.upstream, args.ssh_host) as upstream:
-            worker = HistoryWorker(server.cache, upstream)
+            worker = HistoryWorker(server.cache, upstream, archive=args.archive)
             worker.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
             url = f'http://{browser_host}:{server.server_port}'

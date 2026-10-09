@@ -1,0 +1,27 @@
+[Unit]
+Description=One-time dotUSD history backfill from Parity archive
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+User=prometheus
+Group=prometheus
+WorkingDirectory=/opt/dotusd-info
+ExecStart=/usr/bin/python3 /opt/dotusd-info/backfill.py
+Restart=on-failure
+RestartSec=30
+TimeoutStartSec=infinity
+Nice=15
+CPUQuota=25%
+MemoryMax=192M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/dotusd-info
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
