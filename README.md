@@ -28,7 +28,8 @@ remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
 The browser renders cached data immediately, fetches recent history first, and
 fills missing history newest-first in chunks of at most six hours, redrawing
-after each response. Live polls request only a five-minute overlap. An in-memory
+after each response. The first chunk includes full-window low/high samples so
+the vertical scale stays fixed while older chunks arrive. Live polls request only a five-minute overlap. An in-memory
 browser cache holds at most seven days / 350,000 samples and revalidates historical
 coverage every minute to discover late archive imports. The refresh button forces
 revalidation; switching views reuses already fetched data. No samples are downsampled.

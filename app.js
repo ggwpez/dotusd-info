@@ -12,7 +12,7 @@ function linkedView() {
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, historyProgress: null, serverWarming: false};
+const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, historyProgress: null, serverWarming: false, extremes: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -66,7 +66,8 @@ function summary() {
   $('latest').textContent = last ? signed((last[1] - 1) * 10000) : '—';
   $('price').textContent = last ? last[1].toFixed(6) : '—';
   const values = rows.map(r => (r[1] - 1) * 10000);
-  const low = values.reduce((a,b) => Math.min(a,b), Infinity), high = values.reduce((a,b) => Math.max(a,b), -Infinity);
+  const low = state.extremes ? (state.extremes.low[1]-1)*10000 : values.reduce((a,b) => Math.min(a,b), Infinity);
+  const high = state.extremes ? (state.extremes.high[1]-1)*10000 : values.reduce((a,b) => Math.max(a,b), -Infinity);
   $('extremes').textContent = last ? `${signed(low)} / ${signed(high)}` : '—';
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history${state.historyProgress ? ` · ${state.historyProgress[0]}/${state.historyProgress[1]}` : '…'}${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
   $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading recent samples…' : 'No price samples in this window');
@@ -142,28 +143,32 @@ async function refresh(force = false) {
   historyCache.expire(Date.now()/1000);
   if (force) historyCache.coverage = [];
   state.start = start; state.end = end; state.error = null; state.historyProgress = null;
+  let awaitingExtremes = historyCache.missing(start, end).length > 0 || (state.live && !state.zoom);
+  state.extremes = null;
   const publish = () => {
-    state.rows = historyCache.rows.filter(row => row[0] > start && row[0] <= end);
+    state.rows = awaitingExtremes ? [] : historyCache.rows.filter(row => row[0] > start && row[0] <= end);
     state.fetchedAt = historyCache.fetchedAt; state.hover = null;
     chartDirty = true; summary(); draw();
   };
-  const fetchChunk = async (left, right) => {
+  const fetchChunk = async (left, right, includeExtremes = false) => {
     const timeout = setTimeout(() => requestController.abort(), 15000);
     try {
-      const response = await fetch(`/api/prices?start=${left}&end=${right}`, {signal: requestController.signal});
+      const metadata = includeExtremes ? `&windowStart=${start}&windowEnd=${end}` : '';
+      const response = await fetch(`/api/prices?start=${left}&end=${right}${metadata}`, {signal: requestController.signal});
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to load prices');
       if (ticket !== generation) return;
+      if (includeExtremes) { state.extremes = result.extremes; awaitingExtremes = false; }
       state.serverWarming = result.historyReady === false;
       historyCache.merge(result.samples, left, right, result.fetchedAt, !state.serverWarming);
     } finally { clearTimeout(timeout); }
   };
   try {
     state.historyLoading = historyCache.missing(start, end).length > 0;
-    publish(); // Switching to a cached view is immediate.
+    if (!awaitingExtremes) publish(); // Fully cached windows already have their bounds.
     if ((state.live && !state.zoom) || state.historyLoading) {
       // Recent data first; live polls re-read five minutes to catch late samples.
-      await fetchChunk(Math.max(start, end - (historyCache.rows.length ? 300 : 3600)), end);
+      await fetchChunk(Math.max(start, end - (historyCache.rows.length ? 300 : 3600)), end, true);
       if (ticket !== generation) return;
       state.historyLoading = historyCache.missing(start, end).length > 0;
       publish();
@@ -196,7 +201,8 @@ function draw() {
   const w = rect.width, h = rect.height, left = 65, right = w-20, top = 18, bottom = h-35;
   if (chartDirty) {
   let peak = 0;
-  let high, low;
+  let high = state.extremes?.high, low = state.extremes?.low;
+  if (high && low) peak = Math.max(Math.abs((high[1]-1)*10000), Math.abs((low[1]-1)*10000));
   for (const row of state.rows) {
     peak = Math.max(peak, Math.abs((row[1]-1)*10000));
     if (!high || row[1] > high[1]) high = row;

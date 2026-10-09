@@ -127,14 +127,22 @@ class HistoryCache:
             if mark_fresh:
                 self.fetched_at = now
 
-    def read(self, start, end):
+    def read(self, start, end, window=None):
         with self.lock:
             if self.fetched_at is None:
                 raise RuntimeError('History is warming up')
             start = max(start, time.time() - HISTORY_SECONDS)
             left = bisect_right(self.rows, start, key=lambda row: row[0])
             right = bisect_right(self.rows, end, key=lambda row: row[0])
-            return self.rows[left:right], self.fetched_at, self.history_ready
+            extremes = None
+            if window is not None:
+                window_left = bisect_right(self.rows, window[0], key=lambda row: row[0])
+                window_right = bisect_right(self.rows, window[1], key=lambda row: row[0])
+                window_rows = self.rows[window_left:window_right]
+                if window_rows:
+                    extremes = {'low': min(window_rows, key=lambda row: row[1]),
+                                'high': max(window_rows, key=lambda row: row[1])}
+            return self.rows[left:right], self.fetched_at, self.history_ready, extremes
 
 
 class HistoryWorker:
@@ -247,12 +255,20 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         if url.path == '/api/prices':
             try:
-                start, end = time_window(urllib.parse.parse_qs(url.query, max_num_fields=4))
+                params = urllib.parse.parse_qs(url.query, max_num_fields=4)
+                start, end = time_window(params)
+                window = None
+                if 'windowStart' in params or 'windowEnd' in params:
+                    if 'windowStart' not in params or 'windowEnd' not in params:
+                        raise ValueError('Both window bounds are required')
+                    window = time_window({'start': params['windowStart'], 'end': params['windowEnd']})
+                    if not window[0] <= start < end <= window[1]:
+                        raise ValueError('Chunk must lie within the window')
             except (ValueError, OverflowError):
                 self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
                 return
             try:
-                rows, fetched_at, history_ready = self.server.cache.read(start, end)
+                rows, fetched_at, history_ready, extremes = self.server.cache.read(start, end, window)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                 return
@@ -264,7 +280,8 @@ class Handler(BaseHTTPRequestHandler):
                     batch = json.dumps(rows[offset:offset + 256], allow_nan=False).encode()[1:-1]
                     self.wfile.write((b',' if offset else b'') + batch)
                 self.wfile.write(b'],"fetchedAt":' + json.dumps(fetched_at).encode() +
-                                 b',"historyReady":' + json.dumps(history_ready).encode() + b'}')
+                                 b',"historyReady":' + json.dumps(history_ready).encode() +
+                                 b',"extremes":' + json.dumps(extremes, allow_nan=False).encode() + b'}')
             except (OSError, TimeoutError):
                 pass
             return

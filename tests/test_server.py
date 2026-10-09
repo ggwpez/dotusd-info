@@ -108,7 +108,7 @@ class CacheTests(unittest.TestCase):
         now = time.time()
         cache.merge([[now - 604801, 1, 1], [now - 20, 1, 2], [now - 10, 1, 4]], now)
         cache.merge([[now - 10, 1.01, 4], [now - 5, .99, 5]], now)
-        rows, _, _ = cache.read(now - 20, now - 5)
+        rows, _, _, _ = cache.read(now - 20, now - 5)
         self.assertEqual(rows, [(now - 10, 1.01, 4), (now - 5, .99, 5)])
         self.assertEqual(len(cache.rows), 3)
         with patch.object(page, 'MAX_SAMPLES', 2):
@@ -116,6 +116,18 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(len(cache.rows), 2)
         with patch.object(page.time, 'time', return_value=now + 604800):
             self.assertEqual(cache.read(0, now + 604800)[0], [])
+
+    def test_chunk_extremes_cover_selected_window_not_just_chunk(self):
+        now = time.time()
+        cache = page.HistoryCache()
+        cache.merge([[now-100, .98, 1], [now-80, 1.03, 2],
+                     [now-10, 1.001, 3]], now)
+        rows, _, _, extremes = cache.read(now-20, now, (now-200, now))
+        self.assertEqual([r[2] for r in rows], [3])
+        self.assertEqual(extremes['low'][2], 1)
+        self.assertEqual(extremes['high'][2], 2)
+        self.assertIsNone(cache.read(now-20, now, (now-300, now-200))[3])
+        self.assertEqual(cache.read(now-20, now, (now-80, now))[3]['high'][2], 3)
 
     def test_worker_seeds_then_only_refreshes_incrementally(self):
         cache = page.HistoryCache()

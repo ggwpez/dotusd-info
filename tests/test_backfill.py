@@ -38,7 +38,7 @@ class BackfillTests(unittest.TestCase):
             worker = server.HistoryWorker(cache, 'http://unused', archive=path)
             worker.load_archive()
             worker.load_archive()
-            rows, fetched, _ = cache.read(now - 200, now)
+            rows, fetched, _, _ = cache.read(now - 200, now)
             self.assertEqual([r[2] for r in rows], [12, 13])
             self.assertEqual(fetched, now - 5)
             backfill.store_batch(db, [(11, 'h11', int((now-110)*1000), .99, '[]')], int((now-100)*1000))
