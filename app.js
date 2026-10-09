@@ -12,7 +12,7 @@ function linkedView() {
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null};
+const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -68,8 +68,8 @@ function summary() {
   const values = rows.map(r => (r[1] - 1) * 10000);
   const low = values.reduce((a,b) => Math.min(a,b), Infinity), high = values.reduce((a,b) => Math.max(a,b), -Infinity);
   $('extremes').textContent = last ? `${signed(low)} / ${signed(high)}` : '—';
-  $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples`;
-  $('message').textContent = state.error || (last ? '' : 'No price samples in this window');
+  $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ' · loading history…' : ''}`;
+  $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading recent samples…' : 'No price samples in this window');
   $('message').hidden = !state.error && !!last;
   updateFreshness();
 }
@@ -89,27 +89,99 @@ function updateFreshness() {
   else status(`● Live · finalized ~${age}s ago`, 'live');
 }
 
-async function refresh() {
+class BrowserHistory {
+  constructor() { this.rows = []; this.coverage = []; this.fetchedAt = null; this.checkedAt = 0; }
+  expire(now) {
+    const cutoff = now - 604800;
+    this.rows = this.rows.filter(row => row[0] > cutoff);
+    this.coverage = this.coverage.filter(([, end]) => end > cutoff).map(([start, end]) => [Math.max(start, cutoff), end]);
+    // Recheck old history periodically so late backfill is not cached as an empty gap.
+    if (now - this.checkedAt >= 60) { this.coverage = []; this.checkedAt = now; }
+  }
+  merge(rows, start, end, fetchedAt) {
+    const byTime = new Map(this.rows.map(row => [row[0], row]));
+    for (const row of rows) byTime.set(row[0], row);
+    this.rows = [...byTime.values()].sort((a, b) => a[0] - b[0]).slice(-350000);
+    const intervals = [...this.coverage, [start, end]].sort((a, b) => a[0] - b[0]);
+    this.coverage = [];
+    for (const interval of intervals) {
+      const previous = this.coverage.at(-1);
+      if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
+      else this.coverage.push([...interval]);
+    }
+    this.fetchedAt = fetchedAt;
+  }
+  missing(start, end) {
+    const gaps = []; let cursor = start;
+    for (const [left, right] of this.coverage) {
+      if (right <= cursor || left >= end) continue;
+      if (left > cursor) gaps.push([cursor, Math.min(left, end)]);
+      cursor = Math.max(cursor, right);
+      if (cursor >= end) break;
+    }
+    if (cursor < end) gaps.push([cursor, end]);
+    return gaps;
+  }
+}
+function historyChunks(gaps) {
+  const chunks = [];
+  for (const [start, end] of [...gaps].reverse()) {
+    for (let right = end; right > start;) {
+      const left = Math.min(right - 1, Math.max(start, right - 21600));
+      chunks.push([left, right]); right = left;
+    }
+  }
+  return chunks;
+}
+const historyCache = new BrowserHistory();
+async function refresh(force = false) {
   controller?.abort(); controller = new AbortController(); const ticket = ++generation; loading = true;
   const requestController = controller;
-  const timeout = setTimeout(() => requestController.abort(), 15000);
   const end = state.zoom?.[1] ?? (state.live || !state.end ? Date.now()/1000 : state.end);
   const start = state.zoom?.[0] ?? end - state.range;
+  historyCache.expire(Date.now()/1000);
+  if (force) historyCache.coverage = [];
+  state.start = start; state.end = end; state.error = null;
+  const publish = () => {
+    state.rows = historyCache.rows.filter(row => row[0] > start && row[0] <= end);
+    state.fetchedAt = historyCache.fetchedAt; state.hover = null;
+    chartDirty = true; summary(); draw();
+  };
+  const fetchChunk = async (left, right) => {
+    const timeout = setTimeout(() => requestController.abort(), 15000);
+    try {
+      const response = await fetch(`/api/prices?start=${left}&end=${right}`, {signal: requestController.signal});
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Unable to load prices');
+      if (ticket !== generation) return;
+      historyCache.merge(result.samples, left, right, result.fetchedAt);
+    } finally { clearTimeout(timeout); }
+  };
   try {
-    const response = await fetch(`/api/prices?start=${start}&end=${end}`, {signal: requestController.signal});
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Unable to load prices');
-    if (ticket !== generation) return;
-    state.fetchedAt = result.fetchedAt;
-    state.rows = result.samples; state.start = start; state.end = end; state.error = null; state.hover = null;
+    state.historyLoading = historyCache.missing(start, end).length > 0;
+    publish(); // Switching to a cached view is immediate.
+    if ((state.live && !state.zoom) || state.historyLoading) {
+      // Recent data first; live polls re-read five minutes to catch late samples.
+      await fetchChunk(Math.max(start, end - (historyCache.rows.length ? 300 : 3600)), end);
+      if (ticket !== generation) return;
+      state.historyLoading = historyCache.missing(start, end).length > 0;
+      publish();
+    }
+    const chunks = historyChunks(historyCache.missing(start, end));
+    for (let i = 0; i < chunks.length; i++) {
+      await fetchChunk(...chunks[i]);
+      if (ticket !== generation) return;
+      state.historyLoading = i < chunks.length - 1;
+      publish();
+    }
   } catch (error) {
     if (ticket !== generation) return;
     state.error = error.name === 'AbortError' ? 'Request timed out. Retrying…' : error.message;
-    if (!state.start) {state.start = start; state.end = end;}
   } finally {
-    clearTimeout(timeout);
+    if (ticket === generation) {
+      loading = false; state.historyLoading = false; summary();
+    }
   }
-  loading = false; chartDirty = true; summary(); draw();
 }
 function draw() {
   // Render at least two pixels per CSS pixel for smoother thin lines.
@@ -281,7 +353,7 @@ updateViewControls();
 $('live').onclick = () => {
   if (!state.live || state.zoom) { reset(); return; }
   if (state.end - state.start < 1) return;
-  controller?.abort(); generation++; loading = false;
+  controller?.abort(); generation++; loading = false; state.historyLoading = false;
   state.live = false; state.zoom = [state.start, state.end];
   writeViewUrl(); updateViewControls(); summary();
 };
@@ -295,7 +367,7 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
     if (event.key === 'Escape') { hoveredRating = null; segment.blur(); updateRating(); }
   });
 });
-$('refresh').onclick=refresh;
+$('refresh').onclick=()=>refresh(true);
 new ResizeObserver(draw).observe($('plot'));
 setInterval(()=>{if(state.live&&!state.zoom&&!document.hidden&&!loading)refresh();},6000);
 // Age the last received timestamps independently of network requests or chart redraws.

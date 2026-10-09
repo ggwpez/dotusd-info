@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only dotUSD peg monitor backed by finalized Asset Hub pool history."""
 import argparse
+import hashlib
 from bisect import bisect_right
 import logging
 from contextlib import closing, contextmanager
@@ -260,7 +261,14 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(404, {'error': 'Not found'})
             return
         mime = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8', 'css': 'text/css; charset=utf-8'}
-        self.respond(200, (ROOT / filename).read_bytes(), mime[filename.split('.')[-1]])
+        body = (ROOT / filename).read_bytes()
+        etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+        content_type = mime[filename.split('.')[-1]]
+        if etag in [tag.strip() for tag in self.headers.get('If-None-Match', '').split(',')]:
+            self.send_headers(304, content_type, etag=etag)
+        else:
+            self.send_headers(200, content_type, len(body), etag=etag)
+            self.wfile.write(body)
 
     def respond(self, status, body, content_type='application/json'):
         if not isinstance(body, bytes):
@@ -268,12 +276,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_headers(status, content_type, len(body))
         self.wfile.write(body)
 
-    def send_headers(self, status, content_type, length=None):
+    def send_headers(self, status, content_type, length=None, etag=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         if length is not None:
             self.send_header('Content-Length', str(length))
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', 'public, max-age=0, must-revalidate' if etag else 'no-store')
+        if etag:
+            self.send_header('ETag', etag)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
         self.end_headers()

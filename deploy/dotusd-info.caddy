@@ -1,5 +1,7 @@
 dotusd.info {
-	encode zstd gzip
+	encode zstd gzip {
+		minimum_length 0
+	}
 	reverse_proxy 127.0.0.1:3001
 	log {
 		output stderr

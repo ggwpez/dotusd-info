@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch, Mock
 from urllib.error import HTTPError
 from urllib.parse import parse_qs
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from http.server import ThreadingHTTPServer
 
 spec = importlib.util.spec_from_file_location('dotusd_server', Path(__file__).resolve().parents[1] / 'server.py')
@@ -67,6 +67,12 @@ class PageTests(unittest.TestCase):
             with urlopen(base) as response:
                 self.assertIn(b'Peg deviation', response.read())
                 self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
+                etag = response.headers['ETag']
+                self.assertIn('must-revalidate', response.headers['Cache-Control'])
+            with self.assertRaises(HTTPError) as cached:
+                urlopen(Request(base, headers={'If-None-Match': etag}))
+            self.assertEqual(cached.exception.code, 304)
+            cached.exception.close()
             for path, code in [('/api/prices?start=nan', 400), ('/../../.envrc', 404), ('/api/v1/query', 404)]:
                 with self.assertRaises(HTTPError) as error:
                     urlopen(base + path)

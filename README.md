@@ -22,6 +22,17 @@ The collector and Prometheus are managed by the arbitrage repository.
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
+## Browser loading
+
+The browser renders cached data immediately, fetches recent history first, and
+fills missing history newest-first in chunks of at most six hours, redrawing
+after each response. Live polls request only a five-minute overlap. An in-memory
+browser cache holds at most seven days / 350,000 samples and revalidates historical
+coverage every minute to discover late archive imports. The refresh button forces
+revalidation; switching views reuses already fetched data. No samples are downsampled.
+Caddy compresses even streamed JSON responses with unknown lengths. Static files
+use ETags for cache revalidation, and the page preloads the JavaScript module.
+
 ## Development
 
 Run `python3 server.py` to open the chart locally using an SSH tunnel to `server`.
