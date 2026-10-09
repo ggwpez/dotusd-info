@@ -5,3 +5,7 @@ dotusd.info {
 		output stderr
 	}
 }
+
+www.dotusd.info {
+	redir https://dotusd.info{uri} permanent
+}

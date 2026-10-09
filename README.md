@@ -28,7 +28,7 @@ passwordless sudo on the target. No external Python packages are needed.
 The app runs as a dedicated dynamic user at `/opt/dotusd-info`, listening only
 on `127.0.0.1:3001`. `dotusd-info.service` restarts automatically and is enabled
 at boot. Caddy imports `/etc/caddy/sites/dotusd-info.caddy` and provides HTTPS
-for `dotusd.info`. The deployment validates Caddy before reload, backs up the
+for `dotusd.info`, with `www.dotusd.info` redirecting to the main domain. The deployment validates Caddy before reload, backs up the
 previous site configuration, and does not replace other sites.
 
 Inspect with `ssh server systemctl status dotusd-info` and
