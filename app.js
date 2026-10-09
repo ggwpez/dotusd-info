@@ -33,8 +33,8 @@ function updateRating() {
   const historical = !state.live || state.zoom;
   const stale = state.error || navigator.onLine === false || !Number.isFinite(state.fetchedAt) ||
     Date.now()/1000 - state.fetchedAt > 30 || (last && Date.now()/1000 - last[0] > 180);
-  const context = historical ? 'last sample in selected view' : stale ? 'last available sample' : 'latest finalized sample';
-  $('rating-caption').textContent = `Absolute deviation from 1 USDT · ${context}`;
+  const context = historical ? 'historical sample' : stale ? 'last available sample' : 'latest sample';
+  $('rating-caption').textContent = `Absolute deviation · ${context}`;
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
