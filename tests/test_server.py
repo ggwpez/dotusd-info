@@ -1,10 +1,13 @@
 """Validate raw history semantics and the narrow read-only HTTP surface."""
 import importlib.util
 import json
+import io
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from urllib.error import HTTPError
 from urllib.parse import parse_qs
 from urllib.request import urlopen
@@ -55,7 +58,8 @@ class PageTests(unittest.TestCase):
             page.samples(payload)
 
     def test_http_assets_errors_and_no_arbitrary_proxy(self):
-        server = ThreadingHTTPServer(('127.0.0.1', 0), page.Handler)
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
@@ -67,19 +71,111 @@ class PageTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as error:
                     urlopen(base + path)
                 self.assertEqual(error.exception.code, code)
-            with patch.object(page, 'samples', return_value=[[100, 1.001]]):
-                class Upstream:
-                    def open(self, *args, **kwargs):
-                        import io
-                        return io.StringIO('{}')
-                server.http = Upstream()
-                server.upstream = 'http://unused/api/v1'
-                with urlopen(base + '/api/prices?start=100&end=200') as response:
-                    self.assertEqual(json.load(response)['samples'], [[100, 1.001]])
+                error.exception.close()
+            with self.assertRaises(HTTPError) as error:
+                urlopen(base + '/api/prices')
+            self.assertEqual(error.exception.code, 503)
+            error.exception.close()
+            now = time.time()
+            server.cache.merge([[now - 10, 1.001, 50]], now)
+            # There is no upstream client on the server. Concurrent reads still work.
+            def read():
+                with urlopen(base + '/api/prices') as response:
+                    return json.load(response)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                results = list(pool.map(lambda _: read(), range(12)))
+            for result in results:
+                self.assertEqual(result['samples'], [[now - 10, 1.001, 50]])
+                self.assertEqual(result['fetchedAt'], now)
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
+
+
+class CacheTests(unittest.TestCase):
+    def test_merge_overlap_retention_and_range_boundaries(self):
+        cache = page.HistoryCache()
+        now = time.time()
+        cache.merge([[now - 604801, 1, 1], [now - 20, 1, 2], [now - 10, 1, 4]], now)
+        cache.merge([[now - 10, 1.01, 4], [now - 5, .99, 5]], now)
+        rows, _ = cache.read(now - 20, now - 5)
+        self.assertEqual(rows, [(now - 10, 1.01, 4), (now - 5, .99, 5)])
+        self.assertEqual(len(cache.rows), 3)
+        with patch.object(page, 'MAX_SAMPLES', 2):
+            cache.merge([], now)
+        self.assertEqual(len(cache.rows), 2)
+        with patch.object(page.time, 'time', return_value=now + 604800):
+            self.assertEqual(cache.read(0, now + 604800)[0], [])
+
+    def test_worker_seeds_then_only_refreshes_incrementally(self):
+        cache = page.HistoryCache()
+        worker = page.HistoryWorker(cache, 'http://unused')
+        worker.fetch = Mock()
+        now = time.time()
+        with patch.object(page.time, 'time', return_value=now):
+            worker.poll()
+        self.assertEqual(worker.fetch.call_args_list[0].args, (now - 3600, now))
+        self.assertEqual(worker.fetch.call_args_list[1].args,
+                         (now - 3600 - page.FETCH_SECONDS, now - 3600))
+        with patch.object(page.time, 'time', return_value=now + 6):
+            worker.poll()
+        self.assertEqual(worker.fetch.call_args_list[2].args, (now - 300, now + 6))
+        # Seeding stops once the retained window is covered.
+        for _ in range(30):
+            with patch.object(page.time, 'time', return_value=now + 12):
+                worker.poll()
+        worker.fetch.reset_mock()
+        with patch.object(page.time, 'time', return_value=now + 18):
+            worker.poll()
+        worker.fetch.assert_called_once_with(now + 12 - 300, now + 18)
+
+    def test_failure_keeps_cached_data_and_retry_cursor(self):
+        now = time.time()
+        cache = page.HistoryCache()
+        cache.merge([[now - 1, 1.01, 50]], now)
+        worker = page.HistoryWorker(cache, 'http://unused')
+        worker.cursor = now
+        worker.backfill_end = now - page.HISTORY_SECONDS
+        worker.fetch = Mock(side_effect=OSError('offline'))
+        with self.assertRaises(OSError):
+            worker.poll()
+        self.assertEqual(worker.cursor, now)
+        self.assertEqual(cache.read(now - 20, now)[0], [(now - 1, 1.01, 50)])
+
+    def test_upstream_response_limit(self):
+        http = Mock()
+        http.open.return_value = io.BytesIO(b'x' * 101)
+        cache = page.HistoryCache()
+        worker = page.HistoryWorker(cache, 'http://unused', http)
+        with patch.object(page, 'MAX_UPSTREAM_BYTES', 100):
+            with self.assertRaisesRegex(ValueError, 'size limit'):
+                worker.fetch(100, 200)
+        self.assertIsNone(cache.fetched_at)
+
+    def test_worker_fetch_preserves_raw_samples(self):
+        now = time.time()
+        payload = {'status': 'success', 'data': {'resultType': 'matrix', 'result': [
+            {'metric': {'__name__': 'arb_peg_dotusd_usdt'}, 'values': [[now - 10, '1.01']]},
+            {'metric': {'__name__': 'arb_peg_block_number'}, 'values': [[now - 10, '42']]}]}}
+        http = Mock()
+        http.open.return_value = io.BytesIO(json.dumps(payload).encode())
+        cache = page.HistoryCache()
+        worker = page.HistoryWorker(cache, 'http://unused', http)
+        worker.fetch(now - 100, now)
+        self.assertEqual(cache.read(now - 100, now)[0], [(now - 10, 1.01, 42)])
+
+    def test_busy_server_rejects_without_starting_handler(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        connection = Mock()
+        try:
+            for _ in range(4):
+                self.assertTrue(server.slots.acquire(False))
+            server.process_request(connection, ('127.0.0.1', 1234))
+            self.assertIn(b'503 Service Unavailable', connection.sendall.call_args.args[0])
+            connection.close.assert_called_once()
+        finally:
+            server.server_close()
 
 
 if __name__ == '__main__':

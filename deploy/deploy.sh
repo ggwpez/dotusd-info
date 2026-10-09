@@ -17,7 +17,7 @@ systemctl restart dotusd-info
 attempt=0
 until curl -fsS http://127.0.0.1:3001/api/prices -o /dev/null; do
     attempt=$((attempt + 1))
-    [ "$attempt" -lt 10 ] || exit 1
+    [ "$attempt" -lt 60 ] || exit 1
     sleep 1
 done
 site=/etc/caddy/sites/dotusd-info.caddy

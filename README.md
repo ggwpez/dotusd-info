@@ -8,7 +8,16 @@ Python 3 standard library backend and dependency-free browser assets.
 The server's existing `arb-peg.service` collects finalized pool prices from the
 arbitrage Asset Hub RPC at `http://127.0.0.1:9944` and writes history into
 `arb-prometheus.service` at `127.0.0.1:9090`. This app reads that history through
-a bounded `/api/prices` endpoint. The node RPC and Prometheus remain private.
+a bounded `/api/prices` endpoint backed entirely by an in-process cache.
+One background worker fetches recent prices at startup, then refreshes every six
+seconds with a five-minute overlap for delayed ingestion. Seven days of older
+history are seeded in six-hour chunks, one per refresh cycle (about three minutes).
+Visitor requests never query Prometheus. The cache retains at most seven days and
+350,000 samples, preserves raw timestamps and gaps, and remains readable during
+upstream outages. Restarts rebuild the cache; the API returns 503 until the first
+successful fetch. Each upstream response is limited to 4 MiB. Four HTTP handlers
+can run concurrently; excess requests receive 503. Responses stream in batches
+and client sockets have a ten-second inactivity timeout. The node RPC and Prometheus remain private.
 The collector and Prometheus are managed by the arbitrage repository.
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
