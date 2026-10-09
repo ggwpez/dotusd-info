@@ -1,8 +1,18 @@
 const $ = id => document.getElementById(id);
 const resolutions = new Map([['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]);
-const linkedRange = () => resolutions.get(new URLSearchParams(location.search).get('resolution')) ?? 3600;
+function linkedView() {
+  const params = new URLSearchParams(location.search);
+  const range = resolutions.get(params.get('resolution')) ?? 3600;
+  const start = Number(params.get('start')), end = Number(params.get('end'));
+  const valid = params.has('start') && params.has('end') &&
+    params.get('start').trim() !== '' && params.get('end').trim() !== '' &&
+    Number.isFinite(start) && Number.isFinite(end) && start >= 0 &&
+    end - start >= 1 && end - start <= 604800 && end <= Date.now()/1000 + 60;
+  return {range, zoom: valid ? [start, end] : null};
+}
+const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: linkedRange(), start: 0, end: 0, live: true, zoom: null, hover: null, drag: null, error: null, fetchedAt: null};
+const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -135,6 +145,8 @@ function draw() {
     ctx.fillStyle='#8792a3';ctx.textAlign=i===0?'left':i===ticks?'right':'center';
     ctx.fillText(state.end-state.start>86400 ? date(t).slice(5,16) : clock(t).slice(0,5),px,bottom+23);
   }
+  ctx.setLineDash([]);ctx.strokeStyle='#ffffff';ctx.lineWidth=.6;
+  ctx.beginPath();ctx.moveTo(left,y(0));ctx.lineTo(right,y(0));ctx.stroke();
   ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
   // Symmetric hard stops color both sides by absolute peg deviation.
   const lineColor = ratingGradient(ctx, top, bottom, extent);
@@ -155,8 +167,6 @@ function draw() {
   if (previous) {area.lineTo(x(previous[0]),y(0));area.closePath();}
   ctx.fillStyle=areaColor;ctx.fill(area);
   ctx.stroke();
-  ctx.setLineDash([]);ctx.strokeStyle='#ffffff';ctx.lineWidth=1;
-  ctx.beginPath();ctx.moveTo(left,y(0));ctx.lineTo(right,y(0));ctx.stroke();
   function markExtreme(row, label, above) {
     const value = (row[1]-1)*10000, px = x(row[0]), py = y(value);
     const color = deviationColor(value);
@@ -226,11 +236,29 @@ canvas.addEventListener('pointerdown',event=>{if(!geometry || event.button!==0)r
 canvas.addEventListener('pointerup',event=>{
   if(!state.drag)return;
   const [a,b]=state.drag;state.drag=null;
-  if(Math.abs(a-b)>8){const time=px=>state.start+(px-geometry.left)/(geometry.right-geometry.left)*(state.end-state.start);const window=[time(Math.min(a,b)),time(Math.max(a,b))];if(window[1]-window[0]>=1){state.zoom=window;$('reset').hidden=false;refresh();}}
+  if(Math.abs(a-b)>8){const time=px=>state.start+(px-geometry.left)/(geometry.right-geometry.left)*(state.end-state.start);const window=[time(Math.min(a,b)),time(Math.max(a,b))];if(window[1]-window[0]>=1){state.zoom=window;state.live=false;writeViewUrl();updateViewControls();refresh();}}
   canvas.releasePointerCapture(event.pointerId);draw();
 });
 canvas.addEventListener('pointercancel',()=>{state.drag=null;draw();});
-function reset(){state.zoom=null;$('reset').hidden=true;refresh();}
+function writeViewUrl() {
+  const url = new URL(location.pathname, location.origin);
+  const resolution = [...resolutions].find(([, seconds]) => seconds === state.range)[0];
+  url.searchParams.set('resolution', resolution);
+  if (state.zoom) {
+    url.searchParams.set('start', String(state.zoom[0]));
+    url.searchParams.set('end', String(state.zoom[1]));
+  }
+  if (url.href !== location.href) history.pushState(null, '', url);
+}
+function updateViewControls() {
+  $('reset').hidden = !state.zoom;
+  $('live').setAttribute('aria-pressed', String(state.live));
+  $('live').lastChild.textContent = state.live ? ' Live · 6s' : ' Paused';
+}
+function reset() {
+  state.zoom = null; state.live = true; state.start = 0; state.end = 0;
+  writeViewUrl(); updateViewControls(); refresh();
+}
 canvas.addEventListener('dblclick',reset);$('reset').onclick=reset;
 canvas.addEventListener('keydown',event=>{if(event.key==='Escape')reset();if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();state.hover=Math.max(0,Math.min(state.rows.length-1,(state.hover??state.rows.length-1)+(event.key==='ArrowRight'?1:-1)));draw();}});
 function updateRangeButtons() {
@@ -239,21 +267,24 @@ function updateRangeButtons() {
 }
 document.querySelectorAll('[data-range]').forEach(button => button.onclick = () => {
   state.range = Number(button.dataset.range);
-  const resolution = [...resolutions].find(([, seconds]) => seconds === state.range)[0];
-  // Share only the rolling window size, never absolute timestamps or a zoom.
-  const url = new URL(location.pathname, location.origin);
-  url.searchParams.set('resolution', resolution);
-  if (url.href !== location.href) history.pushState(null, '', url);
   updateRangeButtons();
   reset();
 });
 window.addEventListener('popstate', () => {
-  state.range = linkedRange();
-  updateRangeButtons();
-  reset();
+  const view = linkedView();
+  state.range = view.range; state.zoom = view.zoom; state.live = !view.zoom;
+  state.start = 0; state.end = 0;
+  updateRangeButtons(); updateViewControls(); refresh();
 });
 updateRangeButtons();
-$('live').onclick=()=>{state.live=!state.live;$('live').setAttribute('aria-pressed',String(state.live));$('live').lastChild.textContent=state.live?' Live · 6s':' Paused';if(state.live)reset();else summary();};
+updateViewControls();
+$('live').onclick = () => {
+  if (!state.live || state.zoom) { reset(); return; }
+  if (state.end - state.start < 1) return;
+  controller?.abort(); generation++; loading = false;
+  state.live = false; state.zoom = [state.start, state.end];
+  writeViewUrl(); updateViewControls(); summary();
+};
 document.querySelectorAll('[data-rating]').forEach(segment => {
   const index = Number(segment.dataset.rating);
   segment.addEventListener('pointerenter', () => { hoveredRating = index; updateRating(); });
