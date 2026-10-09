@@ -3,7 +3,7 @@
 import argparse
 from bisect import bisect_right
 import logging
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import math
 import socket
@@ -181,7 +181,7 @@ class HistoryWorker:
     def load_archive(self):
         if self.archive is None or not self.archive.exists():
             return
-        with sqlite3.connect(f'file:{self.archive}?mode=ro', uri=True, timeout=1) as db:
+        with closing(sqlite3.connect(f'file:{self.archive}?mode=ro', uri=True, timeout=1)) as db:
             rows = db.execute('SELECT seq,sample_time,price,number FROM samples WHERE seq>? ORDER BY seq LIMIT 2000',
                               (self.archive_seq,)).fetchall()
         if rows:

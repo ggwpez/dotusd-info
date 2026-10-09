@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Resumable Parity archive import from referendum 1944 into chart-only history."""
 import argparse
+from contextlib import closing
 import json
 import logging
 from pathlib import Path
@@ -89,7 +90,7 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     db = database(args.database)
-    with sqlite3.connect(f'file:{args.live_database}?mode=ro', uri=True) as live:
+    with closing(sqlite3.connect(f'file:{args.live_database}?mode=ro', uri=True)) as live:
         anchor, anchor_hash, anchor_time = live.execute(
             'SELECT number,hash,sample_time FROM blocks ORDER BY number LIMIT 1').fetchone()
     expected = {'start': str(START), 'anchor': str(anchor), 'anchor_hash': anchor_hash, 'anchor_time': str(anchor_time)}
