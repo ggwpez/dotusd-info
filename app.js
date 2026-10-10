@@ -191,6 +191,26 @@ async function refresh(force = false) {
     }
   }
 }
+function* pixelRows(rows, x) {
+  const connected = (a, b) => a && b && a[2] != null && b[2] != null && b[2] === a[2] + 1;
+  for (let first = 0; first < rows.length;) {
+    const pixel = Math.floor(x(rows[first][0]));
+    let last = first, low = first, high = first;
+    // Bucket each continuous run separately so real missing blocks remain gaps.
+    while (last + 1 < rows.length && connected(rows[last], rows[last + 1]) &&
+      Math.floor(x(rows[last + 1][0])) === pixel) {
+      last++;
+      if (rows[last][1] < rows[low][1]) low = last;
+      if (rows[last][1] > rows[high][1]) high = last;
+    }
+    // Preserve extrema and endpoints in their original time order, without averaging.
+    const indices = [...new Set([first, low, high, last])].sort((a, b) => a - b);
+    for (const index of indices) {
+      yield {row: rows[index], move: index === first && !connected(rows[first - 1], rows[first])};
+    }
+    first = last + 1;
+  }
+}
 function draw() {
   // Render at least two pixels per CSS pixel for smoother thin lines.
   const rect = canvas.getBoundingClientRect(), dpr = Math.max(2, window.devicePixelRatio || 1);
@@ -234,10 +254,10 @@ function draw() {
   const areaColor = ratingGradient(ctx, top, bottom, extent, '20');
   const area = new Path2D();
   ctx.strokeStyle=lineColor;ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();let previous;
-  // Consecutive blocks remain connected regardless of estimated timestamp spacing.
-  for(const row of state.rows) {
+  // Reduce overdraw per CSS pixel; raw samples still drive hover, bounds and zoom.
+  for(const {row, move} of pixelRows(state.rows, x)) {
     const px=x(row[0]),py=y((row[1]-1)*10000);
-    if (!previous || row[2] == null || previous[2] == null || row[2] !== previous[2] + 1) {
+    if (move) {
       if (previous) {area.lineTo(x(previous[0]),y(0));area.closePath();}
       area.moveTo(px,y(0));
       ctx.moveTo(px,py);
