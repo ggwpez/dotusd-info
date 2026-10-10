@@ -19,6 +19,12 @@
 <section class="panel" aria-label="Deviation chart"><div class="toolbar"><div><h2>Peg deviation</h2><span class="legend"><i></i> dotUSD <span class="muted">· basis points · color = peg tightness</span></span></div><div class="controls"><div class="ranges" aria-label="Time range"><button data-range="900">15m</button><button data-range="3600" aria-pressed="true">1h</button><button data-range="21600">6h</button><button data-range="86400">24h</button><button data-range="604800">7d</button></div><button id="reset" hidden>Reset zoom</button><button id="live" aria-pressed="true"><span class="live-dot"></span> Live · 6s</button><button id="refresh" title="Refresh data" aria-label="Refresh data">↻</button></div></div>
 <div class="plot" id="plot"><canvas id="chart" tabindex="0" aria-label="dotUSD deviation in basis points. Drag to zoom; double click or Escape to reset. Arrow keys inspect samples."></canvas><div id="message" role="status">Loading finalized-block prices…</div><div id="tooltip" hidden></div></div>
 <div class="chart-footer"><span id="window">—</span><span>Drag to zoom <span class="separator">·</span> Double-click to reset <span class="separator">·</span> UTC</span></div></section>
-<footer><span><span class="footer-dot"></span>Finalized-block pool prices</span><p>dotUSD → DOT → USDT <span class="separator">·</span> (price − 1) × 10,000 bps<br>USDT reference, not a USD oracle. Excludes fees and slippage. Block timing is estimated; missing history appears as gaps.</p></footer>
+<footer><span><span class="footer-dot"></span>Finalized-block pool prices</span>
+<details class="about"><summary>About this chart &amp; calculation</summary>
+<p>This project tracks how closely dotUSD trades to 1 USDT on Polkadot Asset Hub, using liquidity-pool reserves at finalized blocks.</p>
+<p>The spot price follows dotUSD → DOT → USDT. We adjust the reserves for token decimals, then multiply the DOT-per-dotUSD ratio by the USDT-per-DOT ratio. Deviation is (price − 1) × 10,000 basis points: 1.001 USDT is +10 bps, or +0.1%.</p>
+<p>Colors and ratings describe the absolute deviation from 1 USDT: Excellent ≤ 5 bps, Good ≤ 20, Fair ≤ 50, Poor ≤ 100, and Horrible above 100.</p>
+<p>USDT is the reference, so this does not measure the price against US dollars directly. Spot prices exclude swap fees and trade-size slippage. The chart refreshes every six seconds; finalization means the latest point trails the current time. Block timing is estimated, and missing history appears as gaps.</p>
+</details></footer>
 </main><script type="module" src="/app.js"></script>
 </body></html>
