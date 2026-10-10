@@ -1,5 +1,6 @@
 import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.js?v=__APP_VERSION__';
 const $ = id => document.getElementById(id);
+$('title-logo').src = document.querySelector('link[rel="icon"]').href;
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
 let reloading = false;
