@@ -24,6 +24,24 @@ MAX_SAMPLES = 350000
 FETCH_SECONDS = 6 * 3600
 MAX_UPSTREAM_BYTES = 4 * 1024 * 1024
 
+
+def load_release():
+    """Freeze assets and their version together until the server restarts."""
+    files = {name: (ROOT / name).read_bytes() for name in
+             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'style.css')}
+    digest = hashlib.sha256()
+    for name, body in files.items():
+        digest.update(name.encode() + b'\0' + body + b'\0')
+    version = digest.hexdigest()
+    assets = {name: files[name] for name in ('index.html', 'app.js', 'style.css')}
+    assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
+    assets['index.html'] = assets['index.html'].replace(
+        b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
+    for name in ('app.js', 'style.css'):
+        assets['index.html'] = assets['index.html'].replace(
+            f'/{name}"'.encode(), f'/{name}?v={version}"'.encode())
+    return version, assets
+
 METRIC = '{__name__=~"arb_peg_dotusd_usdt|arb_peg_block_number",clock="estimated_2s"}'
 
 
@@ -225,6 +243,7 @@ class HistoryWorker:
 class CacheServer(ThreadingHTTPServer):
     """Bound active handlers, including slow readers, independently of systemd."""
     def __init__(self, address, handler):
+        self.version, self.assets = load_release()
         super().__init__(address, handler)
         self.slots = threading.BoundedSemaphore(4)
 
@@ -253,6 +272,9 @@ class CacheServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
+        if url.path == '/api/version':
+            self.respond(200, {'version': self.server.version})
+            return
         if url.path == '/api/prices':
             try:
                 params = urllib.parse.parse_qs(url.query, max_num_fields=4)
@@ -290,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(404, {'error': 'Not found'})
             return
         mime = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8', 'css': 'text/css; charset=utf-8'}
-        body = (ROOT / filename).read_bytes()
+        body = self.server.assets[filename]
         etag = '"' + hashlib.sha256(body).hexdigest() + '"'
         content_type = mime[filename.split('.')[-1]]
         if etag in [tag.strip() for tag in self.headers.get('If-None-Match', '').split(',')]:
@@ -308,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
     def send_headers(self, status, content_type, length=None, etag=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
+        self.send_header('X-App-Version', self.server.version)
         if length is not None:
             self.send_header('Content-Length', str(length))
         self.send_header('Cache-Control', 'public, max-age=0, must-revalidate' if etag else 'no-store')

@@ -1,4 +1,26 @@
 const $ = id => document.getElementById(id);
+// Replaced by the server from the same release snapshot as the served assets.
+const APP_VERSION = '__APP_VERSION__';
+let reloading = false, checkingVersion = false;
+function acceptVersion(version) {
+  if (reloading) return false;
+  if (!version || version === APP_VERSION) return true;
+  reloading = true;
+  controller?.abort(); generation++;
+  location.reload();
+  return false;
+}
+async function checkVersion() {
+  if (checkingVersion || reloading || document.hidden) return;
+  checkingVersion = true;
+  const request = new AbortController();
+  const timeout = setTimeout(() => request.abort(), 10000);
+  try {
+    const response = await fetch('/api/version', {cache: 'no-store', signal: request.signal});
+    if (response.ok) acceptVersion(response.headers.get('X-App-Version'));
+  } catch { /* Offline or restarting: retry on the next check. */ }
+  finally { clearTimeout(timeout); checkingVersion = false; }
+}
 const resolutions = new Map([['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]);
 function linkedView() {
   const params = new URLSearchParams(location.search);
@@ -134,6 +156,7 @@ function historyChunks(gaps) {
 }
 const historyCache = new BrowserHistory();
 async function refresh(force = false) {
+  if (reloading) return;
   controller?.abort(); controller = new AbortController(); const ticket = ++generation; loading = true;
   const requestController = controller;
   const end = state.zoom?.[1] ?? (state.live || !state.end ? Date.now()/1000 : state.end);
@@ -153,6 +176,8 @@ async function refresh(force = false) {
     try {
       const metadata = includeExtremes ? `&windowStart=${start}&windowEnd=${end}` : '';
       const response = await fetch(`/api/prices?start=${left}&end=${right}${metadata}`, {signal: requestController.signal});
+      // Check before parsing a possibly incompatible response body.
+      if (!acceptVersion(response.headers.get('X-App-Version'))) return;
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to load prices');
       if (ticket !== generation) return;
@@ -420,11 +445,17 @@ setInterval(()=>{if(((state.live&&!state.zoom)||state.historyLoading)&&!document
 setInterval(updateFreshness, 1000);
 window.addEventListener('offline', updateFreshness);
 window.addEventListener('online', () => {
+  checkVersion();
   updateFreshness();
   if ((state.live && !state.zoom) || state.historyLoading) refresh();
 });
 document.addEventListener('visibilitychange', () => {
+  checkVersion();
   updateFreshness();
   if (!document.hidden && ((state.live && !state.zoom) || state.historyLoading)) refresh();
 });
-refresh();
+setInterval(checkVersion, 30000);
+if (acceptVersion(document.querySelector('meta[name="app-version"]')?.content)) {
+  checkVersion();
+  refresh();
+}

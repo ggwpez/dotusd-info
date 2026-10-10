@@ -31,10 +31,21 @@ fills missing history newest-first in chunks of at most six hours, redrawing
 after each response. The first chunk includes full-window low/high samples so
 the vertical scale stays fixed while older chunks arrive. Live polls request only a five-minute overlap. An in-memory
 browser cache holds at most seven days / 350,000 samples and revalidates historical
-coverage every minute to discover late archive imports. The refresh button forces
-revalidation; switching views reuses already fetched data. No samples are downsampled.
+coverage every minute to discover late archive imports; switching views reuses
+already fetched data. No samples are downsampled.
 Caddy compresses even streamed JSON responses with unknown lengths. Static files
 use ETags for cache revalidation, and the page preloads the JavaScript module.
+
+At startup the server snapshots its assets and hashes the server, archive reader,
+HTML, JavaScript, and CSS into a release version. Responses carry `X-App-Version`,
+and `/api/version` returns the version even while price history is warming up.
+The client checks this header before decoding price responses and reloads the
+current URL on a mismatch, preserving the linked range/zoom. Visible tabs also
+check every 30 seconds, including paused charts, and check immediately on return
+to the tab or reconnection. Network failures retry without forcing a reload.
+Assets remain tied to their startup snapshot during deployment; restart the
+server to activate changes, including when developing locally. Tabs opened before
+this feature was deployed need one manual reload to enable automatic updates.
 
 ## Development
 

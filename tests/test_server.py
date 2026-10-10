@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
+import tempfile
 import unittest
 from unittest.mock import patch, Mock
 from urllib.error import HTTPError
@@ -19,6 +20,31 @@ spec.loader.exec_module(page)
 
 
 class PageTests(unittest.TestCase):
+    def test_release_version_tracks_code_and_freezes_assets(self):
+        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'style.css')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in names:
+                (root / name).write_bytes((page.ROOT / name).read_bytes())
+            with patch.object(page, 'ROOT', root):
+                version, assets = page.load_release()
+                self.assertEqual(page.load_release(), (version, assets))
+                self.assertIn(version.encode(), assets['app.js'])
+                self.assertNotIn(b'__APP_VERSION__', assets['app.js'])
+                self.assertIn(f'content="{version}"'.encode(), assets['index.html'])
+                self.assertIn(f'/app.js?v={version}'.encode(), assets['index.html'])
+                server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+                try:
+                    for name in names:
+                        original = (root / name).read_bytes()
+                        (root / name).write_bytes(original + b'\n')
+                        self.assertNotEqual(page.load_release()[0], version, name)
+                        self.assertEqual(server.version, version)
+                        self.assertEqual(server.assets, assets)
+                        (root / name).write_bytes(original)
+                finally:
+                    server.server_close()
+
     def test_explicit_upstream_does_not_open_ssh(self):
         with patch.object(page.subprocess, 'Popen') as launch:
             with page.price_source('http://127.0.0.1:9090/api/v1/') as upstream:
@@ -64,6 +90,11 @@ class PageTests(unittest.TestCase):
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         try:
+            # Available even while history is warming; paused tabs use this endpoint.
+            with urlopen(base + '/api/version') as response:
+                self.assertEqual(json.load(response), {'version': server.version})
+                self.assertEqual(response.headers['X-App-Version'], server.version)
+                self.assertEqual(response.headers['Cache-Control'], 'no-store')
             with urlopen(base) as response:
                 self.assertIn(b'Peg deviation', response.read())
                 self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
@@ -81,12 +112,14 @@ class PageTests(unittest.TestCase):
             with self.assertRaises(HTTPError) as error:
                 urlopen(base + '/api/prices')
             self.assertEqual(error.exception.code, 503)
+            self.assertEqual(error.exception.headers['X-App-Version'], server.version)
             error.exception.close()
             now = time.time()
             server.cache.merge([[now - 10, 1.001, 50]], now)
             # There is no upstream client on the server. Concurrent reads still work.
             def read():
                 with urlopen(base + '/api/prices') as response:
+                    self.assertEqual(response.headers['X-App-Version'], server.version)
                     return json.load(response)
             with ThreadPoolExecutor(max_workers=3) as pool:
                 results = list(pool.map(lambda _: read(), range(12)))
