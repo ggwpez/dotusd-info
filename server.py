@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 from bisect import bisect_right
+from collections import deque
 from itertools import islice
 import logging
 from contextlib import closing, contextmanager
@@ -17,7 +18,7 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -329,8 +330,13 @@ class HistoryWorker:
             self.stop.wait(6 if ready or failed else 0.05)
 
 
-class CacheServer(ThreadingHTTPServer):
-    """Bound active handlers, including slow readers, independently of systemd."""
+class CacheServer(HTTPServer):
+    """Four fixed workers and a bounded FIFO for short request bursts."""
+    handler_count = 4
+    max_pending = 32
+    queue_wait_seconds = 2
+    request_queue_size = 64
+
     def __init__(self, address, handler):
         self.version, self.assets = load_release()
         script_hash = base64.b64encode(hashlib.sha256(self.assets['inline.js']).digest()).decode()
@@ -339,29 +345,73 @@ class CacheServer(ThreadingHTTPServer):
             f"default-src 'self'; style-src 'self' 'sha256-{style_hash}'; "
             f"script-src 'self' 'sha256-{script_hash}'; img-src 'self' data:; "
             "connect-src 'self'; frame-ancestors 'none'")
+        self.pending = deque()
+        self.work_ready = threading.Condition()
+        self.closing = False
+        self.workers = []
         super().__init__(address, handler)
-        self.slots = threading.BoundedSemaphore(4)
+        self.workers = [threading.Thread(target=self.process_requests, name=f'price-http-{i}', daemon=True)
+                        for i in range(self.handler_count)]
+        for worker in self.workers:
+            worker.start()
+
+    def reject_request(self, request):
+        try:
+            request.settimeout(1)
+            request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nRetry-After: 6\r\nContent-Length: 0\r\n\r\n')
+        except OSError:
+            pass
+        finally:
+            self.shutdown_request(request)
 
     def process_request(self, request, client_address):
-        if not self.slots.acquire(blocking=False):
+        with self.work_ready:
+            if not self.closing and len(self.pending) < self.max_pending:
+                self.pending.append((time.monotonic() + self.queue_wait_seconds, request, client_address))
+                self.work_ready.notify()
+                return
+        self.reject_request(request)
+
+    def process_requests(self):
+        while True:
+            with self.work_ready:
+                self.work_ready.wait_for(lambda: self.closing or self.pending)
+                if self.closing:
+                    return
+                deadline, request, client_address = self.pending.popleft()
+            if time.monotonic() >= deadline:
+                self.reject_request(request)
+                continue
             try:
-                request.settimeout(1)
-                request.sendall(b'HTTP/1.0 503 Service Unavailable\r\nRetry-After: 6\r\nContent-Length: 0\r\n\r\n')
+                request.settimeout(10)
+                self.finish_request(request, client_address)
+            except Exception:
+                self.handle_error(request, client_address)
             finally:
                 self.shutdown_request(request)
-            return
-        request.settimeout(10)
-        try:
-            super().process_request(request, client_address)
-        except Exception:
-            self.slots.release()
-            raise
 
-    def process_request_thread(self, request, client_address):
-        try:
-            super().process_request_thread(request, client_address)
-        finally:
-            self.slots.release()
+    def service_actions(self):
+        # Expire waiters even if every worker is occupied by a slow client.
+        # serve_forever checks at least every poll interval (normally 0.5s).
+        expired = []
+        with self.work_ready:
+            now = time.monotonic()
+            while self.pending and self.pending[0][0] <= now:
+                expired.append(self.pending.popleft()[1])
+        for request in expired:
+            self.reject_request(request)
+
+    def server_close(self):
+        with self.work_ready:
+            self.closing = True
+            waiting = list(self.pending)
+            self.pending.clear()
+            self.work_ready.notify_all()
+        super().server_close()
+        for _, request, _ in waiting:
+            self.shutdown_request(request)
+        for worker in self.workers:
+            worker.join()
 
 
 class Handler(BaseHTTPRequestHandler):

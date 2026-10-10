@@ -27,8 +27,11 @@ The cache holds at most 1,368 summaries (about 107 KiB per snapshot on the serve
 references existing samples, and never grows with the number of requested windows.
 Summaries are rebuilt on merges, including corrections and eviction, and are
 released with their snapshot when its readers finish.
-Each upstream response is limited to 4 MiB. Four HTTP handlers
-can run concurrently; excess requests receive 503. Responses stream in batches
+Each upstream response is limited to 4 MiB. Four fixed HTTP workers
+serve requests from a FIFO holding at most 32 waiting connections. A full queue
+returns 503 with `Retry-After: 6`. Requests waiting two seconds expire with the
+same response; idle-server expiry checks run every 0.5 seconds. The separate TCP
+listen backlog is 64 connections. Responses stream in batches
 and client sockets have a ten-second inactivity timeout. The node RPC and Prometheus remain private.
 The collector and Prometheus are managed by the arbitrage repository.
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
@@ -109,6 +112,38 @@ Run tests with `python3 -m unittest discover -s tests -v`.
 Client range tests use Node when installed, or macOS JavaScriptCore, and otherwise
 report a skip. They compare exact samples, line geometry, gaps, pixel extrema,
 hover selection, clipping, and cache overlap behavior against raw data.
+
+### Concurrent requests and bursts
+
+Run `python3 tools/benchmark_requests.py --fixture /tmp/prices.json --output /tmp/results.json`
+with a saved raw `/api/prices?format=raw` response. The tool starts an isolated
+backend process, rebases the fixture timestamps to the present, and runs three
+rounds each at 1, 4, 8, 16, 32, and 64 concurrent clients. Steady clients each
+issue eight requests; burst clients each issue one. The workload mixes 70% live
+polls, 20% initial HTML requests, and 10% full-history downloads. Use `--source`
+for an older `server.py` and `--backlog` to compare identical TCP backlogs.
+
+The October 10, 2026 local test used 87,195 actual samples (about two days), a
+separate backend process, and no Caddy, TLS, or upstream worker. Results below
+compare the old immediate-rejection server with TCP backlog 5 against four fixed
+workers, 32 queued requests, and TCP backlog 64. Latency is p95 of successful
+responses; failures are shown separately so fast rejections do not look faster.
+
+| Workload | Before successes | Queued successes | Before p95 | Queued p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Steady, 8 clients | 177 / 192 | 192 / 192 | 31.85 ms | 23.07 ms |
+| Steady, 32 clients | 670 / 768 | 768 / 768 | 159.58 ms | 70.16 ms |
+| Burst, 32 clients | 65 / 96 | 96 / 96 | 93.88 ms | 34.28 ms |
+| Burst, 64 clients | 100 / 192 | 142 / 192 | 215.87 ms | 55.50 ms |
+
+The 32-client bursts rejected four initial HTML loads before and none with the
+queue. At the same TCP backlog of 64, the old server still rejected 43 of 96
+requests in those bursts; the queued server rejected none. Queue limits still
+reject overload, as the 64-client results show. These short local runs measure
+burst handling, not production capacity or guarantees under sustained load.
+All four combinations of old/new handling and backlog 5/64, with per-endpoint
+latencies and status counts, are saved in
+[`benchmarks/request-queue-2026-10-10.json`](benchmarks/request-queue-2026-10-10.json).
 
 ### Sample packing benchmark
 

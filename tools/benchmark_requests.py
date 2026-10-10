@@ -37,6 +37,9 @@ def serve(pipe, source, fixture, backlog):
     rows = data['samples']
     server.cache = module.HistoryCache()
     now = time.time()
+    # Keep saved fixtures reproducible after their original timestamps expire.
+    shift = now - 1 - rows[-1][0]
+    rows = [(stamp + shift, price, block) for stamp, price, block in rows]
     server.cache.merge(rows, now)
     server.cache.history_ready = True
     end = rows[-1][0] + 1

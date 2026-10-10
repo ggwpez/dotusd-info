@@ -4,6 +4,7 @@ import json
 import io
 import math
 import random
+import queue
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -436,17 +437,135 @@ class CacheTests(unittest.TestCase):
         worker.fetch(now - 100, now)
         self.assertEqual(cache.read(now - 100, now)[0], [(now - 10, 1.01, 42)])
 
-    def test_busy_server_rejects_without_starting_handler(self):
-        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
-        connection = Mock()
-        try:
-            for _ in range(4):
-                self.assertTrue(server.slots.acquire(False))
-            server.process_request(connection, ('127.0.0.1', 1234))
-            self.assertIn(b'503 Service Unavailable', connection.sendall.call_args.args[0])
-            connection.close.assert_called_once()
-        finally:
-            server.server_close()
+
+class RequestQueueTests(unittest.TestCase):
+    def setUp(self):
+        self.release = threading.Event()
+        self.server = None
+
+    def tearDown(self):
+        self.release.set()
+        if self.server:
+            self.server.server_close()
+
+    def make_server(self, handler, **limits):
+        server_type = type('TestServer', (page.CacheServer,), limits)
+        self.server = server_type(('127.0.0.1', 0), handler)
+        return self.server
+
+    def test_four_active_workers_and_bounded_waiters(self):
+        started = queue.Queue()
+        active, peak = 0, 0
+        lock = threading.Lock()
+
+        def handler(request, address, server):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            started.put(request)
+            self.release.wait(5)
+            with lock:
+                active -= 1
+
+        server = self.make_server(handler)
+        for _ in range(4):
+            server.process_request(Mock(), ('127.0.0.1', 1234))
+            started.get(timeout=2)
+        pending = [Mock() for _ in range(32)]
+        for request in pending:
+            server.process_request(request, ('127.0.0.1', 1234))
+            request.sendall.assert_not_called()
+        with server.work_ready:
+            self.assertEqual(len(server.pending), 32)
+        overflow = Mock()
+        server.process_request(overflow, ('127.0.0.1', 1234))
+        self.assertIn(b'503 Service Unavailable', overflow.sendall.call_args.args[0])
+        overflow.close.assert_called_once()
+        self.release.set()
+        received = [started.get(timeout=2) for _ in pending]
+        self.assertCountEqual(received, pending)
+        self.assertEqual(peak, 4)
+        self.assertEqual(len(server.workers), 4)
+
+    def test_waiters_are_served_in_fifo_order(self):
+        started = queue.Queue()
+
+        def handler(request, address, server):
+            started.put(request)
+            self.release.wait(5)
+
+        server = self.make_server(handler, handler_count=1)
+        requests = [Mock() for _ in range(4)]
+        server.process_request(requests[0], ('127.0.0.1', 1234))
+        self.assertIs(started.get(timeout=2), requests[0])
+        for request in requests[1:]:
+            server.process_request(request, ('127.0.0.1', 1234))
+        self.release.set()
+        self.assertEqual([started.get(timeout=2) for _ in range(3)], requests[1:])
+
+    def test_waiters_expire_even_when_every_worker_is_busy(self):
+        started = threading.Event()
+
+        def handler(request, address, server):
+            started.set()
+            self.release.wait(5)
+
+        server = self.make_server(handler, handler_count=1)
+        server.process_request(Mock(), ('127.0.0.1', 1234))
+        self.assertTrue(started.wait(2))
+        request = Mock()
+        with patch.object(page.time, 'monotonic', return_value=100):
+            server.process_request(request, ('127.0.0.1', 1234))
+        with patch.object(page.time, 'monotonic', return_value=101):
+            server.service_actions()
+        request.sendall.assert_not_called()
+        with patch.object(page.time, 'monotonic', return_value=102):
+            server.service_actions()
+        self.assertIn(b'503 Service Unavailable', request.sendall.call_args.args[0])
+        request.close.assert_called_once()
+        self.assertFalse(server.pending)
+
+    def test_handler_failure_does_not_remove_a_worker(self):
+        finished = threading.Event()
+        broken = Mock()
+
+        def handler(request, address, server):
+            if request is broken:
+                raise ValueError('bad request')
+            finished.set()
+
+        server = self.make_server(handler, handler_count=1)
+        server.handle_error = Mock()
+        server.process_request(broken, ('127.0.0.1', 1234))
+        server.process_request(Mock(), ('127.0.0.1', 1234))
+        self.assertTrue(finished.wait(2))
+        server.handle_error.assert_called_once()
+        broken.close.assert_called_once()
+        self.assertTrue(server.workers[0].is_alive())
+
+    def test_shutdown_closes_waiters_and_joins_workers(self):
+        started, closed = threading.Event(), threading.Event()
+
+        def handler(request, address, server):
+            started.set()
+            self.release.wait(5)
+
+        server = self.make_server(handler, handler_count=1)
+        server.process_request(Mock(), ('127.0.0.1', 1234))
+        self.assertTrue(started.wait(2))
+        waiting = Mock()
+        waiting.close.side_effect = closed.set
+        server.process_request(waiting, ('127.0.0.1', 1234))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            closing = pool.submit(server.server_close)
+            try:
+                self.assertTrue(closed.wait(2))
+                waiting.close.assert_called_once()
+            finally:
+                self.release.set()
+            closing.result(timeout=2)
+        self.assertTrue(all(not worker.is_alive() for worker in server.workers))
 
 
 if __name__ == '__main__':
