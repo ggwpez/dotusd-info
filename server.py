@@ -172,39 +172,47 @@ class HistoryCache:
     """One writer fetches history; HTTP readers never access the upstream."""
     def __init__(self):
         self.lock = threading.Lock()
-        self.rows = []
+        self.writer_lock = threading.Lock()
+        self.rows = ()
         self.fetched_at = None
         self.history_ready = False
 
     def merge(self, rows, now, mark_fresh=True):
-        with self.lock:
+        # Serialize writers, but let readers use the previous immutable snapshot
+        # while a replacement is built. Only publication takes the shared lock.
+        with self.writer_lock:
+            with self.lock:
+                previous = self.rows
             # Merge by timestamp to deduplicate overlapping refreshes and preserve gaps.
-            by_time = {row[0]: row for row in self.rows if row[0] > now - HISTORY_SECONDS}
+            by_time = {row[0]: row for row in previous if row[0] > now - HISTORY_SECONDS}
             by_time.update({row[0]: tuple(row) for row in rows
                             if now - HISTORY_SECONDS < row[0] <= now})
-            self.rows = [by_time[t] for t in sorted(by_time)][-MAX_SAMPLES:]
-            if mark_fresh:
-                self.fetched_at = now
+            replacement = tuple(by_time[t] for t in sorted(by_time)[-MAX_SAMPLES:])
+            with self.lock:
+                self.rows = replacement
+                if mark_fresh:
+                    self.fetched_at = now
 
     def read(self, start, end, window=None, after_block=None):
         with self.lock:
-            if self.fetched_at is None:
-                raise RuntimeError('History is warming up')
-            start = max(start, time.time() - HISTORY_SECONDS)
-            left = bisect_right(self.rows, start, key=lambda row: row[0])
-            right = bisect_right(self.rows, end, key=lambda row: row[0])
-            extremes = None
-            if window is not None:
-                window_left = bisect_right(self.rows, window[0], key=lambda row: row[0])
-                window_right = bisect_right(self.rows, window[1], key=lambda row: row[0])
-                window_rows = self.rows[window_left:window_right]
-                if window_rows:
-                    extremes = {'low': min(window_rows, key=lambda row: row[1]),
-                                'high': max(window_rows, key=lambda row: row[1])}
-            rows = self.rows[left:right]
-            if after_block is not None:
-                rows = [row for row in rows if row[2] is not None and row[2] > after_block]
-            return rows, self.fetched_at, self.history_ready, extremes
+            history, fetched_at, history_ready = self.rows, self.fetched_at, self.history_ready
+        if fetched_at is None:
+            raise RuntimeError('History is warming up')
+        start = max(start, time.time() - HISTORY_SECONDS)
+        left = bisect_right(history, start, key=lambda row: row[0])
+        right = bisect_right(history, end, key=lambda row: row[0])
+        extremes = None
+        if window is not None:
+            window_left = bisect_right(history, window[0], key=lambda row: row[0])
+            window_right = bisect_right(history, window[1], key=lambda row: row[0])
+            window_rows = history[window_left:window_right]
+            if window_rows:
+                extremes = {'low': min(window_rows, key=lambda row: row[1]),
+                            'high': max(window_rows, key=lambda row: row[1])}
+        rows = list(history[left:right])
+        if after_block is not None:
+            rows = [row for row in rows if row[2] is not None and row[2] > after_block]
+        return rows, fetched_at, history_ready, extremes
 
 
 class HistoryWorker:

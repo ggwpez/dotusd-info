@@ -221,6 +221,71 @@ class PageTests(unittest.TestCase):
 
 
 class CacheTests(unittest.TestCase):
+    def test_slow_reader_does_not_block_readers_or_publication(self):
+        cache = page.HistoryCache()
+        now = time.time()
+        original = (now - 10, 1, 50)
+        replacement = (now - 10, 1.02, 50)
+        cache.merge([original], now)
+        entered, release = threading.Event(), threading.Event()
+        bisect = page.bisect_right
+        slow_thread = None
+
+        def slow_bisect(*args, **kwargs):
+            if threading.get_ident() == slow_thread:
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('Reader was not released')
+            return bisect(*args, **kwargs)
+
+        def slow_read():
+            nonlocal slow_thread
+            slow_thread = threading.get_ident()
+            return cache.read(now - 20, now, (now - 20, now))
+
+        with ThreadPoolExecutor(max_workers=3) as pool, patch.object(page, 'bisect_right', slow_bisect):
+            first = pool.submit(slow_read)
+            try:
+                self.assertTrue(entered.wait(2))
+                second = pool.submit(cache.read, now - 20, now).result(timeout=2)
+                self.assertEqual(second[0], [original])
+                pool.submit(cache.merge, [replacement], now + 1).result(timeout=2)
+                current = cache.read(now - 20, now)
+                self.assertEqual(current[:2], ([replacement], now + 1))
+            finally:
+                release.set()
+            # A reader must not mix old rows/extrema with a newly published timestamp.
+            rows, fetched_at, _, extremes = first.result(timeout=2)
+            self.assertEqual((rows, fetched_at), ([original], now))
+            self.assertEqual(extremes, {'low': original, 'high': original})
+
+    def test_merge_build_does_not_block_readers_or_lose_another_writer(self):
+        cache = page.HistoryCache()
+        now = time.time()
+        original = (now - 10, 1, 50)
+        additions = [(now - 8, 1.01, 51), (now - 6, .99, 52)]
+        cache.merge([original], now)
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_rows():
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('Writer was not released')
+            yield additions[0]
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first = pool.submit(cache.merge, slow_rows(), now + 1)
+            try:
+                self.assertTrue(entered.wait(2))
+                second = pool.submit(cache.merge, additions[1:], now + 2)
+                rows = pool.submit(cache.read, now - 20, now).result(timeout=2)
+                self.assertEqual(rows[:2], ([original], now))
+            finally:
+                release.set()
+            first.result(timeout=2)
+            second.result(timeout=2)
+        self.assertEqual(cache.read(now - 20, now)[:2], ([original, *additions], now + 2))
+
     def test_merge_overlap_retention_and_range_boundaries(self):
         cache = page.HistoryCache()
         now = time.time()

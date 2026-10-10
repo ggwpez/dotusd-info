@@ -17,7 +17,10 @@ fixed shared ranges, until history is complete.
 Visitor requests never query Prometheus. The cache retains at most seven days and
 350,000 samples, preserves raw timestamps and gaps, and remains readable during
 upstream outages. Restarts rebuild the cache; the API returns 503 until the first
-successful fetch. Each upstream response is limited to 4 MiB. Four HTTP handlers
+successful fetch. Readers capture an immutable snapshot under a brief lock, then
+scan it without holding the lock. Writers build replacements separately and
+publish rows and freshness together, so ongoing reads retain a consistent view.
+Each upstream response is limited to 4 MiB. Four HTTP handlers
 can run concurrently; excess requests receive 503. Responses stream in batches
 and client sockets have a ten-second inactivity timeout. The node RPC and Prometheus remain private.
 The collector and Prometheus are managed by the arbitrage repository.
