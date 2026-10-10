@@ -23,17 +23,19 @@ const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
 function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
 const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Horrible'];
+const ratingLimits = [5, 20, 50, 100];
 const ratingBands = ['≤ 5 bps', '> 5–20 bps', '> 20–50 bps', '> 50–100 bps', '> 100 bps'];
 let hoveredRating = null, focusedRating = null;
 function ratingForBps(bps) {
   if (!Number.isFinite(bps)) return -1;
   const magnitude = Math.round(Math.abs(bps) * 1e6) / 1e6;
-  const index = [5, 20, 50, 100].findIndex(limit => magnitude <= limit);
+  const index = ratingLimits.findIndex(limit => magnitude <= limit);
   return index === -1 ? 4 : index;
 }
 function ratingGradient(context, top, bottom, extent, alpha = '') {
   const gradient = context.createLinearGradient(0, top, 0, bottom);
-  const levels = [extent, ...[100, 50, 20, 5, -5, -20, -50, -100].filter(v => v < extent && v > -extent), -extent];
+  const levels = [extent, ...[...ratingLimits].reverse(), ...ratingLimits.map(v => -v), -extent]
+    .filter((v, i, levels) => i === 0 || i === levels.length - 1 || Math.abs(v) < extent);
   for (let i = 0; i < levels.length - 1; i++) {
     const color = deviationColor((levels[i] + levels[i + 1]) / 2) + alpha;
     gradient.addColorStop((extent - levels[i]) / (2 * extent), color);
@@ -211,6 +213,13 @@ function* pixelRows(rows, x) {
     first = last + 1;
   }
 }
+function chartScale(peak) {
+  const padded = Math.max(5, peak + Math.max(peak * .12, .5));
+  const magnitude = 10 ** Math.floor(Math.log10(padded));
+  const extent = [1, 2, 5, 10].map(n => n * magnitude).find(n => n >= padded);
+  const positive = [...ratingLimits.filter(n => n < extent), extent];
+  return {extent, ticks: [0, ...positive.flatMap(n => [n, -n])]};
+}
 function draw() {
   // Render at least two pixels per CSS pixel for smoother thin lines.
   const rect = canvas.getBoundingClientRect(), dpr = Math.max(2, window.devicePixelRatio || 1);
@@ -228,16 +237,23 @@ function draw() {
     if (!high || row[1] > high[1]) high = row;
     if (!low || row[1] < low[1]) low = row;
   }
-  const extent = peak + Math.max(peak*.12, .5);
+  const {extent, ticks: yTicks} = chartScale(peak);
   const min = -extent, max = extent;
   const x = t => left+(t-state.start)/(state.end-state.start || 1)*(right-left);
   const y = v => bottom-(v-min)/(max-min)*(bottom-top);
   geometry = {left,right,top,bottom,x,y};
   ctx.font = '10px ui-monospace, monospace'; ctx.lineWidth = 1;
-  for (let i=0;i<=6;i++) {
-    const v = extent*(i-3)/3, py = y(v);
+  for (const v of yTicks) {
+    const py = y(v);
     ctx.strokeStyle = '#272d37';ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();
-    ctx.fillStyle = '#8792a3';ctx.textAlign='right';ctx.fillText(v.toFixed(2),left-12,py+3);
+  }
+  // Keep all threshold lines, but avoid overlapping labels in very wide Y ranges.
+  const labelPositions = [];
+  for (const v of [...yTicks].sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : Math.abs(b)-Math.abs(a)))) {
+    const py = y(v);
+    if (labelPositions.some(position => Math.abs(position-py) < 14)) continue;
+    labelPositions.push(py);
+    ctx.fillStyle = '#8792a3';ctx.textAlign='right';ctx.fillText(String(v),left-12,py+3);
   }
   const ticks = w < 600 ? 3 : 6;
   for (let i=0;i<=ticks;i++) {
