@@ -217,8 +217,9 @@ function chartScale(peak) {
   const padded = Math.max(5, peak + Math.max(peak * .12, .5));
   const magnitude = 10 ** Math.floor(Math.log10(padded));
   const extent = [1, 2, 5, 10].map(n => n * magnitude).find(n => n >= padded);
-  const positive = [...ratingLimits.filter(n => n < extent), extent];
-  return {extent, ticks: [0, ...positive.flatMap(n => [n, -n])]};
+  const step = extent / (extent / magnitude === 2 ? 4 : 5);
+  const divisions = Math.round(extent / step);
+  return {extent, ticks: Array.from({length: divisions * 2 + 1}, (_, i) => (i - divisions) * step)};
 }
 function draw() {
   // Render at least two pixels per CSS pixel for smoother thin lines.
@@ -246,13 +247,6 @@ function draw() {
   for (const v of yTicks) {
     const py = y(v);
     ctx.strokeStyle = '#272d37';ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();
-  }
-  // Keep all threshold lines, but avoid overlapping labels in very wide Y ranges.
-  const labelPositions = [];
-  for (const v of [...yTicks].sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : Math.abs(b)-Math.abs(a)))) {
-    const py = y(v);
-    if (labelPositions.some(position => Math.abs(position-py) < 14)) continue;
-    labelPositions.push(py);
     ctx.fillStyle = '#8792a3';ctx.textAlign='right';ctx.fillText(String(v),left-12,py+3);
   }
   const ticks = w < 600 ? 3 : 6;
@@ -261,6 +255,15 @@ function draw() {
     ctx.strokeStyle='#202630';ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.stroke();
     ctx.fillStyle='#8792a3';ctx.textAlign=i===0?'left':i===ticks?'right':'center';
     ctx.fillText(state.end-state.start>86400 ? date(t).slice(5,16) : clock(t).slice(0,5),px,bottom+23);
+  }
+  // Rating boundaries are accents over the evenly spaced, linear grid.
+  ctx.setLineDash([4, 5]);ctx.lineWidth=.8;
+  for (const limit of ratingLimits) {
+    if (limit > extent) continue;
+    ctx.strokeStyle = deviationColor(limit) + '70';
+    for (const v of [-limit, limit]) {
+      ctx.beginPath();ctx.moveTo(left,y(v));ctx.lineTo(right,y(v));ctx.stroke();
+    }
   }
   ctx.setLineDash([]);ctx.strokeStyle='#ffffff';ctx.lineWidth=.6;
   ctx.beginPath();ctx.moveTo(left,y(0));ctx.lineTo(right,y(0));ctx.stroke();
