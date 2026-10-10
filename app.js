@@ -56,10 +56,10 @@ function ratingGradient(context, top, bottom, extent, alpha = '') {
   return gradient;
 }
 function updateRating() {
-  const last = state.rows.at(-1);
+  const last = !loading && !state.historyLoading ? state.rows.at(-1) : null;
   const bps = last ? (last[1] - 1) * 10000 : NaN;
   const current = ratingForBps(bps);
-  const preview = hoveredRating ?? focusedRating;
+  const preview = last ? hoveredRating ?? focusedRating : null;
   const displayed = preview ?? current;
   document.querySelectorAll('[data-rating]').forEach(segment => {
     const active = Number(segment.dataset.rating) === current;
@@ -68,16 +68,17 @@ function updateRating() {
     if (active) segment.setAttribute('aria-current', 'true');
     else segment.removeAttribute('aria-current');
   });
-  $('rating-value').textContent = displayed < 0 ? '—' : ratingNames[displayed];
+  $('rating-value').textContent = displayed < 0 ? '-' : ratingNames[displayed];
   $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : ratingBands[displayed];
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
-  $('latest').textContent = last ? signed((last[1] - 1) * 10000) : '—';
-  $('price').textContent = last ? last[1].toFixed(6) : '—';
+  const ready = last && !loading && !state.historyLoading;
+  $('latest').textContent = ready ? signed((last[1] - 1) * 10000) : '-';
+  $('price').textContent = ready ? last[1].toFixed(6) : '-';
   const low = state.extremes ? (state.extremes.low[1]-1)*10000 : (rows.low ? (rows.low[1]-1)*10000 : 0);
   const high = state.extremes ? (state.extremes.high[1]-1)*10000 : (rows.high ? (rows.high[1]-1)*10000 : 0);
-  $('extremes').textContent = last ? `${signed(low)} / ${signed(high)}` : '—';
+  $('extremes').textContent = ready ? `${signed(low)} / ${signed(high)}` : '-';
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history…${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
   $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading samples…' : 'No price samples in this window');
   $('message').hidden = !state.error && !!last;
