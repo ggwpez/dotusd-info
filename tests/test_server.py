@@ -45,6 +45,35 @@ class PageTests(unittest.TestCase):
                 finally:
                     server.server_close()
 
+    def test_progressive_stream_batches_and_completion(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        now = int(time.time())
+        rows = [[now - 20000 + i * 2, 1 + (i % 3) * .001, i] for i in range(9000)]
+        server.cache.merge(rows, now)
+        server.cache.history_ready = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            with urlopen(base + f'/api/prices?start={now-20001}&end={now}&windowStart={now-20001}&windowEnd={now}&format=stream') as response:
+                self.assertEqual(response.headers['Content-Type'], 'application/x-ndjson')
+                messages = [json.loads(line) for line in response]
+            self.assertEqual(messages[0]['encoding'], 'ranges-stream-v1')
+            self.assertTrue(messages[0]['historyReady'])
+            self.assertEqual(messages[0]['extremes']['high'][1], 1.002)
+            self.assertEqual(messages[1]['ranges'], list(page.pack_ranges(rows[:8192])))
+            self.assertEqual(messages[2]['ranges'], list(page.pack_ranges(rows[8192:])))
+            self.assertEqual(messages[3:], [{'done': True}])
+            with urlopen(base + f'/api/prices?start={now-1}&end={now}&format=stream') as response:
+                messages = [json.loads(line) for line in response]
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[-1], {'done': True})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_explicit_upstream_does_not_open_ssh(self):
         with patch.object(page.subprocess, 'Popen') as launch:
             with page.price_source('http://127.0.0.1:9090/api/v1/') as upstream:

@@ -1,4 +1,4 @@
-import {RangeSeries, BrowserHistory, pixelRows} from './ranges.js?v=__APP_VERSION__';
+import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.js?v=__APP_VERSION__';
 const $ = id => document.getElementById(id);
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
@@ -35,7 +35,7 @@ function linkedView() {
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: new RangeSeries(), range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, historyProgress: null, serverWarming: false, extremes: null};
+const state = {rows: new RangeSeries(), range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, serverWarming: false, extremes: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -89,8 +89,8 @@ function summary() {
   const low = state.extremes ? (state.extremes.low[1]-1)*10000 : (rows.low ? (rows.low[1]-1)*10000 : 0);
   const high = state.extremes ? (state.extremes.high[1]-1)*10000 : (rows.high ? (rows.high[1]-1)*10000 : 0);
   $('extremes').textContent = last ? `${signed(low)} / ${signed(high)}` : '—';
-  $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history${state.historyProgress ? ` · ${state.historyProgress[0]}/${state.historyProgress[1]}` : '…'}${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
-  $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading recent samples…' : 'No price samples in this window');
+  $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history…${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
+  $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading samples…' : 'No price samples in this window');
   $('message').hidden = !state.error && !!last;
   updateFreshness();
 }
@@ -110,16 +110,6 @@ function updateFreshness() {
   else status(`● Live · finalized ~${age}s ago`, 'live');
 }
 
-function historyChunks(gaps) {
-  const chunks = [];
-  for (const [start, end] of [...gaps].reverse()) {
-    for (let right = end; right > start;) {
-      const left = Math.min(right - 1, Math.max(start, right - 21600));
-      chunks.push([left, right]); right = left;
-    }
-  }
-  return chunks;
-}
 const historyCache = new BrowserHistory();
 async function refresh(force = false) {
   if (reloading) return;
@@ -129,53 +119,56 @@ async function refresh(force = false) {
   const start = state.zoom?.[0] ?? end - state.range;
   historyCache.expire(Date.now()/1000);
   if (force) historyCache.coverage = [];
-  state.start = start; state.end = end; state.error = null; state.historyProgress = null;
-  let awaitingExtremes = historyCache.missing(start, end).length > 0 || (state.live && !state.zoom);
+  state.start = start; state.end = end; state.error = null;
   state.extremes = null;
-  const publish = () => {
-    state.rows = awaitingExtremes ? new RangeSeries() : historyCache.rows.window(start, end);
-    state.fetchedAt = historyCache.fetchedAt; state.hover = null;
-    chartDirty = true; summary(); draw();
+  const missing = historyCache.missing(start, end);
+  const live = state.live && !state.zoom;
+  // One full-window request for history; ordinary live polls retain a five-minute overlap.
+  const recentStart = Math.max(start, end - 300);
+  const left = live && historyCache.rows.length && !missing.some(([a]) => a < recentStart) ? recentStart : start;
+  const publish = rows => {
+    state.rows = rows.window(start, end);
+    state.hover = null; chartDirty = true; summary(); draw();
   };
-  const fetchChunk = async (left, right, includeExtremes = false) => {
-    const timeout = setTimeout(() => requestController.abort(), 15000);
-    try {
-      const metadata = includeExtremes ? `&windowStart=${start}&windowEnd=${end}` : '';
-      const response = await fetch(`/api/prices?start=${left}&end=${right}${metadata}`, {signal: requestController.signal});
-      // Check before parsing a possibly incompatible response body.
-      if (!acceptVersion(response.headers.get('X-App-Version'))) return;
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Unable to load prices');
-      if (ticket !== generation) return;
-      if (includeExtremes) { state.extremes = result.extremes; awaitingExtremes = false; }
-      state.serverWarming = result.historyReady === false;
-      if (result.encoding !== 'ranges-v1') throw new Error('Unsupported price format');
-      historyCache.merge(RangeSeries.fromWire(result.ranges), left, right, result.fetchedAt, !state.serverWarming);
-    } finally { clearTimeout(timeout); }
-  };
+  state.historyLoading = missing.length > 0;
+  state.fetchedAt = historyCache.fetchedAt;
+  publish(historyCache.rows);
+  let timeout;
   try {
+    if (!live && !missing.length) return;
+    timeout = setTimeout(() => requestController.abort(), 15000);
+    const response = await fetch(`/api/prices?start=${left}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream`, {signal: requestController.signal});
+    if (!acceptVersion(response.headers.get('X-App-Version'))) return;
+    if (!response.ok) {
+      const result = await response.json();
+      throw new Error(result.error || 'Unable to load prices');
+    }
+    const runs = [];
+    let lastDraw = -Infinity;
+    for await (const message of readPriceStream(response)) {
+      if (ticket !== generation) return;
+      if (message.encoding) {
+        state.extremes = message.extremes;
+        state.serverWarming = message.historyReady === false;
+        state.fetchedAt = message.fetchedAt;
+      } else if (message.ranges) {
+        runs.push(...RangeSeries.fromWire(message.ranges).runs);
+        if (performance.now() - lastDraw >= 32) {
+          // Partial data is drawable, but only a finished stream marks cache coverage complete.
+          publish(new RangeSeries([...historyCache.rows.window(-Infinity, left).runs, ...runs,
+            ...historyCache.rows.window(end, Infinity).runs]));
+          lastDraw = performance.now();
+        }
+      }
+    }
+    historyCache.merge(new RangeSeries(runs), left, end, state.fetchedAt, !state.serverWarming);
     state.historyLoading = historyCache.missing(start, end).length > 0;
-    if (!awaitingExtremes) publish(); // Fully cached windows already have their bounds.
-    if ((state.live && !state.zoom) || state.historyLoading) {
-      // Recent data first; live polls re-read five minutes to catch late samples.
-      await fetchChunk(Math.max(start, end - (historyCache.rows.length ? 300 : 3600)), end, true);
-      if (ticket !== generation) return;
-      state.historyLoading = historyCache.missing(start, end).length > 0;
-      publish();
-    }
-    const chunks = historyChunks(historyCache.missing(start, end));
-    state.historyProgress = [0, chunks.length];
-    for (let i = 0; i < chunks.length; i++) {
-      await fetchChunk(...chunks[i]);
-      if (ticket !== generation) return;
-      state.historyProgress = [i + 1, chunks.length];
-      state.historyLoading = i < chunks.length - 1 || state.serverWarming;
-      publish();
-    }
+    publish(historyCache.rows);
   } catch (error) {
     if (ticket !== generation) return;
     state.error = error.name === 'AbortError' ? 'Request timed out. Retrying…' : error.message;
   } finally {
+    clearTimeout(timeout);
     if (ticket === generation) {
       loading = false; state.historyLoading = historyCache.missing(start, end).length > 0; summary();
     }

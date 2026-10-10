@@ -1,3 +1,31 @@
+// Each line is independently decodable; network reads can split or combine lines.
+export async function* readPriceStream(response) {
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let buffer = '', started = false, finished = false;
+  try {
+    while (true) {
+      const {value, done} = await reader.read();
+      buffer += decoder.decode(value, {stream: !done});
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const message = JSON.parse(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        if (finished) throw new Error('Unexpected data after price stream');
+        if (!started) {
+          if (message.encoding !== 'ranges-stream-v1') throw new Error('Unsupported price format');
+          started = true;
+        } else if (message.done === true) finished = true;
+        else if (!Array.isArray(message.ranges)) throw new Error('Invalid price stream');
+        yield message;
+      }
+      if (done) break;
+    }
+    if (!finished || buffer.length) throw new Error('Incomplete price stream. Retrying…');
+  } finally {
+    try { await reader.cancel(); } finally { reader.releaseLock(); }
+  }
+}
+
 // Internal runs retain an absolute start, so clipping and cache merges never
 // depend on another response. Individual samples are generated only on demand.
 const sample = (run, i) => [run.t + i * run.dt, run.price, run.block === null ? null : run.block + i * run.db];

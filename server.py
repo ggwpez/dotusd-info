@@ -316,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 params = urllib.parse.parse_qs(url.query, max_num_fields=5)
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
+                streaming = params.get('format', [''])[0] == 'stream'
                 start, end = time_window(params)
                 window = None
                 if 'windowStart' in params or 'windowEnd' in params:
@@ -331,6 +332,21 @@ class Handler(BaseHTTPRequestHandler):
                 rows, fetched_at, history_ready, extremes = self.server.cache.read(start, end, window)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
+                return
+            if streaming:
+                self.send_headers(200, 'application/x-ndjson')
+                def send(record):
+                    self.wfile.write(json.dumps(record, allow_nan=False, separators=(',', ':')).encode() + b'\n')
+                    self.wfile.flush()
+                try:
+                    send({'encoding': 'ranges-stream-v1', 'fetchedAt': fetched_at,
+                          'historyReady': history_ready, 'extremes': extremes})
+                    # Independent packed batches can be decoded immediately, without round trips.
+                    for offset in range(0, len(rows), 8192):
+                        send({'ranges': list(pack_ranges(rows[offset:offset + 8192]))})
+                    send({'done': True})
+                except (OSError, TimeoutError):
+                    pass
                 return
             # Stream bounded batches instead of building a second full JSON copy.
             self.send_headers(200, 'application/json')

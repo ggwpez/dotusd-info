@@ -12,8 +12,8 @@ a bounded `/api/prices` endpoint backed entirely by an in-process cache.
 One background worker fetches recent prices at startup, then refreshes every six
 seconds with a five-minute overlap for delayed ingestion. Seven days of older
 history are seeded in six-hour chunks without waiting between polling cycles.
-The API flags incomplete startup history; browsers retry those chunks, including
-fixed shared ranges, and show chunk progress until history is complete.
+The API flags incomplete startup history; browsers retry incomplete ranges, including
+fixed shared ranges, until history is complete.
 Visitor requests never query Prometheus. The cache retains at most seven days and
 350,000 samples, preserves raw timestamps and gaps, and remains readable during
 upstream outages. Restarts rebuild the cache; the API returns 503 until the first
@@ -26,13 +26,18 @@ remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
 ## Browser loading
 
-The browser renders cached data immediately, fetches recent history first, and
-fills missing history newest-first in chunks of at most six hours, redrawing
-after each response. The first chunk includes full-window low/high samples so
-the vertical scale stays fixed while older chunks arrive. Live polls request only a five-minute overlap. An in-memory
-browser cache holds at most seven days / 350,000 samples and revalidates historical
-coverage every minute to discover late archive imports; switching views reuses
-already fetched data. No samples are downsampled.
+The browser renders cached data immediately and loads the selected history window
+in one request. `?format=stream` returns newline-delimited JSON: a
+`ranges-stream-v1` metadata line (including full-window extrema), independently
+packed `ranges` lines of up to 8,192 samples each, then a `{"done":true}` line.
+The client decodes and draws complete lines as they arrive, without expanding
+ranges or acknowledging batches. Network reads may split or combine lines.
+Full-window extrema keep the vertical scale stable during loading. Only a
+successfully finished stream enters the cache; interrupted streams retry.
+Live polls request only a five-minute overlap. An in-memory browser cache holds
+at most seven days / 350,000 samples and revalidates historical coverage every
+minute to discover late archive imports; switching views reuses already fetched
+data. No samples are downsampled. Caddy flushes upstream responses immediately.
 Caddy compresses even streamed JSON responses with unknown lengths. Static files
 use ETags for cache revalidation, and the page preloads the JavaScript module.
 
@@ -57,9 +62,9 @@ the anchor for missing block numbers or timestamps that cannot be reconstructed
 exactly. Fractional timestamps are kept as individual records to avoid rounding
 drift. Empty history uses an empty array. `fetchedAt`, `historyReady`, and raw
 full-window `extremes` retain their original meaning. `?format=raw` is available
-for diagnostics and benchmarks; the chart always requests packed history.
+for diagnostics and benchmarks; the chart requests the streaming variant with the same packed records.
 
-The browser keeps absolute-start ranges rather than expanding raw rows. Chunk
+The browser keeps absolute-start ranges rather than expanding raw rows. Request
 overlaps replace the requested interval, adjacent compatible ranges coalesce,
 and expiry/zoom clip ranges without iterating over all their samples. Sample
 counts, nearest-point hover, and keyboard navigation reconstruct individual
@@ -68,7 +73,7 @@ pixel endpoints and extrema. Missing block numbers and block-number gaps remain
 disconnected. Server-side history is still stored as raw samples.
 
 Validated with 275,652 projected samples: 16,052 wire records become 12,585 cached
-ranges. Six-hour chunks total about 312 KB of JSON and 100 KB compressed
+ranges. The previous six-hour request scheme totaled about 312 KB of JSON and 100 KB compressed
 (gzip level 6 or zstd level 3), compared with 11.79 MB of compact raw JSON and
 1.08–1.43 MB compressed. A local headless Chrome run measured median packed
 parse/cache construction at 1.5 ms versus raw JSON parsing at 12.2 ms; drawing
@@ -89,7 +94,7 @@ hover selection, clipping, and cache overlap behavior against raw data.
 Run `python3 tools/benchmark_packing.py` to compare lossless wire formats against
 the available production history, or pass `--samples snapshot.json` with a JSON
 array of `[timestamp, price, block]` samples. Python 3.14 also measures zstd.
-This is a standalone benchmark; the production API format is unchanged.
+This standalone benchmark does not modify the production API.
 
 Measured on October 10, 2026: 85,182 samples across 51.92 hours; 96.73% of adjacent
 samples have identical prices. Repeating this observed pattern to fill seven days
@@ -103,8 +108,8 @@ produces 275,652 samples. This is a size estimate, not a forecast of trading act
 | Timestamp/block deltas; omit unchanged prices | 1,831,703 B | 112,592 B | 111,558 B |
 | Runs of identical deltas and prices | 312,227 B | 99,665 B | 100,107 B |
 
-Compression resets every six hours, approximating history loading (the browser's
-initial one-hour request and shared response metadata/HTTP headers are excluded).
+These historical benchmark results reset compression every six hours, matching
+the former loading scheme; shared response metadata/HTTP headers are excluded.
 Local gzip level 6 and zstd level 3 provide controlled comparisons, not exact Caddy
 wire sizes. The observed history itself uses 451,473 / 339,578 bytes with gzip/zstd
 in the current format, versus 29,992 / 30,036 bytes with runs. Every candidate is
