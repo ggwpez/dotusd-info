@@ -394,6 +394,6 @@ document.addEventListener('visibilitychange', () => {
 });
 setInterval(checkVersion, 30000);
 if (acceptVersion(document.querySelector('meta[name="app-version"]')?.content)) {
-  checkVersion();
+  // The initial price response checks the version; periodic checks cover idle views.
   refresh();
 }

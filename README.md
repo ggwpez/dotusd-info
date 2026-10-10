@@ -39,7 +39,9 @@ at most seven days / 350,000 samples and revalidates historical coverage every
 minute to discover late archive imports; switching views reuses already fetched
 data. No samples are downsampled. Caddy flushes upstream responses immediately.
 Caddy compresses even streamed JSON responses with unknown lengths. Static files
-use ETags for cache revalidation, and the page preloads the JavaScript module.
+use ETags for cache revalidation. The page preloads both JavaScript modules in
+parallel, avoiding a dependent download before the first price request. That
+request also checks the release version, avoiding a separate startup version request.
 
 At startup the server snapshots its assets and hashes the server, archive reader,
 HTML, JavaScript (including the range module), and CSS into a release version. Responses carry `X-App-Version`,

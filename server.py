@@ -38,7 +38,7 @@ def load_release():
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
-    for name in ('app.js', 'style.css'):
+    for name in ('app.js', 'ranges.js', 'style.css'):
         assets['index.html'] = assets['index.html'].replace(
             f'/{name}"'.encode(), f'/{name}?v={version}"'.encode())
     return version, assets
