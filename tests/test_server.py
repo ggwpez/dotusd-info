@@ -24,7 +24,7 @@ spec.loader.exec_module(page)
 
 class PageTests(unittest.TestCase):
     def test_release_version_tracks_code_and_freezes_assets(self):
-        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg')
+        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in names:
@@ -185,6 +185,11 @@ class PageTests(unittest.TestCase):
                 urlopen(Request(base, headers={'If-None-Match': etag}))
             self.assertEqual(cached.exception.code, 304)
             cached.exception.close()
+            with urlopen(Request(base + '/social-preview.png', headers={'User-Agent': 'Twitterbot/1.0'})) as response:
+                self.assertEqual(response.headers['Content-Type'], 'image/png')
+                self.assertEqual(response.read(), server.assets['social-preview.png'])
+            self.assertIn(b'name="twitter:card" content="summary_large_image"', server.assets['index.html'])
+            self.assertIn(b'https://dotusd.info/social-preview.png', server.assets['index.html'])
             for path, code in [('/api/prices?start=nan', 400), ('/../../.envrc', 404), ('/api/v1/query', 404)]:
                 with self.assertRaises(HTTPError) as error:
                     urlopen(base + path)

@@ -33,12 +33,12 @@ SUMMARY_SAMPLES = 256
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg')}
+             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     digest = hashlib.sha256()
     for name, body in files.items():
         digest.update(name.encode() + b'\0' + body + b'\0')
     version = digest.hexdigest()
-    assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg')}
+    assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
@@ -557,11 +557,11 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, TimeoutError):
                 pass
             return
-        filename = {'/': 'index.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css'}.get(url.path)
+        filename = {'/': 'index.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css', '/social-preview.png': 'social-preview.png'}.get(url.path)
         if not filename:
             self.respond(404, {'error': 'Not found'})
             return
-        mime = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8', 'css': 'text/css; charset=utf-8'}
+        mime = {'html': 'text/html; charset=utf-8', 'js': 'text/javascript; charset=utf-8', 'css': 'text/css; charset=utf-8', 'png': 'image/png'}
         body = self.server.assets[filename]
         etag = '"' + hashlib.sha256(body).hexdigest() + '"'
         content_type = mime[filename.split('.')[-1]]
