@@ -251,7 +251,10 @@ function draw() {
   ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
   // Symmetric hard stops color both sides by absolute peg deviation.
   const lineColor = ratingGradient(ctx, top, bottom, extent);
-  const areaColor = ratingGradient(ctx, top, bottom, extent, '20');
+  // Fade the fill at wider time scales, independently of history loading progress.
+  const secondsPerPixel = (state.end-state.start) / Math.max(1, right-left);
+  const fillAlpha = Math.max(8, Math.round(32 / Math.sqrt(Math.max(1, secondsPerPixel / 6))));
+  const areaColor = ratingGradient(ctx, top, bottom, extent, fillAlpha.toString(16).padStart(2, '0'));
   const area = new Path2D();
   ctx.strokeStyle=lineColor;ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();let previous;
   // Reduce overdraw per CSS pixel; raw samples still drive hover, bounds and zoom.
