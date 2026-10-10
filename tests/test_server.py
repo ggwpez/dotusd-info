@@ -32,7 +32,10 @@ class PageTests(unittest.TestCase):
                 self.assertIn(version.encode(), assets['app.js'])
                 self.assertNotIn(b'__APP_VERSION__', assets['app.js'])
                 self.assertIn(f'content="{version}"'.encode(), assets['index.html'])
-                self.assertIn(f'/app.js?v={version}'.encode(), assets['index.html'])
+                self.assertIn(b'<style>' + assets['style.css'] + b'</style>', assets['index.html'])
+                self.assertIn(b'<script type="module">' + assets['inline.js'], assets['index.html'])
+                self.assertNotIn(b'import ', assets['inline.js'])
+                self.assertNotIn(b'__APP_VERSION__', assets['index.html'])
                 server = page.CacheServer(('127.0.0.1', 0), page.Handler)
                 try:
                     for name in names:

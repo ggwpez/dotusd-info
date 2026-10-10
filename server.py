@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only dotUSD peg monitor backed by finalized Asset Hub pool history."""
 import argparse
+import base64
 import hashlib
 from bisect import bisect_right
 from itertools import islice
@@ -38,9 +39,11 @@ def load_release():
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
-    for name in ('app.js', 'ranges.js', 'style.css'):
-        assets['index.html'] = assets['index.html'].replace(
-            f'/{name}"'.encode(), f'/{name}?v={version}"'.encode())
+    # Keep source modules separate, but deliver one self-contained document.
+    assets['inline.js'] = assets['ranges.js'] + b'\n' + assets['app.js'].split(b'\n', 1)[1]
+    assets['index.html'] = assets['index.html'].replace(
+        b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
+        b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
     return version, assets
 
 METRIC = '{__name__=~"arb_peg_dotusd_usdt|arb_peg_block_number",clock="estimated_2s"}'
@@ -281,6 +284,12 @@ class CacheServer(ThreadingHTTPServer):
     """Bound active handlers, including slow readers, independently of systemd."""
     def __init__(self, address, handler):
         self.version, self.assets = load_release()
+        script_hash = base64.b64encode(hashlib.sha256(self.assets['inline.js']).digest()).decode()
+        style_hash = base64.b64encode(hashlib.sha256(self.assets['style.css']).digest()).decode()
+        self.content_security_policy = (
+            f"default-src 'self'; style-src 'self' 'sha256-{style_hash}'; "
+            f"script-src 'self' 'sha256-{script_hash}'; img-src 'self' data:; "
+            "connect-src 'self'; frame-ancestors 'none'")
         super().__init__(address, handler)
         self.slots = threading.BoundedSemaphore(4)
 
@@ -394,7 +403,7 @@ class Handler(BaseHTTPRequestHandler):
         if etag:
             self.send_header('ETag', etag)
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'")
+        self.send_header('Content-Security-Policy', self.server.content_security_policy)
         self.end_headers()
 
 
