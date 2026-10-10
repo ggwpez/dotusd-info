@@ -21,7 +21,7 @@ spec.loader.exec_module(page)
 
 class PageTests(unittest.TestCase):
     def test_release_version_tracks_code_and_freezes_assets(self):
-        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css')
+        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in names:

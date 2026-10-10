@@ -30,18 +30,19 @@ MAX_UPSTREAM_BYTES = 4 * 1024 * 1024
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css')}
+             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg')}
     digest = hashlib.sha256()
     for name, body in files.items():
         digest.update(name.encode() + b'\0' + body + b'\0')
     version = digest.hexdigest()
-    assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css')}
+    assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg')}
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
     # Keep source modules separate, but deliver one self-contained document.
     assets['inline.js'] = assets['ranges.js'] + b'\n' + assets['app.js'].split(b'\n', 1)[1]
     assets['index.html'] = assets['index.html'].replace(
+        b'__FAVICON__', b'data:image/svg+xml;base64,' + base64.b64encode(files['favicon.svg'])).replace(
         b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
         b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
     return version, assets
