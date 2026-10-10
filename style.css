@@ -10,7 +10,17 @@
 #rating-value{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:clamp(24px,2.5vw,38px);font-weight:500;line-height:1.1;letter-spacing:-1px;margin-bottom:10px}
 .rating-segment{cursor:help}.rating-segment.is-preview{opacity:1;outline:1px solid var(--rating-color);outline-offset:2px}
 #live{display:inline-flex;align-items:center;gap:8px}#live .refresh-icon{flex-shrink:0}
-footer .about{max-width:680px;min-width:0}footer .about summary{cursor:pointer;text-align:right;line-height:1.8;color:#9ba5b5}footer .about summary:hover{color:#dce1e9}footer .about summary:focus-visible{outline:2px solid #ec83b1;outline-offset:4px}footer .about p{text-align:left;margin-top:12px}@media(max-width:800px){footer .about summary{text-align:left}}
+footer .about{width:100%;min-width:0}
+footer .about summary{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 22px;cursor:pointer;list-style:none;text-align:left;line-height:1.5;font-size:13px;font-weight:550;color:#b7c0cf}
+footer .about summary::-webkit-details-marker{display:none}
+footer .about summary::after{content:"";width:8px;height:8px;flex-shrink:0;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);margin:0 3px 4px;transition:transform .18s ease}
+footer .about[open] summary::after{transform:translateY(4px) rotate(225deg)}
+footer .about summary:hover{color:#dce1e9;background:#1b2029}
+footer .about summary:focus-visible{outline:2px solid #ec83b1;outline-offset:-3px}
+.about-content{border-top:1px solid #262c36;padding:18px 22px;color:#9ba5b5;font-size:12px}
+footer .about p{text-align:left;max-width:90ch;margin:0 0 12px;line-height:1.8}footer .about p:last-child{margin-bottom:0}
+@media(max-width:800px){footer .about summary,.about-content{padding:16px}}
+@media(prefers-reduced-motion:reduce){footer .about summary::after{transition:none}}
 
 body.chart-fullscreen{overflow:hidden}
 #chart-panel.is-fullscreen{position:fixed;inset:0;width:100%;height:100%;z-index:10;border:0;border-radius:0;display:flex;flex-direction:column}

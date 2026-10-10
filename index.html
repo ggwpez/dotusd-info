@@ -20,11 +20,12 @@
 <div class="plot" id="plot"><canvas id="chart" tabindex="0" aria-label="dotUSD deviation in basis points. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples."></canvas><div id="message" role="status">Loading finalized-block prices…</div><div id="tooltip" hidden></div></div>
 <div class="chart-footer"><span id="window">—</span><span>Drag to zoom <span class="separator">·</span> Double-click for fullscreen <span class="separator">·</span> UTC</span></div></section>
 <footer>
-<details class="about"><summary>About this chart &amp; calculation</summary>
+<details class="about panel"><summary>About this chart &amp; calculation</summary>
+<div class="about-content">
 <p>This project tracks how closely dotUSD trades to 1 USDT on Polkadot Asset Hub, using liquidity-pool reserves at finalized blocks.</p>
 <p>The spot price follows dotUSD → DOT → USDT. We adjust the reserves for token decimals, then multiply the DOT-per-dotUSD ratio by the USDT-per-DOT ratio. Deviation is (price − 1) × 10,000 basis points: 1.001 USDT is +10 bps, or +0.1%.</p>
 <p>Colors and ratings describe the absolute deviation from 1 USDT: Excellent ≤ 5 bps, Good ≤ 20, Fair ≤ 50, Poor ≤ 100, and Horrible above 100.</p>
 <p>USDT is the reference, so this does not measure the price against US dollars directly. Spot prices exclude swap fees and trade-size slippage. The chart refreshes every six seconds; finalization means the latest point trails the current time. Block timing is estimated, and missing history appears as gaps.</p>
-</details></footer>
+</div></details></footer>
 </main><!-- INLINE_SCRIPT -->
 </body></html>
