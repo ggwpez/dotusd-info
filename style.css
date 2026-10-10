@@ -11,3 +11,8 @@
 .rating-segment{cursor:help}.rating-segment.is-preview{opacity:1;outline:1px solid var(--rating-color);outline-offset:2px}
 #live{display:inline-flex;align-items:center;gap:8px}#live .live-dot{margin-right:0;flex-shrink:0}
 footer .about{max-width:680px;min-width:0}footer .about summary{cursor:pointer;text-align:right;line-height:1.8;color:#9ba5b5}footer .about summary:hover{color:#dce1e9}footer .about summary:focus-visible{outline:2px solid #ec83b1;outline-offset:4px}footer .about p{text-align:left;margin-top:12px}@media(max-width:800px){footer .about summary{text-align:left}}
+
+body.chart-fullscreen{overflow:hidden}
+#chart-panel.is-fullscreen{position:fixed;inset:0;width:100%;height:100%;z-index:10;border:0;border-radius:0;display:flex;flex-direction:column}
+#chart-panel.is-fullscreen .plot{flex:1;min-height:0;height:auto}
+#chart-panel.is-fullscreen .toolbar,#chart-panel.is-fullscreen .chart-footer{flex-shrink:0}

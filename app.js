@@ -354,8 +354,40 @@ function reset() {
   state.zoom = null; state.live = true; state.start = 0; state.end = 0;
   writeViewUrl(); updateViewControls(); refresh();
 }
-canvas.addEventListener('dblclick',reset);$('reset').onclick=reset;
-canvas.addEventListener('keydown',event=>{if(event.key==='Escape')reset();if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();state.hover=Math.max(0,Math.min(state.rows.length-1,(state.hover??state.rows.length-1)+(event.key==='ArrowRight'?1:-1)));draw();}});
+const chartPanel = $('chart-panel');
+let fallbackFullscreen = false;
+function updateFullscreen() {
+  const active = document.fullscreenElement === chartPanel || fallbackFullscreen;
+  chartPanel.classList.toggle('is-fullscreen', active);
+  document.body.classList.toggle('chart-fullscreen', active);
+  $('fullscreen').setAttribute('aria-pressed', String(active));
+  $('fullscreen').textContent = active ? 'Exit fullscreen' : 'Fullscreen';
+  state.drag = null; state.hover = null;
+  chartDirty = true;
+  requestAnimationFrame(draw);
+}
+async function toggleFullscreen() {
+  if (document.fullscreenElement === chartPanel) {
+    try { await document.exitFullscreen(); } catch { /* Keep the exit control available for retry. */ }
+  } else if (fallbackFullscreen) {
+    fallbackFullscreen = false;
+  } else {
+    try { await chartPanel.requestFullscreen(); }
+    catch { fallbackFullscreen = true; }
+  }
+  updateFullscreen();
+}
+document.addEventListener('fullscreenchange', updateFullscreen);
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && fallbackFullscreen) {
+    fallbackFullscreen = false;
+    updateFullscreen();
+  }
+});
+canvas.addEventListener('dblclick', toggleFullscreen);
+$('fullscreen').onclick = toggleFullscreen;
+$('reset').onclick = reset;
+canvas.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();state.hover=Math.max(0,Math.min(state.rows.length-1,(state.hover??state.rows.length-1)+(event.key==='ArrowRight'?1:-1)));draw();}});
 function updateRangeButtons() {
   document.querySelectorAll('[data-range]').forEach(button =>
     button.setAttribute('aria-pressed', String(Number(button.dataset.range) === state.range)));
