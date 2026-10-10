@@ -42,6 +42,48 @@ Run `python3 server.py` to open the chart locally using an SSH tunnel to `server
 Alternatively pass `--upstream http://127.0.0.1:9090/api/v1 --no-browser`.
 Run tests with `python3 -m unittest discover -s tests -v`.
 
+### Sample packing benchmark
+
+Run `python3 tools/benchmark_packing.py` to compare lossless wire formats against
+the available production history, or pass `--samples snapshot.json` with a JSON
+array of `[timestamp, price, block]` samples. Python 3.14 also measures zstd.
+This is a standalone benchmark; the production API format is unchanged.
+
+Measured on October 10, 2026: 85,182 samples across 51.92 hours; 96.73% of adjacent
+samples have identical prices. Repeating this observed pattern to fill seven days
+produces 275,652 samples. This is a size estimate, not a forecast of trading activity.
+
+| Encoding | Seven-day JSON | gzip | zstd |
+| --- | ---: | ---: | ---: |
+| Current rows | 12,403,623 B | 1,465,086 B | 1,098,650 B |
+| Compact JSON | 11,576,695 B | 1,435,523 B | 1,091,445 B |
+| Omit unchanged prices; absolute timestamps/blocks | 6,580,383 B | 1,414,119 B | 1,175,585 B |
+| Timestamp/block deltas; omit unchanged prices | 1,831,703 B | 112,592 B | 111,558 B |
+| Runs of identical deltas and prices | 312,227 B | 99,665 B | 100,107 B |
+
+Compression resets every six hours, approximating history loading (the browser's
+initial one-hour request and shared response metadata/HTTP headers are excluded).
+Local gzip level 6 and zstd level 3 provide controlled comparisons, not exact Caddy
+wire sizes. The observed history itself uses 451,473 / 339,578 bytes with gzip/zstd
+in the current format, versus 29,992 / 30,036 bytes with runs. Every candidate is
+decoded and compared to every original sample, including timestamps, full prices,
+and block numbers, for both observed and projected datasets.
+
+The delta and run formats begin with `[timestamp, block, price]`. Delta records
+are `[secondsSincePrevious, blocksSincePrevious, optionalNewPrice]`. Run records
+are `[count, secondsPerStep, blocksPerStep, optionalNewPrice]`: they generate
+`count` samples after the previous sample, all at the given price and step sizes.
+An omitted price means reuse the preceding price. Runs split whenever the price
+or either step changes, preserving real gaps rather than assuming two-second
+spacing everywhere. In this snapshot, 1,108 timestamp steps differ from two
+seconds. The repeat-price-only format retains `[timestamp, price, block]` for a
+price change and uses `[timestamp, block]` otherwise.
+
+Runs reduce projected compressed traffic by about 93% (gzip) / 91% (zstd), and
+uncompressed JSON by 97.5%. Simple deltas achieve most of the transfer savings;
+runs additionally reduce the JSON that the browser must parse. Neither format
+reduces expanded browser memory if decoded back into the current raw sample cache.
+
 ## Deployment
 
 Run `./deploy/deploy.sh` from this checkout (optionally pass an SSH host).
