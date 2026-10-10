@@ -289,10 +289,6 @@ function draw() {
     const lowBps = Number(((low[1]-1)*10000).toFixed(2));
     if (highBps !== lowBps) {
       markExtreme(high);markExtreme(low);
-    } else if (highBps > 0) {
-      markExtreme(high);
-    } else if (lowBps < 0) {
-      markExtreme(low);
     }
   }
   ctx.restore();
