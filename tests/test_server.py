@@ -2,6 +2,8 @@
 import importlib.util
 import json
 import io
+import math
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -221,6 +223,52 @@ class PageTests(unittest.TestCase):
 
 
 class CacheTests(unittest.TestCase):
+    def test_partial_range_summaries_match_uncached_results(self):
+        rng = random.Random(42)
+        now = time.time()
+        rows = [(now - 3000 + i * 2, rng.choice([.98, 1, 1.03]),
+                 None if i % 17 == 0 else rng.randrange(2000)) for i in range(1300)]
+        cache = page.HistoryCache()
+        cache.merge(rows, now)
+        summaries = cache.summaries.chunks
+        self.assertEqual(len(summaries), math.ceil(len(rows) / page.SUMMARY_SAMPLES))
+        bounds = [(0, 1300), (0, 256), (256, 512), (255, 257), (1299, 1300), (0, 0)]
+        bounds += [sorted((rng.randrange(1301), rng.randrange(1301))) for _ in range(200)]
+        for left, right in bounds:
+            start, end = now - 3001 + left * 2, now - 3001 + right * 2
+            window_rows = [row for row in rows if start < row[0] <= end]
+            expected = ({'low': min(window_rows, key=lambda row: row[1]),
+                         'high': max(window_rows, key=lambda row: row[1])} if window_rows else None)
+            for cursor in (None, 0, 1000, 2000):
+                with self.subTest(left=left, right=right, cursor=cursor):
+                    result, _, _, extremes = cache.read(start, end, (start, end), cursor)
+                    filtered = (window_rows if cursor is None else
+                                [row for row in window_rows if row[2] is not None and row[2] > cursor])
+                    self.assertEqual(result, filtered)
+                    self.assertEqual(extremes, expected)
+        # Arbitrary query windows never add cache entries.
+        self.assertIs(cache.summaries.chunks, summaries)
+
+    def test_summaries_replace_corrected_data_and_expire_with_history(self):
+        cache = page.HistoryCache()
+        now = time.time()
+        with patch.object(page, 'MAX_SAMPLES', 520):
+            cache.merge([(now - 1200 + i, 1, i) for i in range(1000)], now)
+        self.assertEqual(len(cache.rows), 520)
+        self.assertEqual(len(cache.summaries.chunks), 3)
+        stamp = cache.rows[256][0]
+        cache.merge([(stamp, .5, 2000)], now, mark_fresh=False)
+        rows, _, _, extremes = cache.read(now - 1201, now, (now - 1201, now), 1500)
+        self.assertEqual(rows, [(stamp, .5, 2000)])
+        self.assertEqual(extremes['low'], rows[0])
+        cache.merge([(stamp, 1, None)], now, mark_fresh=False)
+        rows, _, _, extremes = cache.read(now - 1201, now, (now - 1201, now), 1500)
+        self.assertEqual(rows, [])
+        self.assertEqual(extremes['low'][1], 1)
+        cache.merge([], now + page.HISTORY_SECONDS)
+        self.assertEqual(cache.rows, ())
+        self.assertEqual(cache.summaries.chunks, ())
+
     def test_slow_reader_does_not_block_readers_or_publication(self):
         cache = page.HistoryCache()
         now = time.time()

@@ -20,6 +20,13 @@ upstream outages. Restarts rebuild the cache; the API returns 503 until the firs
 successful fetch. Readers capture an immutable snapshot under a brief lock, then
 scan it without holding the lock. Writers build replacements separately and
 publish rows and freshness together, so ongoing reads retain a consistent view.
+Each snapshot caches min/max prices and the highest block number for groups of
+256 samples. Window extrema reuse fully covered groups and scan only partial
+groups at the edges; live cursors skip groups containing no newer blocks.
+The cache holds at most 1,368 summaries (about 107 KiB per snapshot on the server),
+references existing samples, and never grows with the number of requested windows.
+Summaries are rebuilt on merges, including corrections and eviction, and are
+released with their snapshot when its readers finish.
 Each upstream response is limited to 4 MiB. Four HTTP handlers
 can run concurrently; excess requests receive 503. Responses stream in batches
 and client sockets have a ten-second inactivity timeout. The node RPC and Prometheus remain private.

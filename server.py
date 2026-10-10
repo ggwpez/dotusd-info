@@ -25,6 +25,7 @@ HISTORY_SECONDS = 7 * 86400
 MAX_SAMPLES = 350000
 FETCH_SECONDS = 6 * 3600
 MAX_UPSTREAM_BYTES = 4 * 1024 * 1024
+SUMMARY_SAMPLES = 256
 
 
 def load_release():
@@ -168,12 +169,49 @@ def pack_ranges(rows):
         i += count
 
 
+class HistorySummaries:
+    """Bounded partial-range cache, rebuilt once per immutable history snapshot."""
+    def __init__(self, rows):
+        chunks = []
+        for offset in range(0, len(rows), SUMMARY_SAMPLES):
+            chunk = rows[offset:offset + SUMMARY_SAMPLES]
+            chunks.append((min(chunk, key=lambda row: row[1]),
+                           max(chunk, key=lambda row: row[1]),
+                           max((row[2] for row in chunk if row[2] is not None), default=-1)))
+        self.chunks = tuple(chunks)
+
+    def extremes(self, rows, left, right):
+        if left >= right:
+            return None
+        candidates = []
+        for index in range(left // SUMMARY_SAMPLES, (right - 1) // SUMMARY_SAMPLES + 1):
+            start, end = index * SUMMARY_SAMPLES, min((index + 1) * SUMMARY_SAMPLES, len(rows))
+            if left <= start and end <= right:
+                candidates.extend(self.chunks[index][:2])
+            else:
+                candidates.extend(rows[max(left, start):min(right, end)])
+        return {'low': min(candidates, key=lambda row: row[1]),
+                'high': max(candidates, key=lambda row: row[1])}
+
+    def after(self, rows, left, right, block):
+        result = []
+        for index in range(left // SUMMARY_SAMPLES, (right - 1) // SUMMARY_SAMPLES + 1):
+            # Works even with missing or out-of-order block numbers.
+            if self.chunks[index][2] <= block:
+                continue
+            start = max(left, index * SUMMARY_SAMPLES)
+            end = min(right, (index + 1) * SUMMARY_SAMPLES)
+            result.extend(row for row in rows[start:end] if row[2] is not None and row[2] > block)
+        return result
+
+
 class HistoryCache:
     """One writer fetches history; HTTP readers never access the upstream."""
     def __init__(self):
         self.lock = threading.Lock()
         self.writer_lock = threading.Lock()
         self.rows = ()
+        self.summaries = HistorySummaries(self.rows)
         self.fetched_at = None
         self.history_ready = False
 
@@ -188,14 +226,17 @@ class HistoryCache:
             by_time.update({row[0]: tuple(row) for row in rows
                             if now - HISTORY_SECONDS < row[0] <= now})
             replacement = tuple(by_time[t] for t in sorted(by_time)[-MAX_SAMPLES:])
+            summaries = HistorySummaries(replacement)
             with self.lock:
                 self.rows = replacement
+                self.summaries = summaries
                 if mark_fresh:
                     self.fetched_at = now
 
     def read(self, start, end, window=None, after_block=None):
         with self.lock:
             history, fetched_at, history_ready = self.rows, self.fetched_at, self.history_ready
+            summaries = self.summaries
         if fetched_at is None:
             raise RuntimeError('History is warming up')
         start = max(start, time.time() - HISTORY_SECONDS)
@@ -205,13 +246,9 @@ class HistoryCache:
         if window is not None:
             window_left = bisect_right(history, window[0], key=lambda row: row[0])
             window_right = bisect_right(history, window[1], key=lambda row: row[0])
-            window_rows = history[window_left:window_right]
-            if window_rows:
-                extremes = {'low': min(window_rows, key=lambda row: row[1]),
-                            'high': max(window_rows, key=lambda row: row[1])}
-        rows = list(history[left:right])
-        if after_block is not None:
-            rows = [row for row in rows if row[2] is not None and row[2] > after_block]
+            extremes = summaries.extremes(history, window_left, window_right)
+        rows = (list(history[left:right]) if after_block is None else
+                summaries.after(history, left, right, after_block))
         return rows, fetched_at, history_ready, extremes
 
 
