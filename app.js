@@ -112,7 +112,6 @@ async function refresh(force = false) {
   const end = state.zoom?.[1] ?? (state.live || !state.end ? Date.now()/1000 : state.end);
   const start = state.zoom?.[0] ?? end - state.range;
   historyCache.expire(Date.now()/1000);
-  if (force) historyCache.coverage = [];
   const sameWindow = Math.abs((state.end - state.start) - (end - start)) < .01;
   state.start = start; state.end = end; state.error = null;
   state.extremes = null;
@@ -123,7 +122,7 @@ async function refresh(force = false) {
   const left = live && historyCache.rows.length && !missing.some(([a]) => a < recentStart) ? recentStart : start;
   // Keep the last completed summary during ordinary live overlap requests.
   // A new historical window stays blank until its entire stream is drawn.
-  if (!(live && sameWindow && left === recentStart)) summaryValues = null;
+  if (!(sameWindow && (live ? left === recentStart : !missing.length))) summaryValues = null;
   const publish = rows => {
     state.rows = rows.window(start, end);
     state.hover = null; chartDirty = true; summary(); draw();
@@ -133,7 +132,7 @@ async function refresh(force = false) {
   publish(historyCache.rows);
   let timeout;
   try {
-    if (!live && !missing.length) return;
+    if (!force && !live && !missing.length) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
     const response = await fetch(`/api/prices?start=${left}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream`, {signal: requestController.signal});
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
@@ -322,10 +321,10 @@ function writeViewUrl() {
   if (url.href !== location.href) history.pushState(null, '', url);
 }
 function updateViewControls() {
-  $('live').setAttribute('aria-pressed', String(state.live));
-  $('live-label').textContent = state.live ? '6s' : 'Paused';
-  $('live').setAttribute('aria-label', state.live ? 'Live updates every 6 seconds' : 'Live updates paused');
-  $('live').title = state.live ? 'Pause live updates' : 'Resume live updates';
+  $('live').dataset.live = String(state.live);
+  $('live-label').textContent = state.live ? '6s' : 'Refresh';
+  $('live').setAttribute('aria-label', state.live ? 'Refresh prices; automatic updates every 6 seconds' : 'Refresh prices');
+  $('live').title = 'Refresh prices';
 }
 function reset() {
   state.zoom = null; state.live = true; state.start = 0; state.end = 0;
@@ -373,13 +372,7 @@ window.addEventListener('popstate', () => {
 });
 updateRangeButtons();
 updateViewControls();
-$('live').onclick = () => {
-  if (!state.live || state.zoom) { reset(); return; }
-  if (state.end - state.start < 1) return;
-  controller?.abort(); generation++; loading = false; state.historyLoading = false;
-  state.live = false; state.zoom = [state.start, state.end];
-  writeViewUrl(); updateViewControls(); refresh();
-};
+$('live').onclick = () => refresh(true);
 document.querySelectorAll('[data-rating]').forEach(segment => {
   const index = Number(segment.dataset.rating);
   segment.addEventListener('pointerenter', () => { hoveredRating = index; updateRating(); });
