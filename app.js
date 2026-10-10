@@ -246,8 +246,9 @@ function draw() {
   ctx.font = '10px ui-monospace, monospace'; ctx.lineWidth = 1;
   for (const v of yTicks) {
     const py = y(v);
-    ctx.strokeStyle = '#272d37';ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();
-    ctx.fillStyle = '#8792a3';ctx.textAlign='right';ctx.fillText(String(v),left-12,py+3);
+    const boundaryColor = ratingLimits.includes(Math.abs(v)) ? deviationColor(v) : null;
+    ctx.strokeStyle = boundaryColor ? boundaryColor + '50' : '#272d37';ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();
+    ctx.fillStyle = boundaryColor ?? '#8792a3';ctx.textAlign='right';ctx.fillText(String(v),left-12,py+3);
   }
   const ticks = w < 600 ? 3 : 6;
   for (let i=0;i<=ticks;i++) {
@@ -255,15 +256,6 @@ function draw() {
     ctx.strokeStyle='#202630';ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.stroke();
     ctx.fillStyle='#8792a3';ctx.textAlign=i===0?'left':i===ticks?'right':'center';
     ctx.fillText(state.end-state.start>86400 ? date(t).slice(5,16) : clock(t).slice(0,5),px,bottom+23);
-  }
-  // Rating boundaries are accents over the evenly spaced, linear grid.
-  ctx.setLineDash([4, 5]);ctx.lineWidth=.8;
-  for (const limit of ratingLimits) {
-    if (limit > extent) continue;
-    ctx.strokeStyle = deviationColor(limit) + '70';
-    for (const v of [-limit, limit]) {
-      ctx.beginPath();ctx.moveTo(left,y(v));ctx.lineTo(right,y(v));ctx.stroke();
-    }
   }
   ctx.setLineDash([]);ctx.strokeStyle='#ffffff';ctx.lineWidth=.6;
   ctx.beginPath();ctx.moveTo(left,y(0));ctx.lineTo(right,y(0));ctx.stroke();
