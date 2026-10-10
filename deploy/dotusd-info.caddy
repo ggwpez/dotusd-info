@@ -2,7 +2,7 @@ dotusd.info {
 	encode zstd gzip {
 		minimum_length 1
 		match {
-			header Content-Type text/* application/javascript* application/json* application/x-ndjson*
+			header Content-Type *
 		}
 	}
 	reverse_proxy 127.0.0.1:3001 {
