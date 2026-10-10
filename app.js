@@ -355,9 +355,9 @@ function reset() {
   writeViewUrl(); updateViewControls(); refresh();
 }
 const chartPanel = $('chart-panel');
-let fallbackFullscreen = false;
+let chartFullscreen = false;
 function updateFullscreen() {
-  const active = document.fullscreenElement === chartPanel || fallbackFullscreen;
+  const active = chartFullscreen;
   chartPanel.classList.toggle('is-fullscreen', active);
   document.body.classList.toggle('chart-fullscreen', active);
   $('fullscreen').setAttribute('aria-pressed', String(active));
@@ -366,21 +366,13 @@ function updateFullscreen() {
   chartDirty = true;
   requestAnimationFrame(draw);
 }
-async function toggleFullscreen() {
-  if (document.fullscreenElement === chartPanel) {
-    try { await document.exitFullscreen(); } catch { /* Keep the exit control available for retry. */ }
-  } else if (fallbackFullscreen) {
-    fallbackFullscreen = false;
-  } else {
-    try { await chartPanel.requestFullscreen(); }
-    catch { fallbackFullscreen = true; }
-  }
+function toggleFullscreen() {
+  chartFullscreen = !chartFullscreen;
   updateFullscreen();
 }
-document.addEventListener('fullscreenchange', updateFullscreen);
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && fallbackFullscreen) {
-    fallbackFullscreen = false;
+  if (event.key === 'Escape' && chartFullscreen) {
+    chartFullscreen = false;
     updateFullscreen();
   }
 });
