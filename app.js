@@ -278,21 +278,9 @@ function draw() {
   if (previous) {area.lineTo(x(previous[0]),y(0));area.closePath();}
   ctx.fillStyle=areaColor;ctx.fill(area);
   ctx.stroke();
-  function markExtreme(row, label, above) {
+  function markExtreme(row) {
     const value = (row[1]-1)*10000, px = x(row[0]), py = y(value);
     const color = deviationColor(value);
-    const text = `${label} ${signed(value)} bps`;
-    ctx.font = '10px ui-monospace, monospace';
-    const labelWidth = ctx.measureText(text).width+14, labelHeight = 22;
-    const lx = Math.max(left+2, Math.min(px-labelWidth/2, right-labelWidth-2));
-    const ly = Math.max(top+2, Math.min(above ? py-labelHeight-10 : py+10, bottom-labelHeight-2));
-    ctx.strokeStyle = color;ctx.lineWidth = 1;
-    ctx.beginPath();ctx.moveTo(px,py);ctx.lineTo(Math.max(lx,Math.min(px,lx+labelWidth)),above ? ly+labelHeight : ly);ctx.stroke();
-    ctx.fillStyle = '#14181f';ctx.fillRect(lx,ly,labelWidth,labelHeight);
-    ctx.strokeStyle = color+'80';ctx.strokeRect(lx,ly,labelWidth,labelHeight);
-    ctx.fillStyle = color;ctx.textAlign = 'left';ctx.textBaseline = 'middle';
-    ctx.fillText(text,lx+7,ly+labelHeight/2);
-    ctx.textBaseline = 'alphabetic';
     ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);ctx.fillStyle = color;ctx.fill();
     ctx.strokeStyle = '#14181f';ctx.lineWidth = 2;ctx.stroke();
   }
@@ -300,11 +288,11 @@ function draw() {
     const highBps = Number(((high[1]-1)*10000).toFixed(2));
     const lowBps = Number(((low[1]-1)*10000).toFixed(2));
     if (highBps !== lowBps) {
-      markExtreme(high, 'High', true);markExtreme(low, 'Low', false);
+      markExtreme(high);markExtreme(low);
     } else if (highBps > 0) {
-      markExtreme(high, 'High', true);
+      markExtreme(high);
     } else if (lowBps < 0) {
-      markExtreme(low, 'Low', false);
+      markExtreme(low);
     }
   }
   ctx.restore();
