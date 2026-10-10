@@ -324,7 +324,9 @@ function writeViewUrl() {
 function updateViewControls() {
   $('reset').hidden = !state.zoom;
   $('live').setAttribute('aria-pressed', String(state.live));
-  $('live').lastChild.textContent = state.live ? ' Live · 6s' : ' Paused';
+  $('live-label').textContent = state.live ? '6s' : 'Paused';
+  $('live').setAttribute('aria-label', state.live ? 'Live updates every 6 seconds' : 'Live updates paused');
+  $('live').title = state.live ? 'Pause live updates' : 'Resume live updates';
 }
 function reset() {
   state.zoom = null; state.live = true; state.start = 0; state.end = 0;
