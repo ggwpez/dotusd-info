@@ -57,11 +57,7 @@ function updateRating() {
     else segment.removeAttribute('aria-current');
   });
   $('rating-value').textContent = displayed < 0 ? '—' : ratingNames[displayed];
-  const historical = !state.live || state.zoom;
-  const stale = state.error || navigator.onLine === false || !Number.isFinite(state.fetchedAt) ||
-    Date.now()/1000 - state.fetchedAt > 30 || (last && Date.now()/1000 - last[0] > 180);
-  const context = historical ? 'historical sample' : stale ? 'last available sample' : 'latest sample';
-  $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : `${ratingBands[displayed]} · ${preview === null ? context : 'rating band'}`;
+  $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : ratingBands[displayed];
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
