@@ -37,7 +37,7 @@ Caddy compresses even streamed JSON responses with unknown lengths. Static files
 use ETags for cache revalidation, and the page preloads the JavaScript module.
 
 At startup the server snapshots its assets and hashes the server, archive reader,
-HTML, JavaScript, and CSS into a release version. Responses carry `X-App-Version`,
+HTML, JavaScript (including the range module), and CSS into a release version. Responses carry `X-App-Version`,
 and `/api/version` returns the version even while price history is warming up.
 The client checks this header before decoding price responses and reloads the
 current URL on a mismatch, preserving the linked range/zoom. Visible tabs also
@@ -47,11 +47,42 @@ Assets remain tied to their startup snapshot during deployment; restart the
 server to activate changes, including when developing locally. Tabs opened before
 this feature was deployed need one manual reload to enable automatic updates.
 
+### Packed history and rendering
+
+`/api/prices` returns `encoding: "ranges-v1"` and a `ranges` array. The first
+record is `[timestamp, block, price]`. Subsequent records are
+`[count, secondsPerStep, blocksPerStep, optionalNewPrice]`, with omitted prices
+reused from the previous record. A `[0, timestamp, block, price]` record resets
+the anchor for missing block numbers or timestamps that cannot be reconstructed
+exactly. Fractional timestamps are kept as individual records to avoid rounding
+drift. Empty history uses an empty array. `fetchedAt`, `historyReady`, and raw
+full-window `extremes` retain their original meaning. `?format=raw` is available
+for diagnostics and benchmarks; the chart always requests packed history.
+
+The browser keeps absolute-start ranges rather than expanding raw rows. Chunk
+overlaps replace the requested interval, adjacent compatible ranges coalesce,
+and expiry/zoom clip ranges without iterating over all their samples. Sample
+counts, nearest-point hover, and keyboard navigation reconstruct individual
+samples on demand. Rendering visits constant-price range endpoints, then keeps
+pixel endpoints and extrema. Missing block numbers and block-number gaps remain
+disconnected. Server-side history is still stored as raw samples.
+
+Validated with 275,652 projected samples: 16,052 wire records become 12,585 cached
+ranges. Six-hour chunks total about 312 KB of JSON and 100 KB compressed
+(gzip level 6 or zstd level 3), compared with 11.79 MB of compact raw JSON and
+1.08–1.43 MB compressed. A local headless Chrome run measured median packed
+parse/cache construction at 1.5 ms versus raw JSON parsing at 12.2 ms; drawing
+point preparation at 0.8 ms versus 1.4 ms. These are component timings over 20
+measured runs after five warmups, not end-to-end browser performance guarantees.
+
 ## Development
 
 Run `python3 server.py` to open the chart locally using an SSH tunnel to `server`.
 Alternatively pass `--upstream http://127.0.0.1:9090/api/v1 --no-browser`.
 Run tests with `python3 -m unittest discover -s tests -v`.
+Client range tests use Node when installed, or macOS JavaScriptCore, and otherwise
+report a skip. They compare exact samples, line geometry, gaps, pixel extrema,
+hover selection, clipping, and cache overlap behavior against raw data.
 
 ### Sample packing benchmark
 

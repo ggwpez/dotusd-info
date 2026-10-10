@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 from bisect import bisect_right
+from itertools import islice
 import logging
 from contextlib import closing, contextmanager
 import json
@@ -28,12 +29,12 @@ MAX_UPSTREAM_BYTES = 4 * 1024 * 1024
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'style.css')}
+             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css')}
     digest = hashlib.sha256()
     for name, body in files.items():
         digest.update(name.encode() + b'\0' + body + b'\0')
     version = digest.hexdigest()
-    assets = {name: files[name] for name in ('index.html', 'app.js', 'style.css')}
+    assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css')}
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
@@ -125,6 +126,42 @@ def samples(payload):
         if math.isfinite(price) and price > 0:
             rows.append([stamp, price, numbers.get(stamp)])
     return rows
+
+
+def pack_ranges(rows):
+    """Delta runs: seed [time, block, price], then [count, dt, db, ?price].
+
+    [0, time, block, price] resets the seed when a block is unknown or exact
+    floating-point reconstruction is impossible. No price rounding is used.
+    """
+    if not rows:
+        return
+    t, price, block = rows[0]
+    yield [t, block, price]
+    i = 1
+    while i < len(rows):
+        stamp, value, number = rows[i]
+        dt = stamp - t
+        if block is None or number is None or t + dt != stamp:
+            yield [0, stamp, number, value]
+            t, price, block = stamp, value, number
+            i += 1
+            continue
+        dt = int(dt) if dt == int(dt) else dt
+        db = number - block
+        count = 1
+        while int(stamp) == stamp and int(dt) == dt and i + count < len(rows):
+            next_t, next_price, next_block = rows[i + count]
+            if (next_price != value or next_block != block + (count + 1) * db or
+                    next_t != stamp + count * dt or next_t != t + (count + 1) * dt):
+                break
+            count += 1
+        record = [count, dt, db]
+        if value != price:
+            record.append(value)
+        yield record
+        t, price, block = rows[i + count - 1]
+        i += count
 
 
 class HistoryCache:
@@ -277,7 +314,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path == '/api/prices':
             try:
-                params = urllib.parse.parse_qs(url.query, max_num_fields=4)
+                params = urllib.parse.parse_qs(url.query, max_num_fields=5)
+                raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 start, end = time_window(params)
                 window = None
                 if 'windowStart' in params or 'windowEnd' in params:
@@ -297,17 +335,20 @@ class Handler(BaseHTTPRequestHandler):
             # Stream bounded batches instead of building a second full JSON copy.
             self.send_headers(200, 'application/json')
             try:
-                self.wfile.write(b'{"samples":[')
-                for offset in range(0, len(rows), 256):
-                    batch = json.dumps(rows[offset:offset + 256], allow_nan=False).encode()[1:-1]
-                    self.wfile.write((b',' if offset else b'') + batch)
+                self.wfile.write(b'{"samples":[' if raw else b'{"encoding":"ranges-v1","ranges":[')
+                records = iter(rows) if raw else pack_ranges(rows)
+                first = True
+                while batch := list(islice(records, 256)):
+                    body = json.dumps(batch, allow_nan=False, separators=(',', ':')).encode()[1:-1]
+                    self.wfile.write((b'' if first else b',') + body)
+                    first = False
                 self.wfile.write(b'],"fetchedAt":' + json.dumps(fetched_at).encode() +
                                  b',"historyReady":' + json.dumps(history_ready).encode() +
                                  b',"extremes":' + json.dumps(extremes, allow_nan=False).encode() + b'}')
             except (OSError, TimeoutError):
                 pass
             return
-        filename = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}.get(url.path)
+        filename = {'/': 'index.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css'}.get(url.path)
         if not filename:
             self.respond(404, {'error': 'Not found'})
             return

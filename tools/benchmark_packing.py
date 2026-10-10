@@ -127,7 +127,7 @@ def main():
     else:
         end = int(time.time())
         req = urllib.request.Request(
-            f'https://dotusd.info/api/prices?start={end - 604800}&end={end}',
+            f'https://dotusd.info/api/prices?start={end - 604800}&end={end}&format=raw',
             headers={'Accept-Encoding': 'gzip'})
         with urllib.request.urlopen(req, timeout=30) as response:
             body = response.read()

@@ -21,7 +21,7 @@ spec.loader.exec_module(page)
 
 class PageTests(unittest.TestCase):
     def test_release_version_tracks_code_and_freezes_assets(self):
-        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'style.css')
+        names = ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in names:
@@ -116,9 +116,16 @@ class PageTests(unittest.TestCase):
             error.exception.close()
             now = time.time()
             server.cache.merge([[now - 10, 1.001, 50]], now)
+            with urlopen(base + '/api/prices') as response:
+                packed = json.load(response)
+                self.assertEqual(packed['encoding'], 'ranges-v1')
+                self.assertEqual(packed['ranges'], [[now - 10, 50, 1.001]])
+                self.assertNotIn('samples', packed)
+            with urlopen(base + '/ranges.js') as response:
+                self.assertIn(b'export class RangeSeries', response.read())
             # There is no upstream client on the server. Concurrent reads still work.
             def read():
-                with urlopen(base + '/api/prices') as response:
+                with urlopen(base + '/api/prices?format=raw') as response:
                     self.assertEqual(response.headers['X-App-Version'], server.version)
                     return json.load(response)
             with ThreadPoolExecutor(max_workers=3) as pool:

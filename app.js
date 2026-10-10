@@ -1,3 +1,4 @@
+import {RangeSeries, BrowserHistory, pixelRows} from './ranges.js?v=__APP_VERSION__';
 const $ = id => document.getElementById(id);
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
@@ -34,7 +35,7 @@ function linkedView() {
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: [], range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, historyProgress: null, serverWarming: false, extremes: null};
+const state = {rows: new RangeSeries(), range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, historyProgress: null, serverWarming: false, extremes: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
 let chartDirty = true;
@@ -85,9 +86,8 @@ function summary() {
   const rows = state.rows, last = rows.at(-1);
   $('latest').textContent = last ? signed((last[1] - 1) * 10000) : '—';
   $('price').textContent = last ? last[1].toFixed(6) : '—';
-  const values = rows.map(r => (r[1] - 1) * 10000);
-  const low = state.extremes ? (state.extremes.low[1]-1)*10000 : values.reduce((a,b) => Math.min(a,b), Infinity);
-  const high = state.extremes ? (state.extremes.high[1]-1)*10000 : values.reduce((a,b) => Math.max(a,b), -Infinity);
+  const low = state.extremes ? (state.extremes.low[1]-1)*10000 : (rows.low ? (rows.low[1]-1)*10000 : 0);
+  const high = state.extremes ? (state.extremes.high[1]-1)*10000 : (rows.high ? (rows.high[1]-1)*10000 : 0);
   $('extremes').textContent = last ? `${signed(low)} / ${signed(high)}` : '—';
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history${state.historyProgress ? ` · ${state.historyProgress[0]}/${state.historyProgress[1]}` : '…'}${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
   $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading recent samples…' : 'No price samples in this window');
@@ -110,40 +110,6 @@ function updateFreshness() {
   else status(`● Live · finalized ~${age}s ago`, 'live');
 }
 
-class BrowserHistory {
-  constructor() { this.rows = []; this.coverage = []; this.fetchedAt = null; this.checkedAt = 0; }
-  expire(now) {
-    const cutoff = now - 604800;
-    this.rows = this.rows.filter(row => row[0] > cutoff);
-    this.coverage = this.coverage.filter(([, end]) => end > cutoff).map(([start, end]) => [Math.max(start, cutoff), end]);
-    // Recheck old history periodically so late backfill is not cached as an empty gap.
-    if (now - this.checkedAt >= 60) { this.coverage = []; this.checkedAt = now; }
-  }
-  merge(rows, start, end, fetchedAt, complete = true) {
-    const byTime = new Map(this.rows.map(row => [row[0], row]));
-    for (const row of rows) byTime.set(row[0], row);
-    this.rows = [...byTime.values()].sort((a, b) => a[0] - b[0]).slice(-350000);
-    const intervals = [...this.coverage, ...(complete ? [[start, end]] : [])].sort((a, b) => a[0] - b[0]);
-    this.coverage = [];
-    for (const interval of intervals) {
-      const previous = this.coverage.at(-1);
-      if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
-      else this.coverage.push([...interval]);
-    }
-    this.fetchedAt = fetchedAt;
-  }
-  missing(start, end) {
-    const gaps = []; let cursor = start;
-    for (const [left, right] of this.coverage) {
-      if (right <= cursor || left >= end) continue;
-      if (left > cursor) gaps.push([cursor, Math.min(left, end)]);
-      cursor = Math.max(cursor, right);
-      if (cursor >= end) break;
-    }
-    if (cursor < end) gaps.push([cursor, end]);
-    return gaps;
-  }
-}
 function historyChunks(gaps) {
   const chunks = [];
   for (const [start, end] of [...gaps].reverse()) {
@@ -167,7 +133,7 @@ async function refresh(force = false) {
   let awaitingExtremes = historyCache.missing(start, end).length > 0 || (state.live && !state.zoom);
   state.extremes = null;
   const publish = () => {
-    state.rows = awaitingExtremes ? [] : historyCache.rows.filter(row => row[0] > start && row[0] <= end);
+    state.rows = awaitingExtremes ? new RangeSeries() : historyCache.rows.window(start, end);
     state.fetchedAt = historyCache.fetchedAt; state.hover = null;
     chartDirty = true; summary(); draw();
   };
@@ -183,7 +149,8 @@ async function refresh(force = false) {
       if (ticket !== generation) return;
       if (includeExtremes) { state.extremes = result.extremes; awaitingExtremes = false; }
       state.serverWarming = result.historyReady === false;
-      historyCache.merge(result.samples, left, right, result.fetchedAt, !state.serverWarming);
+      if (result.encoding !== 'ranges-v1') throw new Error('Unsupported price format');
+      historyCache.merge(RangeSeries.fromWire(result.ranges), left, right, result.fetchedAt, !state.serverWarming);
     } finally { clearTimeout(timeout); }
   };
   try {
@@ -214,26 +181,6 @@ async function refresh(force = false) {
     }
   }
 }
-function* pixelRows(rows, x) {
-  const connected = (a, b) => a && b && a[2] != null && b[2] != null && b[2] === a[2] + 1;
-  for (let first = 0; first < rows.length;) {
-    const pixel = Math.floor(x(rows[first][0]));
-    let last = first, low = first, high = first;
-    // Bucket each continuous run separately so real missing blocks remain gaps.
-    while (last + 1 < rows.length && connected(rows[last], rows[last + 1]) &&
-      Math.floor(x(rows[last + 1][0])) === pixel) {
-      last++;
-      if (rows[last][1] < rows[low][1]) low = last;
-      if (rows[last][1] > rows[high][1]) high = last;
-    }
-    // Preserve extrema and endpoints in their original time order, without averaging.
-    const indices = [...new Set([first, low, high, last])].sort((a, b) => a - b);
-    for (const index of indices) {
-      yield {row: rows[index], move: index === first && !connected(rows[first - 1], rows[first])};
-    }
-    first = last + 1;
-  }
-}
 function chartScale(peak) {
   const padded = Math.max(5, peak + Math.max(peak * .12, .5));
   const magnitude = 10 ** Math.floor(Math.log10(padded));
@@ -254,7 +201,7 @@ function draw() {
   let peak = 0;
   let high = state.extremes?.high, low = state.extremes?.low;
   if (high && low) peak = Math.max(Math.abs((high[1]-1)*10000), Math.abs((low[1]-1)*10000));
-  for (const row of state.rows) {
+  for (const row of [state.rows.low, state.rows.high].filter(Boolean)) {
     peak = Math.max(peak, Math.abs((row[1]-1)*10000));
     if (!high || row[1] > high[1]) high = row;
     if (!low || row[1] < low[1]) low = row;
@@ -289,7 +236,7 @@ function draw() {
   const areaColor = ratingGradient(ctx, top, bottom, extent, fillAlpha.toString(16).padStart(2, '0'));
   const area = new Path2D();
   ctx.strokeStyle=lineColor;ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();let previous;
-  // Reduce overdraw per CSS pixel; raw samples still drive hover, bounds and zoom.
+  // Draw range endpoints, preserving pixel extrema and every real block gap.
   for(const {row, move} of pixelRows(state.rows, x)) {
     const px=x(row[0]),py=y((row[1]-1)*10000);
     if (move) {
@@ -327,8 +274,8 @@ function draw() {
   ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
   if(state.drag) {ctx.fillStyle='#ec83b122';ctx.fillRect(Math.min(...state.drag),top,Math.abs(state.drag[1]-state.drag[0]),bottom-top);}
   $('tooltip').hidden=true;
-  if(state.hover!==null && state.rows[state.hover]) {
-    const row=state.rows[state.hover],px=x(row[0]),py=y((row[1]-1)*10000);
+  if(state.hover!==null && state.rows.at(state.hover)) {
+    const row=state.rows.at(state.hover),px=x(row[0]),py=y((row[1]-1)*10000);
     ctx.strokeStyle='#7e899b';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();ctx.setLineDash([]);
     ctx.fillStyle=deviationColor((row[1]-1)*10000);ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);ctx.fill();
     const tip=$('tooltip');tip.hidden=false;tip.replaceChildren();
@@ -346,9 +293,7 @@ canvas.addEventListener('pointermove', event => {
   const px=position(event);
   if(state.drag) state.drag[1]=px;
   const t=state.start+(px-geometry.left)/(geometry.right-geometry.left)*(state.end-state.start);
-  let lo=0,hi=state.rows.length-1;
-  while(lo<hi) {const mid=(lo+hi)>>1;if(state.rows[mid][0]<t)lo=mid+1;else hi=mid;}
-  state.hover=lo>0 && t-state.rows[lo-1][0]<state.rows[lo][0]-t ? lo-1 : lo;
+  state.hover = state.rows.nearest(t);
   draw();
 });
 canvas.addEventListener('pointerleave',()=>{if(!state.drag){state.hover=null;draw();}});
