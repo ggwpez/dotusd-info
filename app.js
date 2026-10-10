@@ -322,7 +322,6 @@ function writeViewUrl() {
   if (url.href !== location.href) history.pushState(null, '', url);
 }
 function updateViewControls() {
-  $('reset').hidden = !state.zoom;
   $('live').setAttribute('aria-pressed', String(state.live));
   $('live-label').textContent = state.live ? '6s' : 'Paused';
   $('live').setAttribute('aria-label', state.live ? 'Live updates every 6 seconds' : 'Live updates paused');
@@ -356,7 +355,6 @@ document.addEventListener('keydown', event => {
 });
 canvas.addEventListener('dblclick', toggleFullscreen);
 $('fullscreen').onclick = toggleFullscreen;
-$('reset').onclick = reset;
 canvas.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();state.hover=Math.max(0,Math.min(state.rows.length-1,(state.hover??state.rows.length-1)+(event.key==='ArrowRight'?1:-1)));draw();}});
 function updateRangeButtons() {
   document.querySelectorAll('[data-range]').forEach(button =>
