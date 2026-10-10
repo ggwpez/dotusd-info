@@ -117,12 +117,13 @@ async function refresh(force = false) {
   state.extremes = null;
   const missing = historyCache.missing(start, end);
   const live = state.live && !state.zoom;
-  // One full-window request for history; ordinary live polls retain a five-minute overlap.
-  const recentStart = Math.max(start, end - 300);
-  const left = live && historyCache.rows.length && !missing.some(([a]) => a < recentStart) ? recentStart : start;
-  // Keep the last completed summary during ordinary live overlap requests.
-  // A new historical window stays blank until its entire stream is drawn.
-  if (!(sameWindow && (live ? left === recentStart : !missing.length))) summaryValues = null;
+  const last = historyCache.rows.window(start, end).at(-1);
+  // Advance only from a completed history snapshot; warming/backfills need the full window.
+  const incremental = live && !state.serverWarming && Number.isSafeInteger(last?.[2]) &&
+    !missing.some(([a]) => a < last[0]);
+  const left = incremental ? last[0] : start;
+  // Keep completed numbers visible during ordinary live polls.
+  if (!(sameWindow && (live ? incremental : !missing.length))) summaryValues = null;
   const publish = rows => {
     state.rows = rows.window(start, end);
     state.hover = null; chartDirty = true; summary(); draw();
@@ -134,7 +135,7 @@ async function refresh(force = false) {
   try {
     if (!force && !live && !missing.length) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
-    const response = await fetch(`/api/prices?start=${left}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream`, {signal: requestController.signal});
+    const response = await fetch(`/api/prices?start=${start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
       const result = await response.json();

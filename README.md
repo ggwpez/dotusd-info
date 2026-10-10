@@ -34,10 +34,12 @@ The client decodes and draws complete lines as they arrive, without expanding
 ranges or acknowledging batches. Network reads may split or combine lines.
 Full-window extrema keep the vertical scale stable during loading. Only a
 successfully finished stream enters the cache; interrupted streams retry.
-Live polls request only a five-minute overlap. An in-memory browser cache holds
-at most seven days / 350,000 samples, retaining completed historical coverage
+Live polls send `afterBlock` with the last received finalized block number; the
+server returns only newer blocks within the displayed window. Empty responses
+retain the cursor, and reconnects catch up from it without a fixed overlap.
+An in-memory browser cache holds at most seven days / 350,000 samples, retaining completed historical coverage
 until those samples expire or are evicted. Incomplete history continues retrying;
-reload the page to discover later archive imports outside the live overlap.
+reload the page to discover later archive imports before the block cursor.
 Switching views reuses already fetched data. No samples are downsampled.
 Hover redraws are coalesced per animation frame and reuse canvas buffers.
 Caddy flushes upstream responses immediately.

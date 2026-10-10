@@ -83,6 +83,52 @@ class PageTests(unittest.TestCase):
                 self.assertEqual(upstream, 'http://127.0.0.1:9090/api/v1')
             launch.assert_not_called()
 
+    def test_live_block_cursor_across_formats_and_reconnects(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        now = int(time.time())
+        rows = [[now - 900, .98, 10], [now - 800, 1.03, 11],
+                [now - 700, 1.001, 12]]
+        server.cache.merge(rows, now)
+        server.cache.history_ready = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = (f'http://127.0.0.1:{server.server_port}/api/prices?'
+                f'start={now-1000}&end={now}&windowStart={now-1000}&windowEnd={now}')
+        try:
+            for format in ('raw', 'ranges-v1', 'stream'):
+                with self.subTest(format=format):
+                    with urlopen(base + f'&format={format}&afterBlock=11') as response:
+                        if format == 'stream':
+                            metadata, batch, done = [json.loads(line) for line in response]
+                            self.assertEqual(batch['ranges'], list(page.pack_ranges(rows[2:])))
+                            self.assertEqual(done, {'done': True})
+                        else:
+                            metadata = json.load(response)
+                            key = 'samples' if format == 'raw' else 'ranges'
+                            expected = rows[2:] if format == 'raw' else list(page.pack_ranges(rows[2:]))
+                            self.assertEqual(metadata[key], expected)
+                        self.assertEqual(metadata['extremes'], {'low': rows[0], 'high': rows[1]})
+                        self.assertTrue(metadata['historyReady'])
+            with urlopen(base + '&format=stream&afterBlock=12') as response:
+                messages = [json.loads(line) for line in response]
+            self.assertEqual(len(messages), 2)
+            self.assertEqual(messages[-1], {'done': True})
+            # Catch up beyond the former five-minute overlap, using the same cursor.
+            newer = [[now - 600, 1, 13], [now - 2, .999, 14]]
+            server.cache.merge(newer, now)
+            with urlopen(base + '&format=raw&afterBlock=12') as response:
+                self.assertEqual(json.load(response)['samples'], newer)
+            for cursor in ('', '-1', '1.5', 'NaN', '9007199254740992', '12&afterBlock=13'):
+                with self.subTest(cursor=cursor), self.assertRaises(HTTPError) as error:
+                    urlopen(base + '&afterBlock=' + cursor)
+                self.assertEqual(error.exception.code, 400)
+                error.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_failed_ssh_exits_without_serving_an_empty_page(self):
         with patch.object(page.subprocess, 'Popen') as launch:
             launch.return_value.poll.return_value = 255

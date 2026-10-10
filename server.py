@@ -186,7 +186,7 @@ class HistoryCache:
             if mark_fresh:
                 self.fetched_at = now
 
-    def read(self, start, end, window=None):
+    def read(self, start, end, window=None, after_block=None):
         with self.lock:
             if self.fetched_at is None:
                 raise RuntimeError('History is warming up')
@@ -201,7 +201,10 @@ class HistoryCache:
                 if window_rows:
                     extremes = {'low': min(window_rows, key=lambda row: row[1]),
                                 'high': max(window_rows, key=lambda row: row[1])}
-            return self.rows[left:right], self.fetched_at, self.history_ready, extremes
+            rows = self.rows[left:right]
+            if after_block is not None:
+                rows = [row for row in rows if row[2] is not None and row[2] > after_block]
+            return rows, self.fetched_at, self.history_ready, extremes
 
 
 class HistoryWorker:
@@ -324,10 +327,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path == '/api/prices':
             try:
-                params = urllib.parse.parse_qs(url.query, max_num_fields=5)
+                params = urllib.parse.parse_qs(url.query, max_num_fields=6, keep_blank_values=True)
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
                 start, end = time_window(params)
+                after_block = None
+                if 'afterBlock' in params:
+                    value = params['afterBlock']
+                    if len(value) != 1 or not value[0].isascii() or not value[0].isdigit():
+                        raise ValueError('Invalid block cursor')
+                    after_block = int(value[0])
+                    if after_block > 9007199254740991:
+                        raise ValueError('Invalid block cursor')
                 window = None
                 if 'windowStart' in params or 'windowEnd' in params:
                     if 'windowStart' not in params or 'windowEnd' not in params:
@@ -339,7 +350,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
                 return
             try:
-                rows, fetched_at, history_ready, extremes = self.server.cache.read(start, end, window)
+                rows, fetched_at, history_ready, extremes = self.server.cache.read(start, end, window, after_block)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                 return

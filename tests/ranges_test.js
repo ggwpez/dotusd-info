@@ -40,6 +40,17 @@ function checkFixture(rows, wire) {
   equal(expand(series.tail(37)), rows.slice(-37), 'sample cap within a run');
 }
 function checkCache() {
+  const live = new BrowserHistory();
+  const initial = RangeSeries.fromWire([[100, 50, 1], [1, 2, 1, 1.01]]);
+  live.merge(initial, 0, 110, 110);
+  // Empty cursor responses must retain the last sample for subsequent polls.
+  live.merge(new RangeSeries(), live.rows.at(-1)[0], 116, 116);
+  equal(expand(live.rows), expand(initial), 'empty live poll retains samples and block cursor');
+  equal(live.missing(0, 116), [], 'empty live poll advances completed coverage');
+  const catchup = RangeSeries.fromWire([[104, 52, .99], [1, 396, 1, 1]]);
+  live.merge(catchup, live.rows.at(-1)[0], 410, 410);
+  equal(expand(live.rows), [...expand(initial), ...expand(catchup)], 'reconnect appends delayed samples without duplicates');
+  equal(live.missing(0, 410), [], 'reconnect completes coverage');
   const old = new RangeSeries([{t: 10, price: 1, block: 100, count: 100, dt: 2, db: 1}]);
   const history = new BrowserHistory();
   history.merge(old.window(90, 210), 90, 210, 1);
