@@ -26,6 +26,7 @@ const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
 const state = {rows: new RangeSeries(), range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, serverWarming: false, extremes: null};
 let controller, generation = 0, geometry, loading = false;
+let summaryValues = null;
 const backing = document.createElement('canvas');
 let chartDirty = true, drawFrame = null;
 function scheduleDraw() {
@@ -59,7 +60,7 @@ function ratingGradient(context, top, bottom, extent, alpha = '') {
   return gradient;
 }
 function updateRating() {
-  const last = !loading && !state.historyLoading ? state.rows.at(-1) : null;
+  const last = summaryValues?.last;
   const bps = last ? (last[1] - 1) * 10000 : NaN;
   const current = ratingForBps(bps);
   const preview = last ? hoveredRating ?? focusedRating : null;
@@ -76,11 +77,11 @@ function updateRating() {
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
-  const ready = last && !loading && !state.historyLoading;
-  $('latest').textContent = ready ? signed((last[1] - 1) * 10000) : '-';
-  $('price').textContent = ready ? last[1].toFixed(6) : '-';
-  const low = state.extremes ? (state.extremes.low[1]-1)*10000 : (rows.low ? (rows.low[1]-1)*10000 : 0);
-  const high = state.extremes ? (state.extremes.high[1]-1)*10000 : (rows.high ? (rows.high[1]-1)*10000 : 0);
+  const ready = summaryValues?.last;
+  $('latest').textContent = ready ? signed((ready[1] - 1) * 10000) : '-';
+  $('price').textContent = ready ? ready[1].toFixed(6) : '-';
+  const low = ready ? (summaryValues.low[1]-1)*10000 : 0;
+  const high = ready ? (summaryValues.high[1]-1)*10000 : 0;
   $('extremes').textContent = ready ? `${signed(low)} / ${signed(high)}` : '-';
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history…${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
   $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading samples…' : 'No price samples in this window');
@@ -112,6 +113,7 @@ async function refresh(force = false) {
   const start = state.zoom?.[0] ?? end - state.range;
   historyCache.expire(Date.now()/1000);
   if (force) historyCache.coverage = [];
+  const sameWindow = Math.abs((state.end - state.start) - (end - start)) < .01;
   state.start = start; state.end = end; state.error = null;
   state.extremes = null;
   const missing = historyCache.missing(start, end);
@@ -119,6 +121,9 @@ async function refresh(force = false) {
   // One full-window request for history; ordinary live polls retain a five-minute overlap.
   const recentStart = Math.max(start, end - 300);
   const left = live && historyCache.rows.length && !missing.some(([a]) => a < recentStart) ? recentStart : start;
+  // Keep the last completed summary during ordinary live overlap requests.
+  // A new historical window stays blank until its entire stream is drawn.
+  if (!(live && sameWindow && left === recentStart)) summaryValues = null;
   const publish = rows => {
     state.rows = rows.window(start, end);
     state.hover = null; chartDirty = true; summary(); draw();
@@ -163,7 +168,13 @@ async function refresh(force = false) {
   } finally {
     clearTimeout(timeout);
     if (ticket === generation) {
-      loading = false; state.historyLoading = historyCache.missing(start, end).length > 0; summary();
+      loading = false; state.historyLoading = historyCache.missing(start, end).length > 0;
+      if (!state.error && !state.historyLoading) {
+        summaryValues = {last: state.rows.at(-1),
+          low: state.extremes?.low ?? state.rows.low,
+          high: state.extremes?.high ?? state.rows.high};
+      }
+      summary();
     }
   }
 }
