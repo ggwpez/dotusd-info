@@ -57,12 +57,15 @@ function checkCache() {
   equal(history.missing(0, 210), [], 'coverage merge');
   history.expire(604900);
   assert(history.rows.at(0)[0] > 100, 'expiry clips inside range');
-  equal(history.missing(0, 210), [[0, 210]], 'periodic revalidation');
+  equal(history.missing(0, 210), [[0, 100]], 'only expired history loses coverage');
+  history.expire(604960);
+  equal(history.missing(160, 216), [[210, 216]], 'live polls retain history after a minute');
   const partial = new BrowserHistory();
   partial.merge(old, 0, 210, 1, false);
   equal(partial.missing(0, 210), [[0, 210]], 'warming response is retried');
   const large = new RangeSeries([{t: 10, price: 1, block: 1, count: 400000, dt: 2, db: 1}]);
   partial.merge(large, 0, 800010, 2);
   assert(partial.rows.length === 350000 && partial.rows.runs.length === 1, 'bounded cache without unrolling');
+  equal(partial.missing(0, 800010), [[0, 100008]], 'evicted samples lose coverage');
   assert([...large.points()].length === 2, '400000 flat samples draw as two points');
 }

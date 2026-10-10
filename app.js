@@ -27,7 +27,10 @@ const canvas = $('chart'), ctx = canvas.getContext('2d');
 const state = {rows: new RangeSeries(), range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, serverWarming: false, extremes: null};
 let controller, generation = 0, geometry, loading = false;
 const backing = document.createElement('canvas');
-let chartDirty = true;
+let chartDirty = true, drawFrame = null;
+function scheduleDraw() {
+  if (drawFrame === null) drawFrame = requestAnimationFrame(draw);
+}
 const signed = v => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
 const ratingColors = ['#73bf69', '#63c8ae', '#dfc464', '#f29b58', '#f2495c'];
 const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
@@ -173,14 +176,19 @@ function chartScale(peak) {
   return {extent, ticks: Array.from({length: divisions * 2 + 1}, (_, i) => (i - divisions) * step)};
 }
 function draw() {
+  if (drawFrame !== null) { cancelAnimationFrame(drawFrame); drawFrame = null; }
   // Render at least two pixels per CSS pixel for smoother thin lines.
   const rect = canvas.getBoundingClientRect(), dpr = Math.max(2, window.devicePixelRatio || 1);
   const width = Math.round(rect.width*dpr), height = Math.round(rect.height*dpr);
-  if (canvas.width !== width || canvas.height !== height) chartDirty = true;
-  canvas.width = width; canvas.height = height;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width; canvas.height = height; chartDirty = true;
+  }
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,width,height);
   ctx.setTransform(dpr,0,0,dpr,0,0);
   const w = rect.width, h = rect.height, left = 65, right = w-20, top = 18, bottom = h-35;
   if (chartDirty) {
+  ctx.lineCap = 'butt'; ctx.lineJoin = 'miter'; ctx.setLineDash([]);
   let peak = 0;
   let high = state.extremes?.high, low = state.extremes?.low;
   if (high && low) peak = Math.max(Math.abs((high[1]-1)*10000), Math.abs((low[1]-1)*10000));
@@ -247,8 +255,12 @@ function draw() {
     }
   }
   ctx.restore();
-  backing.width = canvas.width; backing.height = canvas.height;
-  backing.getContext('2d').drawImage(canvas, 0, 0);
+  if (backing.width !== width || backing.height !== height) {
+    backing.width = width; backing.height = height;
+  }
+  const backingContext = backing.getContext('2d');
+  backingContext.clearRect(0, 0, width, height);
+  backingContext.drawImage(canvas, 0, 0);
   chartDirty = false;
   } else {
     ctx.drawImage(backing, 0, 0, w, h);
@@ -277,9 +289,9 @@ canvas.addEventListener('pointermove', event => {
   if(state.drag) state.drag[1]=px;
   const t=state.start+(px-geometry.left)/(geometry.right-geometry.left)*(state.end-state.start);
   state.hover = state.rows.nearest(t);
-  draw();
+  scheduleDraw();
 });
-canvas.addEventListener('pointerleave',()=>{if(!state.drag){state.hover=null;draw();}});
+canvas.addEventListener('pointerleave',()=>{if(!state.drag){state.hover=null;scheduleDraw();}});
 canvas.addEventListener('pointerdown',event=>{if(!geometry || event.button!==0)return;state.drag=[position(event),position(event)];canvas.setPointerCapture(event.pointerId);});
 canvas.addEventListener('pointerup',event=>{
   if(!state.drag)return;

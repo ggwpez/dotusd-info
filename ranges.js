@@ -149,12 +149,11 @@ export class RangeSeries {
 }
 
 export class BrowserHistory {
-  constructor() { this.rows = new RangeSeries(); this.coverage = []; this.fetchedAt = null; this.checkedAt = 0; }
+  constructor() { this.rows = new RangeSeries(); this.coverage = []; this.fetchedAt = null; }
   expire(now) {
     const cutoff = now - 604800;
     this.rows = this.rows.window(cutoff, Infinity);
     this.coverage = this.coverage.filter(([, end]) => end > cutoff).map(([start, end]) => [Math.max(start, cutoff), end]);
-    if (now - this.checkedAt >= 60) { this.coverage = []; this.checkedAt = now; }
   }
   merge(rows, start, end, fetchedAt, complete = true) {
     // Each response is authoritative for (start, end], including empty windows.
@@ -162,10 +161,14 @@ export class BrowserHistory {
       ...this.rows.window(-Infinity, start).runs,
       ...rows.runs,
       ...this.rows.window(end, Infinity).runs,
-    ]).tail(350000);
+    ]);
+    const evictedThrough = this.rows.length > 350000 ? this.rows.at(-350001)[0] : -Infinity;
+    this.rows = this.rows.tail(350000);
     const intervals = [...this.coverage, ...(complete ? [[start, end]] : [])].sort((a, b) => a[0] - b[0]);
     this.coverage = [];
     for (const interval of intervals) {
+      if (interval[1] <= evictedThrough) continue;
+      interval[0] = Math.max(interval[0], evictedThrough);
       const previous = this.coverage.at(-1);
       if (previous && interval[0] <= previous[1]) previous[1] = Math.max(previous[1], interval[1]);
       else this.coverage.push([...interval]);
