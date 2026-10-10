@@ -422,7 +422,6 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
     if (event.key === 'Escape') { hoveredRating = null; segment.blur(); updateRating(); }
   });
 });
-$('refresh').onclick=()=>refresh(true);
 new ResizeObserver(draw).observe($('plot'));
 setInterval(()=>{if(((state.live&&!state.zoom)||state.historyLoading)&&!document.hidden&&!loading)refresh();},6000);
 // Age the last received timestamps independently of network requests or chart redraws.
