@@ -2,7 +2,7 @@ import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.
 const $ = id => document.getElementById(id);
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
-let reloading = false, checkingVersion = false;
+let reloading = false;
 function acceptVersion(version) {
   if (reloading) return false;
   if (!version || version === APP_VERSION) return true;
@@ -10,17 +10,6 @@ function acceptVersion(version) {
   controller?.abort(); generation++;
   location.reload();
   return false;
-}
-async function checkVersion() {
-  if (checkingVersion || reloading || document.hidden) return;
-  checkingVersion = true;
-  const request = new AbortController();
-  const timeout = setTimeout(() => request.abort(), 10000);
-  try {
-    const response = await fetch('/api/version', {cache: 'no-store', signal: request.signal});
-    if (response.ok) acceptVersion(response.headers.get('X-App-Version'));
-  } catch { /* Offline or restarting: retry on the next check. */ }
-  finally { clearTimeout(timeout); checkingVersion = false; }
 }
 const resolutions = new Map([['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]);
 function linkedView() {
@@ -383,17 +372,14 @@ setInterval(()=>{if(((state.live&&!state.zoom)||state.historyLoading)&&!document
 setInterval(updateFreshness, 1000);
 window.addEventListener('offline', updateFreshness);
 window.addEventListener('online', () => {
-  checkVersion();
   updateFreshness();
   if ((state.live && !state.zoom) || state.historyLoading) refresh();
 });
 document.addEventListener('visibilitychange', () => {
-  checkVersion();
   updateFreshness();
   if (!document.hidden && ((state.live && !state.zoom) || state.historyLoading)) refresh();
 });
-setInterval(checkVersion, 30000);
 if (acceptVersion(document.querySelector('meta[name="app-version"]')?.content)) {
-  // The initial price response checks the version; periodic checks cover idle views.
+  // Every price response checks the version, including when live updates resume.
   refresh();
 }

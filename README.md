@@ -49,9 +49,11 @@ At startup the server snapshots its assets and hashes the server, archive reader
 HTML, JavaScript (including the range module), and CSS into a release version. Responses carry `X-App-Version`,
 and `/api/version` returns the version even while price history is warming up.
 The client checks this header before decoding price responses and reloads the
-current URL on a mismatch, preserving the linked range/zoom. Visible tabs also
-check every 30 seconds, including paused charts, and check immediately on return
-to the tab or reconnection. Network failures retry without forcing a reload.
+current URL on a mismatch, preserving the linked range/zoom. Live polling checks
+the version through its price responses; there are no separate version requests.
+Completed fixed views stay idle until another data request is needed. Returning
+to a live tab or reconnecting refreshes prices and checks the version again.
+Network failures retry without forcing a reload.
 Assets remain tied to their startup snapshot during deployment; restart the
 server to activate changes, including when developing locally. Tabs opened before
 this feature was deployed need one manual reload to enable automatic updates.
