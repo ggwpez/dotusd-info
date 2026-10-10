@@ -27,6 +27,19 @@ The cache holds at most 1,368 summaries (about 107 KiB per snapshot on the serve
 references existing samples, and never grows with the number of requested windows.
 Summaries are rebuilt on merges, including corrections and eviction, and are
 released with their snapshot when its readers finish.
+Packed JSON and NDJSON responses share a six-second LRU across the four workers.
+It retains at most 32 entries and 8 MiB of encoded bytes, with a 4 MiB per-response
+limit; allocation follows actual responses, not seven days of hypothetical data.
+Keys use the immutable history generation, selected row and extrema boundaries,
+freshness/readiness, format and block cursor. Different browser timestamps can
+reuse identical selections, while publication, corrections, retention boundaries
+and cursor changes cannot serve an incorrect cached response. Concurrent misses
+for the same key share one encoding job. A short lock protects bookkeeping;
+selection, encoding and socket writes happen outside it. Raw diagnostic responses
+and oversized packed responses stream without retention. A cold cache buffers
+an eligible response before sending its batches; oversized responses fall back
+to streaming after the bounded cache attempt. The byte limit covers retained
+payloads, with additional bounded metadata, in-flight builds and active readers.
 Each upstream response is limited to 4 MiB. Four fixed HTTP workers
 serve requests from a FIFO holding at most 32 waiting connections. A full queue
 returns 503 with `Retry-After: 6`. Requests waiting two seconds expire with the
@@ -144,6 +157,29 @@ burst handling, not production capacity or guarantees under sustained load.
 All four combinations of old/new handling and backlog 5/64, with per-endpoint
 latencies and status counts, are saved in
 [`benchmarks/request-queue-2026-10-10.json`](benchmarks/request-queue-2026-10-10.json).
+
+### Encoded response cache benchmark
+
+The same isolated request benchmark compared commit `965fecf` with response reuse
+using 87,195 actual samples (about 2.2 days). The snapshot and request windows stay
+fixed, so later cases measure warm-cache fan-out without upstream invalidation,
+TLS or Caddy compression. They are not production capacity estimates.
+
+| Workload | Before p95 | Cached p95 | Successful requests before / after |
+| --- | ---: | ---: | ---: |
+| 32 steady clients | 157.19 ms | 6.13 ms | 768 / 768 |
+| 32 simultaneous requests, three bursts | 82.89 ms | 4.14 ms | 96 / 96 |
+
+A separate in-process measurement reduced full response preparation from about
+22.6 ms to 0.002 ms on a hit; a three-row poll went from 0.064 ms to 0.002 ms.
+HTTP parsing, socket writes and downstream compression still cost work per client.
+The bounded queue still rejects overload: the 64-request bursts rejected 19
+requests before and 57 after. Faster responses do not guarantee fewer rejections
+for a synchronized burst larger than the queue; scheduling affects admission.
+Fresh generations and expired entries pay encoding cost once per matching key.
+Tests cover concurrent miss sharing, failures, expiry, bounds, changed cursors,
+equivalent windows, corrected rows and readiness changes.
+Full results: [`benchmarks/response-cache-2026-10-10.json`](benchmarks/response-cache-2026-10-10.json).
 
 ### Sample packing benchmark
 

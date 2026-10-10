@@ -4,7 +4,8 @@ import argparse
 import base64
 import hashlib
 from bisect import bisect_right
-from collections import deque
+from collections import deque, OrderedDict
+from concurrent.futures import Future
 from itertools import islice
 import logging
 from contextlib import closing, contextmanager
@@ -206,6 +207,77 @@ class HistorySummaries:
         return result
 
 
+class ResponseCache:
+    """Bounded six-second LRU; concurrent misses share one encoding job."""
+    def __init__(self, max_entries=32, max_bytes=8 * 1024 * 1024, max_entry_bytes=4 * 1024 * 1024):
+        self.max_entries, self.max_bytes = max_entries, max_bytes
+        self.max_entry_bytes = max_entry_bytes
+        self.entries = OrderedDict()
+        self.pending = {}
+        self.bytes = 0
+        self.lock = threading.Lock()
+
+    def get(self, key, build):
+        with self.lock:
+            now = time.monotonic()
+            for expired in [k for k, (deadline, _, _) in self.entries.items() if deadline <= now]:
+                self.bytes -= self.entries.pop(expired)[2]
+            if key in self.entries:
+                self.entries.move_to_end(key)
+                return self.entries[key][1]
+            future = self.pending.get(key)
+            owner = future is None
+            if owner:
+                future = self.pending[key] = Future()
+        if not owner:
+            return future.result()
+        try:
+            chunks, size = [], 0
+            for chunk in build():
+                size += len(chunk)
+                if size > min(self.max_entry_bytes, self.max_bytes):
+                    # Oversized responses use the existing bounded streaming path.
+                    result = None
+                    break
+                chunks.append(chunk)
+            else:
+                result = tuple(chunks)
+            with self.lock:
+                if result is not None:
+                    while self.entries and (len(self.entries) >= self.max_entries or self.bytes + size > self.max_bytes):
+                        self.bytes -= self.entries.popitem(last=False)[1][2]
+                    self.entries[key] = (time.monotonic() + 6, result, size)
+                    self.bytes += size
+                future.set_result(result)
+                del self.pending[key]
+            return result
+        except BaseException as error:
+            with self.lock:
+                future.set_exception(error)
+                del self.pending[key]
+            raise
+
+
+def encode_response(rows, fetched_at, history_ready, extremes, raw=False, streaming=False):
+    def encode(record):
+        return json.dumps(record, allow_nan=False, separators=(',', ':')).encode()
+    if streaming:
+        yield encode({'encoding': 'ranges-stream-v1', 'fetchedAt': fetched_at,
+                      'historyReady': history_ready, 'extremes': extremes}) + b'\n'
+        for offset in range(0, len(rows), 8192):
+            yield encode({'ranges': list(pack_ranges(rows[offset:offset + 8192]))}) + b'\n'
+        yield b'{"done":true}\n'
+    else:
+        yield b'{"samples":[' if raw else b'{"encoding":"ranges-v1","ranges":['
+        records = iter(rows) if raw else pack_ranges(rows)
+        first = True
+        while batch := list(islice(records, 256)):
+            yield (b'' if first else b',') + encode(batch)[1:-1]
+            first = False
+        yield (b'],"fetchedAt":' + encode(fetched_at) + b',"historyReady":' + encode(history_ready) +
+               b',"extremes":' + encode(extremes) + b'}')
+
+
 class HistoryCache:
     """One writer fetches history; HTTP readers never access the upstream."""
     def __init__(self):
@@ -215,6 +287,8 @@ class HistoryCache:
         self.summaries = HistorySummaries(self.rows)
         self.fetched_at = None
         self.history_ready = False
+        self.generation = 0
+        self.responses = ResponseCache()
 
     def merge(self, rows, now, mark_fresh=True):
         # Serialize writers, but let readers use the previous immutable snapshot
@@ -231,26 +305,51 @@ class HistoryCache:
             with self.lock:
                 self.rows = replacement
                 self.summaries = summaries
+                self.generation += 1
                 if mark_fresh:
                     self.fetched_at = now
 
-    def read(self, start, end, window=None, after_block=None):
+    def selection(self, start, end, window):
         with self.lock:
             history, fetched_at, history_ready = self.rows, self.fetched_at, self.history_ready
             summaries = self.summaries
+            generation = self.generation
         if fetched_at is None:
             raise RuntimeError('History is warming up')
         start = max(start, time.time() - HISTORY_SECONDS)
         left = bisect_right(history, start, key=lambda row: row[0])
         right = bisect_right(history, end, key=lambda row: row[0])
-        extremes = None
+        bounds = None
         if window is not None:
             window_left = bisect_right(history, window[0], key=lambda row: row[0])
             window_right = bisect_right(history, window[1], key=lambda row: row[0])
-            extremes = summaries.extremes(history, window_left, window_right)
+            bounds = (window_left, window_right)
+        return history, summaries, fetched_at, history_ready, generation, left, right, bounds
+
+    @staticmethod
+    def read_selection(selection, after_block):
+        history, summaries, fetched_at, history_ready, _, left, right, bounds = selection
+        extremes = summaries.extremes(history, *bounds) if bounds is not None else None
         rows = (list(history[left:right]) if after_block is None else
                 summaries.after(history, left, right, after_block))
         return rows, fetched_at, history_ready, extremes
+
+    def read(self, start, end, window=None, after_block=None):
+        return self.read_selection(self.selection(start, end, window), after_block)
+
+    def response(self, start, end, window=None, after_block=None, raw=False, streaming=False):
+        selection = self.selection(start, end, window)
+        _, _, fetched_at, ready, generation, left, right, bounds = selection
+        # Different clocks can still select identical rows and summary windows.
+        # The cursor remains part of the key: polls must never share another cursor's delta.
+        key = (generation, fetched_at, ready, left, right, bounds, after_block, streaming)
+        def build():
+            return encode_response(*self.read_selection(selection, after_block), raw=raw, streaming=streaming)
+        if not raw:
+            cached = self.responses.get(key, build)
+            if cached is not None:
+                return cached
+        return build()
 
 
 class HistoryWorker:
@@ -445,38 +544,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
                 return
             try:
-                rows, fetched_at, history_ready, extremes = self.server.cache.read(start, end, window, after_block)
+                chunks = self.server.cache.response(start, end, window, after_block, raw, streaming)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                 return
-            if streaming:
-                self.send_headers(200, 'application/x-ndjson')
-                def send(record):
-                    self.wfile.write(json.dumps(record, allow_nan=False, separators=(',', ':')).encode() + b'\n')
-                    self.wfile.flush()
-                try:
-                    send({'encoding': 'ranges-stream-v1', 'fetchedAt': fetched_at,
-                          'historyReady': history_ready, 'extremes': extremes})
-                    # Independent packed batches can be decoded immediately, without round trips.
-                    for offset in range(0, len(rows), 8192):
-                        send({'ranges': list(pack_ranges(rows[offset:offset + 8192]))})
-                    send({'done': True})
-                except (OSError, TimeoutError):
-                    pass
-                return
-            # Stream bounded batches instead of building a second full JSON copy.
-            self.send_headers(200, 'application/json')
+            self.send_headers(200, 'application/x-ndjson' if streaming else 'application/json')
             try:
-                self.wfile.write(b'{"samples":[' if raw else b'{"encoding":"ranges-v1","ranges":[')
-                records = iter(rows) if raw else pack_ranges(rows)
-                first = True
-                while batch := list(islice(records, 256)):
-                    body = json.dumps(batch, allow_nan=False, separators=(',', ':')).encode()[1:-1]
-                    self.wfile.write((b'' if first else b',') + body)
-                    first = False
-                self.wfile.write(b'],"fetchedAt":' + json.dumps(fetched_at).encode() +
-                                 b',"historyReady":' + json.dumps(history_ready).encode() +
-                                 b',"extremes":' + json.dumps(extremes, allow_nan=False).encode() + b'}')
+                for chunk in chunks:
+                    self.wfile.write(chunk)
+                    if streaming:
+                        self.wfile.flush()
             except (OSError, TimeoutError):
                 pass
             return
