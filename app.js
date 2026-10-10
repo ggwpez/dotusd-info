@@ -321,6 +321,7 @@ function writeViewUrl() {
   if (url.href !== location.href) history.pushState(null, '', url);
 }
 function updateViewControls() {
+  $('live').hidden = !state.live || !!state.zoom;
   $('live').dataset.live = String(state.live);
   $('live-label').textContent = state.live ? '6s' : 'Refresh';
   $('live').setAttribute('aria-label', state.live ? 'Refresh prices; automatic updates every 6 seconds' : 'Refresh prices');
