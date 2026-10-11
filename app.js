@@ -15,7 +15,7 @@ function acceptVersion(version) {
 const resolutions = new Map([['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]);
 function linkedView() {
   const params = new URLSearchParams(location.search);
-  const range = resolutions.get(params.get('resolution')) ?? 3600;
+  const range = resolutions.get(params.get('resolution')) ?? 86400;
   const start = Number(params.get('start')), end = Number(params.get('end'));
   const valid = params.has('start') && params.has('end') &&
     params.get('start').trim() !== '' && params.get('end').trim() !== '' &&
