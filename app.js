@@ -2,11 +2,11 @@ import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.
 const $ = id => document.getElementById(id);
 const coingecko = document.body.dataset.priceSource === 'coingecko';
 const source = coingecko ? {
-  endpoint: '/api/coingecko/prices', currency: 'USDT', pollSeconds: 2,
+  endpoint: '/api/coingecko/prices', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 30, sampleLabel: 'DEX observation',
   empty: 'No DEX observations available in this window.',
 } : {
-  endpoint: '/api/prices', currency: 'USDT', pollSeconds: 2,
+  endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
   empty: 'No price samples in this window',
 };

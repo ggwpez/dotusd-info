@@ -25,7 +25,7 @@ class AppTests(unittest.TestCase):
         checkApp();
         function require(value, message) { if (!value) throw new Error(message); }
         require(source.endpoint === '/api/coingecko/prices', 'isolated API');
-        require(source.pollSeconds === 2, 'two second refresh');
+        require(source.pollSeconds === 6, 'six second refresh');
         require(elements.get('compare-source').href === '/?resolution=7d', 'comparison preserves range');
         reloading = false;
         const now = Date.now()/1000;

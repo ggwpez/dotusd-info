@@ -124,14 +124,14 @@ browser history, rating and chart code. Comparison links preserve query paramete
 `/api/coingecko/prices` uses the same handler, bounded `HistoryCache`, response cache
 and wire formats as `/api/prices`, with a separate cache to keep the sources isolated.
 
-An independent worker fetches only Asset Hub DEX `/tickers` every two seconds.
+An independent worker fetches only Asset Hub DEX `/tickers` every six seconds.
 It divides `DOT_1984.last_price` by `DOT_7873.last_price`, giving USDT per dotUSD.
 Both tickers use the DEX's last qualifying trade (or reserve fallback).
 No external CoinGecko API or API key is used. Missing, ambiguous or invalid quotes
 fail without replacing the last successful observation. The DEX rejects stale snapshots.
 
 Observations use collection time and null block numbers and are retained for seven
-days. The browser refreshes every two seconds using the shared rendering logic.
+days. The browser refreshes every six seconds using the shared rendering logic.
 Storage is atomically checkpointed at most once per minute, separately from pool
 ingestion. Reload preserves freshness. The `dex-last-trade-usdt-v2` source marker
 prevents previous CoinGecko-derived observations from entering the corrected feed.

@@ -56,7 +56,7 @@ def load_release():
                                PRICE_LABEL='Last-trade price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
                                SOURCE_NOTE='<a href="https://polkadot-hub-dex.parity.io/">Asset Hub DEX</a>: '
                                            'USDT per DOT ÷ dotUSD per DOT. DEX ticker methodology; no CoinGecko data. '
-                                           'Checked every 2 seconds; prices change when the upstream ticker changes.'),
+                                           'Checked every 6 seconds; prices change when the upstream ticker changes.'),
     }
     template = assets['index.html']
     for name, values in pages.items():
@@ -464,7 +464,7 @@ class HistoryWorker:
 
 class CoinGeckoWorker:
     """Cross Asset Hub DEX last-trade tickers; never call an external price provider."""
-    POLL_SECONDS = 2
+    POLL_SECONDS = 6
     HISTORY_BYTES = 32 * 1024 * 1024
     DEX_URL = 'https://polkadot-hub-dex.parity.io/tickers'
 

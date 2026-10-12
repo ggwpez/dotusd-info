@@ -57,15 +57,15 @@ class CoinGeckoTests(unittest.TestCase):
                 worker.poll()
             self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
 
-    def test_two_second_observations_throttle_disk_writes(self):
+    def test_six_second_observations_throttle_disk_writes(self):
         cache = page.HistoryCache()
         worker = page.CoinGeckoWorker(cache)
         worker.save_history = Mock()
         worker.fetch = Mock(return_value=[
             dict(ticker_id='DOT_1984', base_currency='DOT', target_currency='1984', last_price='2'),
             dict(ticker_id='DOT_7873', base_currency='DOT', target_currency='7873', last_price='2')])
-        self.assertEqual(worker.POLL_SECONDS, 2)
-        for stamp in (1800000000, 1800000002, 1800000004):
+        self.assertEqual(worker.POLL_SECONDS, 6)
+        for stamp in (1800000000, 1800000006, 1800000012):
             with patch.object(page.time, 'time', return_value=stamp), patch.object(page.time, 'monotonic', return_value=stamp):
                 worker.poll()
         self.assertEqual(len(cache.rows), 3)

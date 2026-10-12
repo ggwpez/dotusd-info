@@ -20,9 +20,9 @@ DEX's qualifying-trade rules and its reserve fallback when no trade qualifies.
 **No CoinGecko requests or prices are used.** The route name refers to the DEX's
 CoinGecko-compatible ticker format, not an external price source.
 
-Both pages refresh every two seconds and share the renderer, subscription logic,
+Both pages refresh every six seconds and share the renderer, subscription logic,
 peg-rating thresholds and history stream. The normal page retains its synchronized
-pool-reserve calculation. The comparison worker polls the DEX every two seconds;
+pool-reserve calculation. The comparison worker polls the DEX every six seconds;
 actual price changes depend on the upstream snapshot. Failed requests preserve
 last successful data and freshness. Persistence runs at most once per minute.
 
