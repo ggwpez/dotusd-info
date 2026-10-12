@@ -24,9 +24,10 @@ The footer links preserve range and zoom. Both views reuse the same renderer,
 peg-rating thresholds and history stream; the normal page continues using its
 synchronized pool-reserve price against USDT.
 
-The server records an observation every five minutes. History begins when
-collection starts; historical DEX last-trade quotes cannot be reconstructed from
-the current ticker. The browser refreshes every minute, and gaps stay visible.
+The server records an observation every five minutes. Earlier estimates can be
+reconstructed with `backfill_quotes.py`, pairing historical CoinGecko DOT/USD
+samples with the last qualifying finalized on-chain trade at each timestamp.
+The ticker endpoint alone does not provide historical trades. The browser refreshes every minute, and gaps stay visible.
 `--coingecko-history /path/to/history.json` preserves observed estimates across
 restarts; production uses a small rolling JSON file in its own writable state
 directory, without writing to the pool archive. Both sources must succeed before

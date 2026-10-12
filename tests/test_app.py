@@ -44,7 +44,7 @@ class AppTests(unittest.TestCase):
         require(elements.get('status').textContent.startsWith('Updates delayed'), 'failed source refresh becomes stale');
         state.rows = new RangeSeries(); state.error = null; state.historyLoading = false;
         summaryValues = null; summary();
-        require(elements.get('message').textContent.includes('No recorded USD estimates'), 'honest empty state');
+        require(elements.get('message').textContent.includes('No USD estimates available'), 'honest empty state');
         require(elements.get('price').textContent === '-', 'empty state has no fabricated price');
         JSON.stringify(true);
         """

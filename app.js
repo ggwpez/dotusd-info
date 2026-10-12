@@ -4,7 +4,7 @@ const coingecko = document.body.dataset.priceSource === 'coingecko';
 const source = coingecko ? {
   endpoint: '/api/coingecko/prices', currency: 'USD', pollSeconds: 60,
   staleFetch: 900, stalePrice: 900, sampleLabel: 'USD estimate',
-  empty: 'No recorded USD estimates in this window. History starts when collection begins.',
+  empty: 'No USD estimates available in this window.',
 } : {
   endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',

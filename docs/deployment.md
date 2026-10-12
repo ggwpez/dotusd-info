@@ -66,3 +66,22 @@ database is removed only after successful publication with `--cleanup-staging`.
 No background backfill or second permanent archive remains.
 
 Inspect progress with `ssh server journalctl -u dotusd-backfill -n 20 --no-pager`.
+
+## Comparison-page history (Python only)
+
+This is separate from pool archive backfill. Run reconstruction on a workstation:
+
+```sh
+python3 -m venv /tmp/dotusd-quote-work
+/tmp/dotusd-quote-work/bin/pip install substrate-interface
+curl -fsS 'https://api.coingecko.com/api/v3/coins/polkadot/market_chart?vs_currency=usd&days=1&precision=full' -o /tmp/dot-history.json
+/tmp/dotusd-quote-work/bin/python backfill_quotes.py --references /tmp/dot-history.json --output /tmp/quote-backfill.json --work /tmp/quote-blocks.jsonl
+```
+
+Keep the evidence artifact locally. Transfer it to a temporary server path, then
+install it as `/var/lib/dotusd-quotes/backfill.json` by atomic rename, readable by
+the web service. Never replace `history.json` while the quote worker is running.
+The worker validates and merges it within a minute without restarting the website;
+the temporary import is removed after its contents are saved to the final history.
+Confirm the comparison API has the expected timestamps and the normal page remains
+healthy. `substrate-interface` is needed only for reconstruction, not web serving.

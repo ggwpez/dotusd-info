@@ -135,7 +135,11 @@ without replacing the last successful observation.
 
 Observations use collection time and null block numbers. They are collected every
 five minutes, with ten-minute retry delays after failure, and retained for seven
-days. No synthetic historical data or pool-price substitution is used. Optional
+days. Historical reconstruction uses the same qualifying last-trade rule at each
+CoinGecko DOT/USD timestamp, including the DEX's reserve fallback only if there
+was no qualifying trade in the preceding 24 hours. These reconstructed estimates
+are distinct from quotes observed live and cannot reproduce historical API polling
+timing or CoinGecko's internal aggregation exactly. Optional
 `--coingecko-history` persistence writes a rolling JSON file by atomic replacement
 in a separate state directory. Loading old observations preserves their original
 freshness. Storage failures are isolated from live quote serving and pool ingestion.
@@ -146,3 +150,26 @@ Timestamp samples connect across gaps up to 15 minutes. Pool charts retain their
 original block-gap rules. A single observation is drawn as a dot immediately.
 Quote observations are marked delayed after 15 minutes without a successful
 refresh or recent sample. Visitor requests only read the server cache.
+
+### Reconstructed estimate import
+
+`backfill_quotes.py` runs outside production, using Python `substrate-interface`
+for SCALE decoding and `curl` for bounded public archive RPC requests. It matches
+`SwapExecuted` and `SwapCreditExecuted` paths, asset decimals and the DEX's
+10,000-base-unit dust threshold, and chooses the final qualifying event at or
+before each historical CoinGecko DOT/USD timestamp. It checks the chain genesis
+and runtime version and retains local resumable block and timestamp caches.
+Evidence includes each reference price, DEX quote, block and trade timestamp.
+
+Place the completed artifact atomically at `backfill.json` beside the configured
+quote history file. The independent quote worker checks once per minute, validates
+all samples and the conversion evidence before merging, preserves live observations
+on timestamp collisions, and leaves live freshness unchanged. It saves the merged
+history atomically and removes the temporary artifact only after persistence
+succeeds. Import errors do not prevent live quote polling or affect the pool cache.
+No production database or backfill service participates in this import.
+
+CoinGecko publishes [integration API standards](https://docs.google.com/document/d/1v27QFoQq1SKT3Priq3aqPgB70Xd_PnDzbOCiuoCyixw/edit),
+including the definition of `last_price` as the last transacted base/target price.
+Their [pricing methodology](https://www.coingecko.com/en/methodology) separately
+covers internal currency conversion, outlier filtering and market aggregation.

@@ -107,3 +107,29 @@ class CoinGeckoTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_staged_backfill_preserves_live_quotes_and_freshness(self):
+        now = int(time.time())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.json'
+            pending = path.with_name('backfill.json')
+            cache = page.HistoryCache()
+            cache.merge([(now-30, 1.002, None)], now-10)
+            worker = page.CoinGeckoWorker(cache, history_path=path)
+            rows = [[now-600, .99, None], [now-30, 1., None]]
+            payload = dict(source='dex-coingecko-usd-backfill-v1', samples=rows,
+                           evidence=[dict(timestamp=t, dotUsd=p*2, dotusdPerDot='2', tradeTimestamp=(t-60)*1000)
+                                     for t,p,_ in rows])
+            pending.write_text(json.dumps(payload))
+            worker.load_backfill()
+            self.assertEqual(cache.rows, ((now-600,.99,None),(now-30,1.002,None)))
+            self.assertEqual(cache.fetched_at, now-10)
+            self.assertFalse(pending.exists())
+            self.assertEqual(len(json.loads(path.read_text())['samples']),2)
+            before = cache.rows, cache.fetched_at, path.read_bytes()
+            payload['samples'][0][1] = .1  # fails evidence validation before cache mutation
+            pending.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError,'reference inputs'):
+                worker.load_backfill()
+            self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()),before)
+            self.assertTrue(pending.exists())

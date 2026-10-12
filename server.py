@@ -56,7 +56,7 @@ def load_release():
                                PRICE_LABEL='Estimated USD price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
                                SOURCE_NOTE='<a href="https://www.coingecko.com/en/coins/polkadot">CoinGecko DOT/USD</a> ÷ '
                                            '<a href="https://polkadot-hub-dex.parity.io/">DEX dotUSD per DOT</a>. '
-                                           'Estimate, not an official CoinGecko dotUSD price. Observed every 5 minutes; history starts with collection.'),
+                                           'Estimate, not an official CoinGecko dotUSD price. Observed every 5 minutes; earlier estimates reconstructed from finalized trades and historical DOT/USD.'),
     }
     template = assets['index.html']
     for name, values in pages.items():
@@ -556,19 +556,70 @@ class CoinGeckoWorker:
             self.cache.fetched_at = fetched
             self.cache.history_ready = True
 
+    def load_backfill(self):
+        """Consume a validated, atomically delivered reconstruction without a restart."""
+        if self.history_path is None:
+            return
+        pending = self.history_path.with_name('backfill.json')
+        if not pending.exists():
+            return
+        with pending.open('rb') as file:
+            body = file.read(MAX_UPSTREAM_BYTES + 1)
+        if len(body) > MAX_UPSTREAM_BYTES:
+            raise ValueError('Quote backfill exceeds size limit')
+        payload = json.loads(body)
+        if payload.get('source') != 'dex-coingecko-usd-backfill-v1':
+            raise ValueError('Wrong quote backfill source')
+        rows, evidence = payload['samples'], payload['evidence']
+        if not rows or len(rows) > MAX_SAMPLES or len(evidence) != len(rows):
+            raise ValueError('Invalid quote backfill size')
+        by_time = {item['timestamp']: item for item in evidence}
+        now, previous = time.time(), -1
+        for stamp, price, block in rows:
+            self.positive(stamp)
+            self.positive(price)
+            if (not isinstance(stamp, (int, float)) or not isinstance(price, (int, float)) or
+                    block is not None or not previous < stamp <= now):
+                raise ValueError('Invalid quote backfill sample')
+            item = by_time[stamp]
+            expected = float(self.positive(item['dotUsd']) / self.positive(item['dotusdPerDot']))
+            if not math.isclose(price, expected, rel_tol=1e-12):
+                raise ValueError('Backfill quote does not match its reference inputs')
+            if item['tradeTimestamp'] is not None and not stamp * 1000 - 86400000 <= item['tradeTimestamp'] <= stamp * 1000:
+                raise ValueError('Backfill trade lies outside the ticker window')
+            previous = stamp
+        with self.cache.lock:
+            existing = {row[0] for row in self.cache.rows}
+        # Observations already collected by this server win timestamp collisions.
+        self.cache.merge([row for row in rows if row[0] not in existing], now, mark_fresh=False)
+        with self.cache.lock:
+            if self.cache.fetched_at is None:
+                self.cache.fetched_at = rows[-1][0]
+            self.cache.history_ready = True
+        self.save_history()
+        pending.unlink()
+        logging.info('Imported %s reconstructed USD estimates', len(rows))
+
     def run(self):
         try:
             self.load_history()
         except Exception:
             logging.exception('Unable to load estimated quote history')
+        next_poll = 0
         while not self.stop.is_set():
-            delay = 300
             try:
-                self.poll()
+                self.load_backfill()
             except Exception:
-                delay = 600
-                logging.exception('Estimated USD quote refresh failed')
-            self.stop.wait(delay)
+                logging.exception('Unable to import reconstructed USD estimates')
+            if time.monotonic() >= next_poll:
+                delay = 300
+                try:
+                    self.poll()
+                except Exception:
+                    delay = 600
+                    logging.exception('Estimated USD quote refresh failed')
+                next_poll = time.monotonic() + delay
+            self.stop.wait(min(60, max(0, next_poll - time.monotonic())))
 
 
 class CacheServer(HTTPServer):
