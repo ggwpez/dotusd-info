@@ -40,6 +40,6 @@ if ! systemctl reload caddy; then
     systemctl reload caddy
     exit 1
 fi
-systemctl is-active dotusd-info caddy arb-peg arb-prometheus dotless arb-bot
+systemctl is-active dotusd-info caddy arb-peg arb-prometheus
 systemctl is-enabled dotusd-info
 REMOTE
