@@ -62,6 +62,8 @@ const cancelAnimationFrame = () => {};
 const setInterval = () => {};
 
 function checkApp() {
+  displayScale = 'bps';
+  applyScale();
   function assert(value, message) {
     if (!value) throw new Error(message);
   }

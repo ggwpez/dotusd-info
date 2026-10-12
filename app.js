@@ -64,7 +64,7 @@ function scheduleDraw() {
 }
 const signed = v => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
 // Display units never alter stored prices, rating thresholds, or subscriptions.
-let displayScale = 'bps';
+let displayScale = 'dollars';
 try {
   const saved = localStorage.getItem('dotusd-display-scale');
   if (['bps', 'percent', 'dollars'].includes(saved)) displayScale = saved;

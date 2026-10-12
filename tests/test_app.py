@@ -57,6 +57,7 @@ class AppTests(unittest.TestCase):
         source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
         source += r"""
         function require(value, message) { if (!value) throw new Error(message); }
+        require(displayScale === 'dollars', 'dollar price is the default');
         let requests = 0;
         refresh = () => requests++;
         state.start = 100; state.end = 200;
