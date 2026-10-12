@@ -65,7 +65,9 @@ class Archive:
 def database(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
-    db.execute('PRAGMA journal_mode=WAL')
+    # Read-only consumers cannot recreate WAL sidecars after the writer exits.
+    # Rollback journaling leaves a self-contained archive on completion.
+    db.execute('PRAGMA journal_mode=DELETE')
     db.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
     db.execute('''CREATE TABLE IF NOT EXISTS samples (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, number INTEGER UNIQUE NOT NULL,

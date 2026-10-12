@@ -63,3 +63,34 @@ class BackfillTests(unittest.TestCase):
         archive.ws.recv.return_value = '[{"id":0,"error":{"code":-1}}]'
         with self.assertRaises(RuntimeError):
             archive.batch([('m', [])])
+
+    def test_completed_archive_is_readable_without_wal_sidecars(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'archive.sqlite3'
+            db = backfill.database(path)
+            now = time.time()
+            backfill.store_batch(db, [(12, 'h12', int((now-100)*1000), 1.1, '[]')], int(now*1000))
+            self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0], 'delete')
+            db.close()
+            self.assertFalse(Path(str(path) + '-wal').exists())
+            self.assertFalse(Path(str(path) + '-shm').exists())
+            worker = server.HistoryWorker(server.HistoryCache(), 'http://unused', archive=path)
+            self.assertTrue(worker.load_archive())
+            self.assertEqual(worker.cache.rows[0][1:], (1.1, 12))
+
+    def test_archive_failure_does_not_revoke_loaded_history(self):
+        cache = server.HistoryCache()
+        worker = server.HistoryWorker(cache, 'http://unused')
+        worker.backfill_end = time.time() - server.HISTORY_SECONDS - 60
+        worker.poll = Mock()
+        worker.load_archive = Mock(side_effect=[True, sqlite3.OperationalError('archive unavailable')])
+        readiness = []
+        def wait(_):
+            readiness.append(cache.history_ready)
+            if len(readiness) == 2:
+                worker.stop.set()
+        worker.stop.wait = wait
+        with patch.object(server.logging, 'exception'):
+            worker.run()
+        self.assertEqual(readiness, [True, True])
+        self.assertEqual(worker.poll.call_count, 2)

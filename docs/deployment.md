@@ -36,6 +36,9 @@ clock is extended backwards from the existing boundary, spacing tied timestamps
 by two seconds; original block timestamps remain in SQLite. Archive loads never
 mark a failed live refresh as healthy.
 
+The backfill service should remain disabled between manual runs. Completed archives
+use rollback journaling so the read-only web service does not depend on WAL sidecars.
+
 `dotusd-backfill.service` runs with the existing prometheus user, restarts on
 failure, resumes committed batches, and exits after verifying complete block
 coverage. Dependencies on the server: `python3-websocket` and `python3-xxhash`.
@@ -44,7 +47,7 @@ After `./deploy/deploy.sh server`, install/start it with:
 ```sh
 ssh server 'sudo install -d -o prometheus -g prometheus -m 0755 /var/lib/dotusd-info'
 scp deploy/dotusd-backfill.service server:/tmp/dotusd-backfill.service
-ssh server 'sudo install -m 0644 /tmp/dotusd-backfill.service /etc/systemd/system/dotusd-backfill.service && sudo systemctl daemon-reload && sudo systemctl enable dotusd-backfill && sudo systemctl start --no-block dotusd-backfill'
+ssh server 'sudo install -m 0644 /tmp/dotusd-backfill.service /etc/systemd/system/dotusd-backfill.service && sudo systemctl daemon-reload && sudo systemctl start --no-block dotusd-backfill'
 ```
 
 Inspect progress with `ssh server journalctl -u dotusd-backfill -n 20 --no-pager`.

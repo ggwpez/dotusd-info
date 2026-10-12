@@ -394,6 +394,7 @@ class HistoryWorker:
         self.backfill_end = None
         self.archive = archive
         self.archive_seq = 0
+        self.archive_ready = False
 
     def fetch(self, start, end):
         query = query_window({'start': [start], 'end': [end]})
@@ -441,18 +442,17 @@ class HistoryWorker:
     def run(self):
         while not self.stop.is_set():
             failed = False
-            archive_ready = False
             try:
                 self.poll()
             except Exception:
                 failed = True
                 logging.exception('Background price history refresh failed')
             try:
-                archive_ready = self.load_archive()
+                self.archive_ready = self.load_archive()
             except (sqlite3.Error, OSError):
                 failed = True
                 logging.exception('Archive history load failed')
-            ready = (archive_ready and self.backfill_end is not None and
+            ready = (self.archive_ready and self.backfill_end is not None and
                      self.backfill_end <= time.time() - HISTORY_SECONDS)
             with self.cache.lock:
                 self.cache.history_ready = ready

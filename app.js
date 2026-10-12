@@ -211,7 +211,9 @@ async function refresh(force = false) {
     if (ticket === generation) {
       loading = false;
       state.historyLoading = historyCache.missing(start, end).length > 0;
-      if (!state.error && !state.historyLoading) {
+      // A complete response can contain live prices while older history is still
+      // loading or unavailable. Archive readiness must not hide the live metric.
+      if (!state.error) {
         summaryValues = {last: state.rows.at(-1),
           low: state.extremes?.low ?? state.rows.low,
           high: state.extremes?.high ?? state.rows.high};
