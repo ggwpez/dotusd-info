@@ -124,36 +124,23 @@ browser history, rating and chart code. Comparison links preserve query paramete
 `/api/coingecko/prices` uses the same handler, bounded `HistoryCache`, response cache
 and wire formats as `/api/prices`, with a separate cache to keep the sources isolated.
 
-An independent background worker fetches CoinGecko's `simple/price` for
-`polkadot` in USD with `last_updated_at`, plus the Asset Hub DEX `/tickers`.
-It divides DOT/USD by the `DOT_7873` ticker's dotUSD-per-DOT `last_price`.
-This estimates a single market's USD price; CoinGecko's internal pathfinding,
-ticker acceptance and aggregation are not reproduced. The DEX endpoint itself
-returns 503 if its index is stale; CoinGecko references older than 15 minutes
-are also rejected. Missing, ambiguous, non-positive and non-finite quotes fail
-without replacing the last successful observation.
+An independent worker fetches only Asset Hub DEX `/tickers` every two seconds.
+It divides `DOT_1984.last_price` by `DOT_7873.last_price`, giving USDT per dotUSD.
+Both tickers use the DEX's last qualifying trade (or reserve fallback).
+No external CoinGecko API or API key is used. Missing, ambiguous or invalid quotes
+fail without replacing the last successful observation. The DEX rejects stale snapshots.
 
-Observations use collection time and null block numbers. They are collected every
-five minutes, with ten-minute retry delays after failure, and retained for seven
-days. Historical reconstruction uses the same qualifying last-trade rule at each
-CoinGecko DOT/USD timestamp, including the DEX's reserve fallback only if there
-was no qualifying trade in the preceding 24 hours. These reconstructed estimates
-are distinct from quotes observed live and cannot reproduce historical API polling
-timing or CoinGecko's internal aggregation exactly. Optional
-`--coingecko-history` persistence writes a rolling JSON file by atomic replacement
-in a separate state directory. Loading old observations preserves their original
-freshness. Storage failures are isolated from live quote serving and pool ingestion.
-The optional API key is sent only to CoinGecko, never to the DEX or browser.
-
-The browser refreshes the full selected window every minute without block cursors.
-Timestamp samples connect across gaps up to 15 minutes. Pool charts retain their
-original block-gap rules. A single observation is drawn as a dot immediately.
-Quote observations are marked delayed after 15 minutes without a successful
-refresh or recent sample. Visitor requests only read the server cache.
+Observations use collection time and null block numbers and are retained for seven
+days. The browser refreshes every two seconds using the shared rendering logic.
+Storage is atomically checkpointed at most once per minute, separately from pool
+ingestion. Reload preserves freshness. The `dex-last-trade-usdt-v2` source marker
+prevents previous CoinGecko-derived observations from entering the corrected feed.
+Visitor requests read memory only. Samples are marked delayed after 30 seconds.
 
 ### Reconstructed estimate import
 
-`backfill_quotes.py` runs outside production, using Python `substrate-interface`
+**Legacy:** `backfill_quotes.py` currently generates the retired v1 formula and
+its artifacts are rejected by the v2 worker. It runs outside production, using Python `substrate-interface`
 for SCALE decoding and `curl` for bounded public archive RPC requests. It matches
 `SwapExecuted` and `SwapCreditExecuted` paths, asset decimals and the DEX's
 10,000-base-unit dust threshold, and chooses the final qualifying event at or
@@ -162,7 +149,7 @@ and runtime version and retains local resumable block and timestamp caches.
 Evidence includes each reference price, DEX quote, block and trade timestamp.
 
 Place the completed artifact atomically at `backfill.json` beside the configured
-quote history file. The independent quote worker checks once per minute, validates
+quote history file. The independent quote worker checks between live polls, validates
 all samples and the conversion evidence before merging, preserves live observations
 on timestamp collisions, and leaves live freshness unchanged. It saves the merged
 history atomically and removes the temporary artifact only after persistence

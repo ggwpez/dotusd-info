@@ -13,17 +13,18 @@ from test_server import page
 
 
 class CoinGeckoTests(unittest.TestCase):
-    def test_fetch_bounds_and_keeps_api_key_on_coingecko_only(self):
+    def test_fetch_bounds_and_rejects_other_hosts(self):
         http = Mock()
-        worker = page.CoinGeckoWorker(page.HistoryCache(), http=http, api_key='test-key')
-        for url in (worker.DOT_URL, worker.DEX_URL):
-            http.open.return_value = io.BytesIO(b'{}')
-            self.assertEqual(worker.fetch(url), {})
-            request = http.open.call_args.args[0]
-            self.assertEqual(request.get_header('X-cg-demo-api-key'), 'test-key' if url == worker.DOT_URL else None)
+        worker = page.CoinGeckoWorker(page.HistoryCache(), http=http)
+        http.open.return_value = io.BytesIO(b'[]')
+        self.assertEqual(worker.fetch(worker.DEX_URL), [])
+        http.open.assert_called_once()
+        with self.assertRaisesRegex(ValueError, 'Only Asset Hub DEX'):
+            worker.fetch('https://api.coingecko.com/api/v3/simple/price')
+        http.open.assert_called_once()
         http.open.return_value = io.BytesIO(b' ' * (page.MAX_UPSTREAM_BYTES + 1))
         with self.assertRaisesRegex(ValueError, 'size limit'):
-            worker.fetch(worker.DOT_URL)
+            worker.fetch(worker.DEX_URL)
 
     def test_quote_orientation_persistence_and_failed_refresh(self):
         now = 1800000000
@@ -31,9 +32,9 @@ class CoinGeckoTests(unittest.TestCase):
             path = Path(directory) / 'history.json'
             cache = page.HistoryCache()
             worker = page.CoinGeckoWorker(cache, history_path=path)
-            reference = {'polkadot': {'usd': 2.02, 'last_updated_at': now - 60}}
+            reference = {'ticker_id': 'DOT_1984', 'base_currency': 'DOT', 'target_currency': '1984', 'last_price': '2.02'}
             ticker = {'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '2'}
-            worker.fetch = Mock(side_effect=[reference, [ticker]])
+            worker.fetch = Mock(return_value=[reference, ticker])
             with patch.object(page.time, 'time', return_value=now):
                 worker.poll()
             self.assertEqual(cache.rows, ((now, 1.01, None),))
@@ -47,22 +48,45 @@ class CoinGeckoTests(unittest.TestCase):
             for response in ([], [ticker, ticker], [dict(ticker, last_price='NaN')],
                              [dict(ticker, last_price='0')], [dict(ticker, last_price=True)],
                              [dict(ticker, target_currency='1984')]):
-                worker.fetch = Mock(side_effect=[reference, response])
+                worker.fetch = Mock(return_value=[reference] + response)
                 with self.assertRaises(ValueError), patch.object(page.time, 'time', return_value=now+300):
                     worker.poll()
                 self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
-            worker.fetch = Mock(side_effect=[reference, [ticker]])
-            with self.assertRaisesRegex(ValueError,'stale'), patch.object(page.time, 'time', return_value=now+1000):
+            worker.fetch = Mock(return_value=[ticker])
+            with self.assertRaisesRegex(ValueError, 'missing'):
                 worker.poll()
             self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
+
+    def test_two_second_observations_throttle_disk_writes(self):
+        cache = page.HistoryCache()
+        worker = page.CoinGeckoWorker(cache)
+        worker.save_history = Mock()
+        worker.fetch = Mock(return_value=[
+            dict(ticker_id='DOT_1984', base_currency='DOT', target_currency='1984', last_price='2'),
+            dict(ticker_id='DOT_7873', base_currency='DOT', target_currency='7873', last_price='2')])
+        self.assertEqual(worker.POLL_SECONDS, 2)
+        for stamp in (1800000000, 1800000002, 1800000004):
+            with patch.object(page.time, 'time', return_value=stamp), patch.object(page.time, 'monotonic', return_value=stamp):
+                worker.poll()
+        self.assertEqual(len(cache.rows), 3)
+        worker.save_history.assert_called_once()
+        self.assertTrue(all(call.args == (worker.DEX_URL,) for call in worker.fetch.call_args_list))
+
+    def test_old_coingecko_history_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.json'
+            path.write_text(json.dumps(dict(source='dex-coingecko-usd-v1', samples=[[time.time(), 1, None]], fetchedAt=time.time())))
+            cache = page.HistoryCache()
+            page.CoinGeckoWorker(cache, history_path=path).load_history()
+            self.assertEqual(cache.rows, ())
 
     def test_history_is_observed_and_trimmed_not_fabricated(self):
         now = 1800000000
         cache = page.HistoryCache()
         cache.merge([(now-604799, .99, None)], now-300)
         worker = page.CoinGeckoWorker(cache)
-        worker.fetch = Mock(side_effect=[{'polkadot': {'usd': 1, 'last_updated_at': now+300}},
-            [{'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '1'}]])
+        worker.fetch = Mock(return_value=[{'ticker_id': 'DOT_1984', 'base_currency': 'DOT', 'target_currency': '1984', 'last_price': '1'},
+            {'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '1'}])
         with patch.object(page.time, 'time', return_value=now+300):
             worker.poll()
         self.assertEqual(cache.rows, ((now+300, 1., None),))
@@ -79,8 +103,8 @@ class CoinGeckoTests(unittest.TestCase):
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         try:
-            for path, source, quote in [('/', 'pools', 'USDT'), ('/coingecko', 'coingecko', 'USD'),
-                                        ('/coingecko/', 'coingecko', 'USD')]:
+            for path, source, quote in [('/', 'pools', 'USDT'), ('/coingecko', 'coingecko', 'USDT'),
+                                        ('/coingecko/', 'coingecko', 'USDT')]:
                 with urlopen(base + path) as response:
                     body = response.read()
                     self.assertIn(f'data-price-source="{source}"'.encode(), body)
@@ -117,8 +141,8 @@ class CoinGeckoTests(unittest.TestCase):
             cache.merge([(now-30, 1.002, None)], now-10)
             worker = page.CoinGeckoWorker(cache, history_path=path)
             rows = [[now-600, .99, None], [now-30, 1., None]]
-            payload = dict(source='dex-coingecko-usd-backfill-v1', samples=rows,
-                           evidence=[dict(timestamp=t, dotUsd=p*2, dotusdPerDot='2', tradeTimestamp=(t-60)*1000)
+            payload = dict(source='dex-last-trade-usdt-backfill-v2', samples=rows,
+                           evidence=[dict(timestamp=t, usdtPerDot=p*2, dotusdPerDot='2', tradeTimestamp=(t-60)*1000)
                                      for t,p,_ in rows])
             pending.write_text(json.dumps(payload))
             worker.load_backfill()

@@ -14,28 +14,21 @@ blocks appear as gaps in the chart.
 
 ## Compare with CoinGecko
 
-Open `/coingecko` for the same chart using an estimated dotUSD **USD** price:
-CoinGecko's DOT/USD price divided by the Asset Hub DEX's `DOT_7873.last_price`
-(dotUSD per DOT). This is a single-market conversion estimate, not CoinGecko's
-official aggregated dotUSD price or an exact reproduction of its internal pricing.
-The DEX quote uses its last qualifying trade, with reserves as its own fallback.
+Open `/coingecko` for dotUSD / **USDT** calculated entirely from Asset Hub DEX
+last-trade tickers: `DOT_1984.last_price / DOT_7873.last_price`. Both legs use the
+DEX's qualifying-trade rules and its reserve fallback when no trade qualifies.
+**No CoinGecko requests or prices are used.** The route name refers to the DEX's
+CoinGecko-compatible ticker format, not an external price source.
 
-The footer links preserve range and zoom. Both views reuse the same renderer,
-peg-rating thresholds and history stream; the normal page continues using its
-synchronized pool-reserve price against USDT.
+Both pages refresh every two seconds and share the renderer, subscription logic,
+peg-rating thresholds and history stream. The normal page retains its synchronized
+pool-reserve calculation. The comparison worker polls the DEX every two seconds;
+actual price changes depend on the upstream snapshot. Failed requests preserve
+last successful data and freshness. Persistence runs at most once per minute.
 
-The server records an observation every five minutes. Earlier estimates can be
-reconstructed with `backfill_quotes.py`, pairing historical CoinGecko DOT/USD
-samples with the last qualifying finalized on-chain trade at each timestamp.
-The ticker endpoint alone does not provide historical trades. The browser refreshes every minute, and gaps stay visible.
-`--coingecko-history /path/to/history.json` preserves observed estimates across
-restarts; production uses a small rolling JSON file in its own writable state
-directory, without writing to the pool archive. Both sources must succeed before
-an observation is recorded; a DOT reference older than 15 minutes is rejected.
-Failed requests retain the last successful data and its original freshness.
-
-Public API access is attempted by default. If needed, set
-`COINGECKO_DEMO_API_KEY`; this key is sent only to CoinGecko from the server.
+The comparison history uses `dex-last-trade-usdt-v2`. Old CoinGecko-derived history
+and imports are rejected rather than mixed into this calculation. The old
+`backfill_quotes.py` reconstruction tool is legacy and cannot produce v2 imports.
 
 ## Run it locally
 

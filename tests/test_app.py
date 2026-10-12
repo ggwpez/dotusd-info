@@ -16,7 +16,7 @@ class AppTests(unittest.TestCase):
         source += '\ncheckApp(); JSON.stringify(true);'
         self.assertTrue(evaluate(source))
 
-    def test_coingecko_uses_usd_timestamps_and_shared_rendering(self):
+    def test_coingecko_uses_dex_timestamps_and_shared_rendering(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += "\ndocument.body.dataset.priceSource = 'coingecko'; location.search = '?resolution=7d';"
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
@@ -25,26 +25,27 @@ class AppTests(unittest.TestCase):
         checkApp();
         function require(value, message) { if (!value) throw new Error(message); }
         require(source.endpoint === '/api/coingecko/prices', 'isolated API');
+        require(source.pollSeconds === 2, 'two second refresh');
         require(elements.get('compare-source').href === '/?resolution=7d', 'comparison preserves range');
         reloading = false;
         const now = Date.now()/1000;
         state.start = now - 3600; state.end = now; state.live = true; state.zoom = null;
-        state.rows = RangeSeries.fromWire([[now - 600, null, .999], [0, now - 300, null, 1.001]]);
+        state.rows = RangeSeries.fromWire([[now - 4, null, .999], [0, now - 2, null, 1.001]]);
         state.extremes = null; state.hover = 1; state.fetchedAt = now;
         chartDirty = true; drawing.length = 0; draw();
-        require(elements.get('tooltip').children.some(child => child.textContent === '1.00100000 USD'), 'USD tooltip');
+        require(elements.get('tooltip').children.some(child => child.textContent === '1.00100000 USDT'), 'USDT tooltip');
         const points = [...pixelRows(state.rows, t => t, connectSamples)];
         require(points.length === 2 && points[0].move && !points[1].move, 'connect timestamp samples');
         require(!connectSamples([now - 2000, 1, null], [now, 1, null]), 'break missing recent data');
         require(!connectSamples([now - 100000, 1, null], [now - 96400, 1, null]), 'older history also preserves observation gaps');
         require(!connectSamples([now - 100000, 1, null], [now - 92800, 1, null]), 'break missing hourly data');
         updateFreshness();
-        require(elements.get('status').dataset.state === 'live', '5 minute sample is fresh');
+        require(elements.get('status').dataset.state === 'live', '2 second sample is fresh');
         state.fetchedAt = now - 1000; updateFreshness();
         require(elements.get('status').textContent.startsWith('Updates delayed'), 'failed source refresh becomes stale');
         state.rows = new RangeSeries(); state.error = null; state.historyLoading = false;
         summaryValues = null; summary();
-        require(elements.get('message').textContent.includes('No USD estimates available'), 'honest empty state');
+        require(elements.get('message').textContent.includes('No DEX observations available'), 'honest empty state');
         require(elements.get('price').textContent === '-', 'empty state has no fabricated price');
         JSON.stringify(true);
         """

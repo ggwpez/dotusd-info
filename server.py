@@ -51,12 +51,12 @@ def load_release():
                            DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
                            PRICE_LABEL='Spot price', OTHER_PATH='/coingecko', OTHER_LABEL='Compare CoinGecko',
                            SOURCE_NOTE='Pool reserve price · dotUSD → DOT → USDT · excludes fees and slippage.'),
-        'coingecko.html': dict(QUOTE='USD', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='COINGECKO ESTIMATE',
-                               DESCRIPTION='Estimated dotUSD USD price using the Asset Hub DEX quote and CoinGecko DOT price.',
-                               PRICE_LABEL='Estimated USD price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
-                               SOURCE_NOTE='<a href="https://www.coingecko.com/en/coins/polkadot">CoinGecko DOT/USD</a> ÷ '
-                                           '<a href="https://polkadot-hub-dex.parity.io/">DEX dotUSD per DOT</a>. '
-                                           'Estimate, not an official CoinGecko dotUSD price. Observed every 5 minutes; earlier estimates reconstructed from finalized trades and historical DOT/USD.'),
+        'coingecko.html': dict(QUOTE='USDT', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='DEX LAST-TRADE PRICE',
+                               DESCRIPTION='dotUSD / USDT using Asset Hub DEX last-trade tickers.',
+                               PRICE_LABEL='Last-trade price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
+                               SOURCE_NOTE='<a href="https://polkadot-hub-dex.parity.io/">Asset Hub DEX</a>: '
+                                           'USDT per DOT ÷ dotUSD per DOT. DEX ticker methodology; no CoinGecko data. '
+                                           'Checked every 2 seconds; prices change when the upstream ticker changes.'),
     }
     template = assets['index.html']
     for name, values in pages.items():
@@ -463,23 +463,23 @@ class HistoryWorker:
 
 
 class CoinGeckoWorker:
-    """Observe a DEX quote converted using CoinGecko DOT/USD; never substitute pool data."""
-    DOT_URL = ('https://api.coingecko.com/api/v3/simple/price?ids=polkadot&vs_currencies=usd'
-               '&include_last_updated_at=true&precision=full')
+    """Cross Asset Hub DEX last-trade tickers; never call an external price provider."""
+    POLL_SECONDS = 2
+    HISTORY_BYTES = 32 * 1024 * 1024
     DEX_URL = 'https://polkadot-hub-dex.parity.io/tickers'
 
-    def __init__(self, cache, http=None, api_key=None, history_path=None):
+    def __init__(self, cache, http=None, history_path=None):
         self.cache = cache
         self.http = http or urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        self.api_key = api_key
+        self.last_saved = None
         self.history_path = history_path
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='coingecko-history', daemon=True)
 
     def fetch(self, url):
         request = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'dotusd-info/1.0'})
-        if self.api_key and url == self.DOT_URL:
-            request.add_header('x-cg-demo-api-key', self.api_key)
+        if url != self.DEX_URL:
+            raise ValueError('Only Asset Hub DEX requests are allowed')
         with self.http.open(request, timeout=20) as response:
             body = response.read(MAX_UPSTREAM_BYTES + 1)
         if len(body) > MAX_UPSTREAM_BYTES:
@@ -499,18 +499,16 @@ class CoinGeckoWorker:
         return number
 
     def poll(self):
-        reference = self.fetch(self.DOT_URL)['polkadot']
         tickers = self.fetch(self.DEX_URL)
-        matches = [ticker for ticker in tickers if ticker.get('ticker_id') == 'DOT_7873'
-                   and ticker.get('base_currency') == 'DOT' and ticker.get('target_currency') == '7873']
-        if len(matches) != 1:
-            raise ValueError('DEX dotUSD ticker is missing or ambiguous')
+        def quote(asset):
+            matches = [ticker for ticker in tickers if ticker.get('ticker_id') == f'DOT_{asset}'
+                       and ticker.get('base_currency') == 'DOT' and ticker.get('target_currency') == asset]
+            if len(matches) != 1:
+                raise ValueError('DEX ticker is missing or ambiguous')
+            return self.positive(matches[0]['last_price'])
+        # Both legs come from the same DEX snapshot, with identical trade/dust rules.
+        price = float(quote('1984') / quote('7873'))
         now = time.time()
-        updated = float(self.positive(reference['last_updated_at']))
-        if not now - 900 <= updated <= now + 60:
-            raise ValueError('CoinGecko DOT reference is stale')
-        # last_price is dotUSD per DOT; invert it and multiply by USD per DOT.
-        price = float(self.positive(reference['usd']) / self.positive(matches[0]['last_price']))
         if not math.isfinite(price) or price <= 0:
             raise ValueError('Invalid converted USD price')
         self.cache.merge([(now, price, None)], now)
@@ -519,7 +517,9 @@ class CoinGeckoWorker:
         # Persistence is isolated from both the pool archive and live ingestion.
         # A storage failure must not prevent the current quote from being served.
         try:
-            self.save_history()
+            if self.last_saved is None or time.monotonic() - self.last_saved >= 60:
+                self.save_history()
+                self.last_saved = time.monotonic()
         except (OSError, ValueError):
             logging.exception('Unable to save estimated quote history')
 
@@ -529,7 +529,7 @@ class CoinGeckoWorker:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         with self.cache.lock:
             rows, fetched = self.cache.rows, self.cache.fetched_at
-        body = json.dumps({'source': 'dex-coingecko-usd-v1', 'fetchedAt': fetched, 'samples': rows}, allow_nan=False)
+        body = json.dumps({'source': 'dex-last-trade-usdt-v2', 'fetchedAt': fetched, 'samples': rows}, allow_nan=False)
         temporary = self.history_path.with_suffix('.tmp')
         temporary.write_text(body)
         temporary.replace(self.history_path)
@@ -538,12 +538,13 @@ class CoinGeckoWorker:
         if self.history_path is None or not self.history_path.exists():
             return
         with self.history_path.open('rb') as file:
-            body = file.read(MAX_UPSTREAM_BYTES + 1)
-        if len(body) > MAX_UPSTREAM_BYTES:
+            body = file.read(self.HISTORY_BYTES + 1)
+        if len(body) > self.HISTORY_BYTES:
             raise ValueError('Saved quote history exceeds size limit')
         saved = json.loads(body)
-        if saved.get('source') != 'dex-coingecko-usd-v1':
-            raise ValueError('Wrong saved price source')
+        if saved.get('source') != 'dex-last-trade-usdt-v2':
+            logging.warning('Ignoring history from a different price methodology')
+            return
         rows = saved['samples']
         for stamp, price, block in rows:
             self.positive(stamp)
@@ -564,11 +565,11 @@ class CoinGeckoWorker:
         if not pending.exists():
             return
         with pending.open('rb') as file:
-            body = file.read(MAX_UPSTREAM_BYTES + 1)
-        if len(body) > MAX_UPSTREAM_BYTES:
+            body = file.read(self.HISTORY_BYTES + 1)
+        if len(body) > self.HISTORY_BYTES:
             raise ValueError('Quote backfill exceeds size limit')
         payload = json.loads(body)
-        if payload.get('source') != 'dex-coingecko-usd-backfill-v1':
+        if payload.get('source') != 'dex-last-trade-usdt-backfill-v2':
             raise ValueError('Wrong quote backfill source')
         rows, evidence = payload['samples'], payload['evidence']
         if not rows or len(rows) > MAX_SAMPLES or len(evidence) != len(rows):
@@ -582,7 +583,7 @@ class CoinGeckoWorker:
                     block is not None or not previous < stamp <= now):
                 raise ValueError('Invalid quote backfill sample')
             item = by_time[stamp]
-            expected = float(self.positive(item['dotUsd']) / self.positive(item['dotusdPerDot']))
+            expected = float(self.positive(item['usdtPerDot']) / self.positive(item['dotusdPerDot']))
             if not math.isclose(price, expected, rel_tol=1e-12):
                 raise ValueError('Backfill quote does not match its reference inputs')
             if item['tradeTimestamp'] is not None and not stamp * 1000 - 86400000 <= item['tradeTimestamp'] <= stamp * 1000:
@@ -612,14 +613,13 @@ class CoinGeckoWorker:
             except Exception:
                 logging.exception('Unable to import reconstructed USD estimates')
             if time.monotonic() >= next_poll:
-                delay = 300
+                started = time.monotonic()
                 try:
                     self.poll()
                 except Exception:
-                    delay = 600
                     logging.exception('Estimated USD quote refresh failed')
-                next_poll = time.monotonic() + delay
-            self.stop.wait(min(60, max(0, next_poll - time.monotonic())))
+                next_poll = max(started + self.POLL_SECONDS, time.monotonic())
+            self.stop.wait(max(0, next_poll - time.monotonic()))
 
 
 class CacheServer(HTTPServer):
@@ -799,8 +799,7 @@ def main():
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
     worker = None
-    coingecko = CoinGeckoWorker(server.coingecko_cache, api_key=os.environ.get('COINGECKO_DEMO_API_KEY'),
-                              history_path=args.coingecko_history)
+    coingecko = CoinGeckoWorker(server.coingecko_cache, history_path=args.coingecko_history)
     coingecko.thread.start()
     try:
         with price_source(args.upstream, args.ssh_host) as upstream:
