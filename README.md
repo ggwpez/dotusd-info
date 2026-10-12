@@ -1,61 +1,70 @@
 # dotUSD.info
 
-A dotUSD / USDT peg chart with a Python backend and dependency-free browser assets.
-Prices follow the dotUSD → DOT → USDT pools on Polkadot Asset Hub. The chart
-preserves individual samples and gaps, with up to seven days of history.
+See how closely dotUSD tracks USDT on Polkadot Asset Hub. The chart shows up to
+seven days of pool prices, so you can explore recent moves and zoom in on a
+particular period.
 
-## Run locally
+**[Open the live chart →](https://dotusd.info)**
 
-Requires Python 3.10+ and access to a Prometheus instance containing the collector's
-`arb_peg_dotusd_usdt` and `arb_peg_block_number` metrics with the
-`clock="estimated_2s"` label. The live collector and Prometheus are external services
-and are not included in this repository. The chart server needs no third-party
-Python packages.
+![The dotUSD peg chart](social-preview.png)
+
+Prices come from the dotUSD → DOT → USDT pools. They are quoted against USDT and
+do not include trading fees or slippage. Timestamps are estimated, and missing
+blocks appear as gaps in the chart.
+
+## Run it locally
+
+The app uses Python 3.10+ and plain JavaScript. There is no frontend build step,
+and the chart server needs no extra Python packages.
+
+You will need a data source, though: a Prometheus instance with the pool-price
+history. The live data collector and Prometheus are not included in this repo.
+The server expects the `arb_peg_dotusd_usdt` and `arb_peg_block_number` metrics,
+both with the `clock="estimated_2s"` label.
+
+If Prometheus is running locally, start the chart with:
 
 ```sh
 python3 server.py --upstream http://127.0.0.1:9090/api/v1 --no-browser
 ```
 
-Open <http://127.0.0.1:3001>. The API returns 503 while the initial history loads;
-without a working data source, the chart cannot display prices.
+Then open <http://127.0.0.1:3001>. Give the server a moment to load the price
+history. It needs a working data source before it can show the chart.
 
-To reach a remote Prometheus instance through SSH instead:
+If Prometheus is on another machine, connect through SSH:
 
 ```sh
 python3 server.py --ssh-host user@host
 ```
 
-This opens an SSH tunnel to the remote host's `127.0.0.1:9090` and launches the
-browser. Running without either option uses the SSH alias `server`.
-Use `python3 server.py --help` for bind, port, archive, and browser options.
-Restart the server after editing assets: it snapshots them at startup.
+Replace `user@host` with your SSH destination. The app forwards the remote
+machine's port 9090 and opens the chart in your browser. Running
+`python3 server.py` without options uses the SSH alias `server`.
 
-## Development
+For more options, including the listening port and archive path, run
+`python3 server.py --help`.
 
-Run the test suite from the repository root:
+## Working on the code
+
+The backend lives in `server.py`. The chart is built from `index.html`, `app.js`,
+`ranges.js`, and `style.css`. Restart the server after editing these files, since
+it loads them once at startup.
+
+Run the tests from the repo root:
 
 ```sh
 python3 -m unittest discover -s tests -v
 ```
 
-Tests use local fixtures and servers, without production credentials or a live
-collector. Client range checks use Node.js when installed, or JavaScriptCore on
-macOS; otherwise they are skipped.
+The tests run locally and do not need access to the live data collector. JavaScript
+checks use Node.js, or JavaScriptCore on macOS. If neither is available, those
+checks are skipped.
 
-## Repository guide
+## More details
 
-- `server.py`: bounded history cache, HTTP API, and static asset serving.
-- `index.html`, `app.js`, `ranges.js`, `style.css`: chart UI and packed sample handling.
-- `archive_reader.py`, `backfill.py`: optional archive import. Backfill additionally
-  requires `websocket-client` and `xxhash` (Debian packages `python3-websocket` and
-  `python3-xxhash`).
-- `tests/`: backend, archive, and client range checks.
-- `tools/`, `benchmarks/`: benchmark scripts and recorded measurements.
-- `deploy/`: deployment script, systemd units, and Caddy configuration.
-
-See [architecture and API details](docs/architecture.md),
-[benchmark methodology and results](docs/benchmarks.md), and
-[deployment and archive backfill](docs/deployment.md).
-
-Prices are reserve-ratio spot prices referenced to USDT. They exclude swap fees
-and slippage; estimated timestamps and missing blocks remain visible as gaps.
+- [How it works](docs/architecture.md): data loading, caching, and the price API.
+- [Deployment and archive backfill](docs/deployment.md): running the app with
+  systemd and Caddy, and importing older prices. The supplied configuration is
+  for dotusd.info; adapt it for your own host. The optional backfill tool also
+  needs `websocket-client` and `xxhash`.
+- [Benchmarks](docs/benchmarks.md): performance measurements and how to repeat them.
