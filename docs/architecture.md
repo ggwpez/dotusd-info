@@ -124,18 +124,25 @@ browser history, rating and chart code. Comparison links preserve query paramete
 `/api/coingecko/prices` uses the same handler, bounded `HistoryCache`, response cache
 and wire formats as `/api/prices`, with a separate cache to keep the sources isolated.
 
-One background worker calls CoinGecko's dotUSD `market_chart` endpoint with
-`vs_currency=usd`: `days=1` every 300 seconds (five-minute samples), and `days=7`
-once per hour (hourly samples). The recent day replaces overlapping hourly data.
-Each publication replaces the snapshot so corrected prices and transient endpoint
-samples do not accumulate. Failed fetches preserve both history and its original
-freshness time; retries wait ten minutes. Empty successful responses remain empty.
-The optional `COINGECKO_DEMO_API_KEY` is sent in a server-side header.
+An independent background worker fetches CoinGecko's `simple/price` for
+`polkadot` in USD with `last_updated_at`, plus the Asset Hub DEX `/tickers`.
+It divides DOT/USD by the `DOT_7873` ticker's dotUSD-per-DOT `last_price`.
+This estimates a single market's USD price; CoinGecko's internal pathfinding,
+ticker acceptance and aggregation are not reproduced. The DEX endpoint itself
+returns 503 if its index is stale; CoinGecko references older than 15 minutes
+are also rejected. Missing, ambiguous, non-positive and non-finite quotes fail
+without replacing the last successful observation.
 
-CoinGecko timestamps remain unchanged and block numbers are null. The browser
-refreshes the full selected window every minute, allowing revisions and removals;
-it does not use the pool block cursor. The renderer connects timestamp samples
-within 15 minutes for the recent day, or 90 minutes for older hourly history,
-and breaks longer gaps. Pool charts retain their original block-gap rules.
-CoinGecko data is marked delayed after 15 minutes without a successful fetch or
-recent sample. No visitor request calls CoinGecko directly.
+Observations use collection time and null block numbers. They are collected every
+five minutes, with ten-minute retry delays after failure, and retained for seven
+days. No synthetic historical data or pool-price substitution is used. Optional
+`--coingecko-history` persistence writes a rolling JSON file by atomic replacement
+in a separate state directory. Loading old observations preserves their original
+freshness. Storage failures are isolated from live quote serving and pool ingestion.
+The optional API key is sent only to CoinGecko, never to the DEX or browser.
+
+The browser refreshes the full selected window every minute without block cursors.
+Timestamp samples connect across gaps up to 15 minutes. Pool charts retain their
+original block-gap rules. A single observation is drawn as a dot immediately.
+Quote observations are marked delayed after 15 minutes without a successful
+refresh or recent sample. Visitor requests only read the server cache.

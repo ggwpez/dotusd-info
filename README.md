@@ -14,21 +14,27 @@ blocks appear as gaps in the chart.
 
 ## Compare with CoinGecko
 
-Open `/coingecko` for the same chart using CoinGecko's aggregated dotUSD **USD**
-prices. The footer links switch between sources while preserving the range and
-zoom. Both views use the same peg-rating thresholds, renderer and history stream.
-CoinGecko prices include market/trade effects and are not directly equivalent to
-the pool reserve price against USDT.
+Open `/coingecko` for the same chart using an estimated dotUSD **USD** price:
+CoinGecko's DOT/USD price divided by the Asset Hub DEX's `DOT_7873.last_price`
+(dotUSD per DOT). This is a single-market conversion estimate, not CoinGecko's
+official aggregated dotUSD price or an exact reproduction of its internal pricing.
+The DEX quote uses its last qualifying trade, with reserves as its own fallback.
 
-The server checks CoinGecko every five minutes, fetching five-minute samples for
-the past day and hourly samples for older history (refreshed hourly). The browser
-checks the server cache every minute. Missing CoinGecko data shows an empty chart;
-it never falls back to pool prices. At implementation time, CoinGecko returned
-an empty dotUSD price history.
+The footer links preserve range and zoom. Both views reuse the same renderer,
+peg-rating thresholds and history stream; the normal page continues using its
+synchronized pool-reserve price against USDT.
 
-Public API access is attempted by default. If your access requires a Demo API
-key, set `COINGECKO_DEMO_API_KEY` in the server environment; it stays server-side.
-Failed requests retain the last successful data, with delayed-data status.
+The server records an observation every five minutes. History begins when
+collection starts; historical DEX last-trade quotes cannot be reconstructed from
+the current ticker. The browser refreshes every minute, and gaps stay visible.
+`--coingecko-history /path/to/history.json` preserves observed estimates across
+restarts; production uses a small rolling JSON file in its own writable state
+directory, without writing to the pool archive. Both sources must succeed before
+an observation is recorded; a DOT reference older than 15 minutes is rejected.
+Failed requests retain the last successful data and its original freshness.
+
+Public API access is attempted by default. If needed, set
+`COINGECKO_DEMO_API_KEY`; this key is sent only to CoinGecko from the server.
 
 ## Run it locally
 

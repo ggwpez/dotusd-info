@@ -4,6 +4,8 @@ import json
 import threading
 import time
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.request import urlopen
 
@@ -11,56 +13,59 @@ from test_server import page
 
 
 class CoinGeckoTests(unittest.TestCase):
-    def test_fetch_validates_prices_and_keeps_actual_timestamps(self):
+    def test_fetch_bounds_and_keeps_api_key_on_coingecko_only(self):
         http = Mock()
-        cache = page.HistoryCache()
-        worker = page.CoinGeckoWorker(cache, http=http, api_key='test-key')
-        http.open.return_value = io.BytesIO(json.dumps({'prices': [[1700000000123, .999123456789]]}).encode())
-        self.assertEqual(worker.fetch(1), [(1700000000.123, .999123456789, None)])
-        request = http.open.call_args.args[0]
-        self.assertEqual(request.full_url, 'https://api.coingecko.com/api/v3/coins/dotusd/market_chart?vs_currency=usd&days=1&precision=full')
-        self.assertEqual(request.get_header('X-cg-demo-api-key'), 'test-key')
-        for payload in ({'error': 'rate limited'}, {'prices': [[1, None]]},
-                        {'prices': [[1, float('nan')]]}, {'prices': [[1, 0]]},
-                        {'prices': [[True, 1]]}, {'prices': [[1, '1']]}, {'prices': [[1]]}):
-            with self.subTest(payload=payload):
-                http.open.return_value = io.BytesIO(json.dumps(payload).encode())
-                with self.assertRaises(ValueError):
-                    worker.fetch(1)
+        worker = page.CoinGeckoWorker(page.HistoryCache(), http=http, api_key='test-key')
+        for url in (worker.DOT_URL, worker.DEX_URL):
+            http.open.return_value = io.BytesIO(b'{}')
+            self.assertEqual(worker.fetch(url), {})
+            request = http.open.call_args.args[0]
+            self.assertEqual(request.get_header('X-cg-demo-api-key'), 'test-key' if url == worker.DOT_URL else None)
         http.open.return_value = io.BytesIO(b' ' * (page.MAX_UPSTREAM_BYTES + 1))
         with self.assertRaisesRegex(ValueError, 'size limit'):
-            worker.fetch(1)
-        http.open.return_value = io.BytesIO(b'{"prices":[]}')
-        self.assertEqual(worker.fetch(1), [])
+            worker.fetch(worker.DOT_URL)
 
-    def test_snapshot_refresh_corrections_empty_history_and_failure(self):
+    def test_quote_orientation_persistence_and_failed_refresh(self):
+        now = 1800000000
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.json'
+            cache = page.HistoryCache()
+            worker = page.CoinGeckoWorker(cache, history_path=path)
+            reference = {'polkadot': {'usd': 2.02, 'last_updated_at': now - 60}}
+            ticker = {'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '2'}
+            worker.fetch = Mock(side_effect=[reference, [ticker]])
+            with patch.object(page.time, 'time', return_value=now):
+                worker.poll()
+            self.assertEqual(cache.rows, ((now, 1.01, None),))
+            self.assertTrue(cache.history_ready)
+            loaded = page.HistoryCache()
+            with patch.object(page.time, 'time', return_value=now + 300):
+                page.CoinGeckoWorker(loaded, history_path=path).load_history()
+            self.assertEqual(loaded.rows, cache.rows)
+            self.assertEqual(loaded.fetched_at, now)  # restarting does not refresh old quotes
+            before = cache.rows, cache.fetched_at, path.read_bytes()
+            for response in ([], [ticker, ticker], [dict(ticker, last_price='NaN')],
+                             [dict(ticker, last_price='0')], [dict(ticker, last_price=True)],
+                             [dict(ticker, target_currency='1984')]):
+                worker.fetch = Mock(side_effect=[reference, response])
+                with self.assertRaises(ValueError), patch.object(page.time, 'time', return_value=now+300):
+                    worker.poll()
+                self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
+            worker.fetch = Mock(side_effect=[reference, [ticker]])
+            with self.assertRaisesRegex(ValueError,'stale'), patch.object(page.time, 'time', return_value=now+1000):
+                worker.poll()
+            self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
+
+    def test_history_is_observed_and_trimmed_not_fabricated(self):
         now = 1800000000
         cache = page.HistoryCache()
+        cache.merge([(now-604799, .99, None)], now-300)
         worker = page.CoinGeckoWorker(cache)
-        older = [(now - 90000, .998, None), (now - 600, .97, None)]
-        recent = [(now - 600, 1.001, None), (now - 1, .999, None)]
-        worker.fetch = Mock(side_effect=[older, recent])
-        with patch.object(page.time, 'time', return_value=now):
+        worker.fetch = Mock(side_effect=[{'polkadot': {'usd': 1, 'last_updated_at': now+300}},
+            [{'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '1'}]])
+        with patch.object(page.time, 'time', return_value=now+300):
             worker.poll()
-        self.assertEqual(cache.rows, tuple([older[0]] + recent))
-        self.assertTrue(cache.history_ready)
-        self.assertEqual([call.args for call in worker.fetch.call_args_list], [(7,), (1,)])
-        # The hourly fetch is reused; a revised response replaces transient last points.
-        worker.fetch = Mock(return_value=[(now - 600, 1.002, None), (now + 299, 1, None)])
-        with patch.object(page.time, 'time', return_value=now + 300):
-            worker.poll()
-        worker.fetch.assert_called_once_with(1)
-        self.assertEqual(cache.rows, (older[0], (now - 600, 1.002, None), (now + 299, 1, None)))
-        before = cache.rows, cache.fetched_at
-        worker.fetch.side_effect = OSError('upstream unavailable')
-        with self.assertRaises(OSError), patch.object(page.time, 'time', return_value=now + 600):
-            worker.poll()
-        self.assertEqual((cache.rows, cache.fetched_at), before)
-        worker.fetch = Mock(return_value=[])
-        with patch.object(page.time, 'time', return_value=now + 3600):
-            worker.poll()
-        self.assertEqual(cache.rows, ())
-        self.assertEqual(cache.fetched_at, now + 3600)
+        self.assertEqual(cache.rows, ((now+300, 1., None),))
 
     def test_pages_share_assets_and_api_keeps_sources_separate(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)

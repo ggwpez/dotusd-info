@@ -36,7 +36,7 @@ class AppTests(unittest.TestCase):
         const points = [...pixelRows(state.rows, t => t, connectSamples)];
         require(points.length === 2 && points[0].move && !points[1].move, 'connect timestamp samples');
         require(!connectSamples([now - 2000, 1, null], [now, 1, null]), 'break missing recent data');
-        require(connectSamples([now - 100000, 1, null], [now - 96400, 1, null]), 'connect hourly history');
+        require(!connectSamples([now - 100000, 1, null], [now - 96400, 1, null]), 'older history also preserves observation gaps');
         require(!connectSamples([now - 100000, 1, null], [now - 92800, 1, null]), 'break missing hourly data');
         updateFreshness();
         require(elements.get('status').dataset.state === 'live', '5 minute sample is fresh');
@@ -44,7 +44,7 @@ class AppTests(unittest.TestCase):
         require(elements.get('status').textContent.startsWith('Updates delayed'), 'failed source refresh becomes stale');
         state.rows = new RangeSeries(); state.error = null; state.historyLoading = false;
         summaryValues = null; summary();
-        require(elements.get('message').textContent.includes('CoinGecko has no'), 'honest empty state');
+        require(elements.get('message').textContent.includes('No recorded USD estimates'), 'honest empty state');
         require(elements.get('price').textContent === '-', 'empty state has no fabricated price');
         JSON.stringify(true);
         """

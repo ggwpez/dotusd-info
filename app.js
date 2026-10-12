@@ -3,8 +3,8 @@ const $ = id => document.getElementById(id);
 const coingecko = document.body.dataset.priceSource === 'coingecko';
 const source = coingecko ? {
   endpoint: '/api/coingecko/prices', currency: 'USD', pollSeconds: 60,
-  staleFetch: 900, stalePrice: 900, sampleLabel: 'CoinGecko sample',
-  empty: 'CoinGecko has no dotUSD USD prices in this window.',
+  staleFetch: 900, stalePrice: 900, sampleLabel: 'USD estimate',
+  empty: 'No recorded USD estimates in this window. History starts when collection begins.',
 } : {
   endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
@@ -13,7 +13,7 @@ const source = coingecko ? {
 // Aggregated prices have timestamps, not block numbers. Break the line when
 // more than one expected interval is missing; retain block-gap rules for pools.
 const connectSamples = coingecko ? (a, b) => a && b && b[0] > a[0] &&
-  b[0] - a[0] <= (a[0] > Date.now()/1000 - 86400 ? 900 : 5400) : undefined;
+  b[0] - a[0] <= 900 : undefined;
 $('title-logo').src = document.querySelector('link[rel="icon"]').href;
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
@@ -130,7 +130,7 @@ function updateFreshness() {
   if (!state.live || state.zoom) status('Historical view', 'paused');
   else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
   else if (state.error) status(`Connection error${sampleAge}`, 'error');
-  else if (!last) status(coingecko ? 'No CoinGecko prices' : 'Waiting for finalized prices', 'stale');
+  else if (!last) status(coingecko ? 'Waiting for USD estimate' : 'Waiting for finalized prices', 'stale');
   else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
   else if (age > source.stalePrice) status(`Data delayed${sampleAge}`, 'stale');
@@ -322,6 +322,14 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   ctx.fillStyle = areaColor;
   ctx.fill(area);
   ctx.stroke();
+  // New observation histories start with one point; make it visible immediately.
+  const latest = coingecko ? state.rows.at(-1) : null;
+  if (latest) {
+    ctx.beginPath();
+    ctx.fillStyle = deviationColor((latest[1] - 1) * 10000);
+    ctx.arc(x(latest[0]), y((latest[1] - 1) * 10000), 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
   if (high && low) {
     const highBps = Number(((high[1] - 1) * 10000).toFixed(2));
     const lowBps = Number(((low[1] - 1) * 10000).toFixed(2));
