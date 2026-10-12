@@ -1,7 +1,6 @@
 <section class="explain-grid" aria-label="Understanding the DEX price">
 <article class="panel explain-card calculation-card" aria-labelledby="calculation-heading">
-<div class="label">Calculation &amp; terminology</div>
-<h2 id="calculation-heading">From two DOT pairs to one dotUSD price</h2>
+<h2 id="calculation-heading">How the price is calculated</h2>
 <p>Both tickers express a token amount per DOT. Dividing them cancels out DOT and gives the price of one dotUSD in USDT.</p>
 <div class="price-formula" aria-label="USDT per dotUSD equals USDT per DOT divided by dotUSD per DOT"><span>USDT per dotUSD</span><span aria-hidden="true">=</span><span>USDT per DOT ÷ dotUSD per DOT</span></div>
 <p class="calculation-example">Example: 1.998 USDT per DOT ÷ 2 dotUSD per DOT = <strong>0.999 USDT per dotUSD</strong>.</p>
@@ -14,7 +13,6 @@
 <p class="card-source">Source: <a href="https://polkadot-hub-dex.parity.io/">Asset Hub DEX tickers</a> · <a href="https://github.com/paritytech/asset-hub-dex-api/blob/main/src/tickers/tickers.ts">Calculation rules</a>. This page uses DEX data only; it does not call CoinGecko.</p>
 </article>
 <article class="panel explain-card" aria-labelledby="peg-explained-heading">
-<div class="label">Reading the chart</div>
 <h2 id="peg-explained-heading">How tight is the peg?</h2>
 <p>The reference is <strong>1 dotUSD = 1 USDT</strong>. A basis point (bps) is 0.01%; 100 bps equals 1%.</p>
 <p class="small-formula">Deviation in bps = (price − 1) × 10,000</p>
@@ -23,7 +21,6 @@
 <p class="card-source">These are this site’s rating thresholds. The comparison measures the peg against USDT, not an independent US-dollar reference.</p>
 </article>
 <article class="panel explain-card" aria-labelledby="history-explained-heading">
-<div class="label">Updates &amp; history</div>
 <h2 id="history-explained-heading">What each sample represents</h2>
 <p>The live chart checks for updates every <strong>6 seconds</strong>. An observation can repeat the previous price: a refresh does not imply a new trade or a newly finalized block.</p>
 <p>Historical samples reconstruct both ticker legs from finalized Asset Hub swaps, using the same trade filter, 24-hour window and reserve fallback. They follow the normal chart’s block range and estimated timestamps.</p>
