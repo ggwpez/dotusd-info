@@ -1,9 +1,10 @@
 <section class="explain-grid" aria-label="Understanding the DEX price">
 <article class="panel explain-card calculation-card" aria-labelledby="calculation-heading">
 <h2 id="calculation-heading">How the price is calculated</h2>
-<p>Both tickers express a token amount per DOT. Dividing them cancels out DOT and gives the price of one dotUSD in USDT.</p>
+<p>The chart shows how far the price of one dotUSD is from 1 USDT.</p>
+<p>To calculate that price, we use DOT as a common reference. The Asset Hub DEX reports what one DOT is worth in USDT and what one DOT is worth in dotUSD. Dividing those two prices tells us what one dotUSD is worth in USDT.</p>
 <div class="price-formula" aria-label="USDT per dotUSD equals USDT per DOT divided by dotUSD per DOT"><span>USDT per dotUSD</span><span aria-hidden="true">=</span><span>USDT per DOT ÷ dotUSD per DOT</span></div>
-<p class="calculation-example">Example: 1.998 USDT per DOT ÷ 2 dotUSD per DOT = <strong>0.999 USDT per dotUSD</strong>.</p>
+<p class="calculation-example">For example, if one DOT is worth 1.998 USDT or 2 dotUSD, then one dotUSD is worth <strong>1.998 ÷ 2 = 0.999 USDT</strong>. That puts dotUSD slightly below its peg.</p>
 <dl class="term-list">
 <div><dt>Ticker</dt><dd>A market snapshot for a trading pair. We use the Asset Hub DEX’s DOT/USDT and DOT/dotUSD tickers.</dd></div>
 <div><dt>Base &amp; quote</dt><dd>DOT is the base token in both pairs. USDT and dotUSD are the quote tokens: the units in which each DOT price is expressed.</dd></div>
@@ -23,8 +24,8 @@
 <article class="panel explain-card" aria-labelledby="history-explained-heading">
 <h2 id="history-explained-heading">What each sample represents</h2>
 <p>The live chart checks for updates every <strong>6 seconds</strong>. An observation can repeat the previous price: a refresh does not imply a new trade or a newly finalized block.</p>
-<p>Historical samples reconstruct both ticker legs from finalized Asset Hub swaps, using the same trade filter, 24-hour window and reserve fallback. They follow the normal chart’s block range and estimated timestamps.</p>
-<p>The two latest trades may have happened at different times. That is why this last-trade calculation can differ from the main chart’s pool reserve calculation, which reads both pools at the same finalized block.</p>
+<p>Historical samples reconstruct the DOT/USDT and DOT/dotUSD prices from finalized Asset Hub swaps, using the same trade filter, 24-hour window and reserve fallback. They follow the normal chart’s block range and estimated timestamps.</p>
+<p>The latest trades in those two markets may have happened at different times. That is why this last-trade calculation can differ from the main chart’s pool reserve calculation, which reads both pools at the same finalized block.</p>
 <p class="card-source">History is imported gradually in small batches. Newly imported history appears on a periodic refresh. These prices are not execution quotes for a new swap.</p>
 </article>
 </section>
