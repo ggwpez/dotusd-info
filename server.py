@@ -324,25 +324,39 @@ class HistoryCache:
             window_left = bisect_right(history, window[0], key=lambda row: row[0])
             window_right = bisect_right(history, window[1], key=lambda row: row[0])
             bounds = (window_left, window_right)
-        return history, summaries, fetched_at, history_ready, generation, left, right, bounds
+        return {
+            'history': history,
+            'summaries': summaries,
+            'fetched_at': fetched_at,
+            'history_ready': history_ready,
+            'generation': generation,
+            'left': left,
+            'right': right,
+            'bounds': bounds,
+        }
 
     @staticmethod
     def read_selection(selection, after_block):
-        history, summaries, fetched_at, history_ready, _, left, right, bounds = selection
+        history = selection['history']
+        summaries = selection['summaries']
+        left, right = selection['left'], selection['right']
+        bounds = selection['bounds']
         extremes = summaries.extremes(history, *bounds) if bounds is not None else None
         rows = (list(history[left:right]) if after_block is None else
                 summaries.after(history, left, right, after_block))
-        return rows, fetched_at, history_ready, extremes
+        return rows, selection['fetched_at'], selection['history_ready'], extremes
 
     def read(self, start, end, window=None, after_block=None):
         return self.read_selection(self.selection(start, end, window), after_block)
 
     def response(self, start, end, window=None, after_block=None, raw=False, streaming=False):
         selection = self.selection(start, end, window)
-        _, _, fetched_at, ready, generation, left, right, bounds = selection
         # Different clocks can still select identical rows and summary windows.
         # The cursor remains part of the key: polls must never share another cursor's delta.
-        key = (generation, fetched_at, ready, left, right, bounds, after_block, streaming)
+        key = (
+            selection['generation'], selection['fetched_at'], selection['history_ready'],
+            selection['left'], selection['right'], selection['bounds'], after_block, streaming,
+        )
         def build():
             return encode_response(*self.read_selection(selection, after_block), raw=raw, streaming=streaming)
         if not raw:

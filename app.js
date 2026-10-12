@@ -8,7 +8,8 @@ function acceptVersion(version) {
   if (reloading) return false;
   if (!version || version === APP_VERSION) return true;
   reloading = true;
-  controller?.abort(); generation++;
+  controller?.abort();
+  generation++;
   location.reload();
   return false;
 }
@@ -25,7 +26,21 @@ function linkedView() {
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
-const state = {rows: new RangeSeries(), range: initialView.range, start: 0, end: 0, live: !initialView.zoom, zoom: initialView.zoom, hover: null, drag: null, error: null, fetchedAt: null, historyLoading: false, serverWarming: false, extremes: null};
+const state = {
+  rows: new RangeSeries(),
+  range: initialView.range,
+  start: 0,
+  end: 0,
+  live: !initialView.zoom,
+  zoom: initialView.zoom,
+  hover: null,
+  drag: null,
+  error: null,
+  fetchedAt: null,
+  historyLoading: false,
+  serverWarming: false,
+  extremes: null,
+};
 let controller, generation = 0, geometry, loading = false;
 let summaryValues = null;
 const backing = document.createElement('canvas');
@@ -38,7 +53,10 @@ const ratingColors = ['#73bf69', '#63c8ae', '#dfc464', '#f29b58', '#f2495c'];
 const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
-function status(text, kind) { $('status').textContent = text; $('status').dataset.state = kind; }
+function status(text, kind) {
+  $('status').textContent = text;
+  $('status').dataset.state = kind;
+}
 const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Horrible'];
 const ratingLimits = [5, 20, 50, 100];
 const ratingBands = ['≤ 5 bps', '> 5–20 bps', '> 20–50 bps', '> 50–100 bps', '> 100 bps'];
@@ -108,13 +126,18 @@ function updateFreshness() {
 const historyCache = new BrowserHistory();
 async function refresh(force = false) {
   if (reloading) return;
-  controller?.abort(); controller = new AbortController(); const ticket = ++generation; loading = true;
+  controller?.abort();
+  controller = new AbortController();
+  const ticket = ++generation;
+  loading = true;
   const requestController = controller;
   const end = state.zoom?.[1] ?? (state.live || !state.end ? Date.now()/1000 : state.end);
   const start = state.zoom?.[0] ?? end - state.range;
   historyCache.expire(Date.now()/1000);
   const sameWindow = Math.abs((state.end - state.start) - (end - start)) < .01;
-  state.start = start; state.end = end; state.error = null;
+  state.start = start;
+  state.end = end;
+  state.error = null;
   state.extremes = null;
   const missing = historyCache.missing(start, end);
   const live = state.live && !state.zoom;
@@ -127,7 +150,10 @@ async function refresh(force = false) {
   if (!(sameWindow && (live ? incremental : !missing.length))) summaryValues = null;
   const publish = rows => {
     state.rows = rows.window(start, end);
-    state.hover = null; chartDirty = true; summary(); draw();
+    state.hover = null;
+    chartDirty = true;
+    summary();
+    draw();
   };
   state.historyLoading = missing.length > 0;
   state.fetchedAt = historyCache.fetchedAt;
@@ -169,7 +195,8 @@ async function refresh(force = false) {
   } finally {
     clearTimeout(timeout);
     if (ticket === generation) {
-      loading = false; state.historyLoading = historyCache.missing(start, end).length > 0;
+      loading = false;
+      state.historyLoading = historyCache.missing(start, end).length > 0;
       if (!state.error && !state.historyLoading) {
         summaryValues = {last: state.rows.at(-1),
           low: state.extremes?.low ?? state.rows.low,
@@ -187,131 +214,258 @@ function chartScale(peak) {
   const divisions = Math.round(extent / step);
   return {extent, ticks: Array.from({length: divisions * 2 + 1}, (_, i) => (i - divisions) * step)};
 }
-function draw() {
-  if (drawFrame !== null) { cancelAnimationFrame(drawFrame); drawFrame = null; }
-  // Render at least two pixels per CSS pixel for smoother thin lines.
-  const rect = canvas.getBoundingClientRect(), dpr = Math.max(2, window.devicePixelRatio || 1);
-  const width = Math.round(rect.width*dpr), height = Math.round(rect.height*dpr);
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width; canvas.height = height; chartDirty = true;
+function drawGrid({left, right, top, bottom, x, y}, width, yTicks) {
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.lineWidth = 1;
+  for (const value of yTicks) {
+    const py = y(value);
+    const boundaryColor = ratingLimits.includes(Math.abs(value)) ? deviationColor(value) : null;
+    ctx.strokeStyle = boundaryColor ? boundaryColor + '50' : '#272d37';
+    ctx.beginPath();
+    ctx.moveTo(left, py);
+    ctx.lineTo(right, py);
+    ctx.stroke();
+    ctx.fillStyle = boundaryColor ?? '#8792a3';
+    ctx.textAlign = 'right';
+    ctx.fillText(String(value), left - 12, py + 3);
   }
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.clearRect(0,0,width,height);
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  const w = rect.width, h = rect.height, left = 65, right = w-20, top = 18, bottom = h-35;
-  if (chartDirty) {
-  ctx.lineCap = 'butt'; ctx.lineJoin = 'miter'; ctx.setLineDash([]);
-  let peak = 0;
-  let high = state.extremes?.high, low = state.extremes?.low;
-  if (high && low) peak = Math.max(Math.abs((high[1]-1)*10000), Math.abs((low[1]-1)*10000));
-  for (const row of [state.rows.low, state.rows.high].filter(Boolean)) {
-    peak = Math.max(peak, Math.abs((row[1]-1)*10000));
-    if (!high || row[1] > high[1]) high = row;
-    if (!low || row[1] < low[1]) low = row;
+
+  const ticks = width < 600 ? 3 : 6;
+  for (let i = 0; i <= ticks; i++) {
+    const time = state.start + (state.end - state.start) * i / ticks;
+    const px = x(time);
+    ctx.strokeStyle = '#202630';
+    ctx.beginPath();
+    ctx.moveTo(px, top);
+    ctx.lineTo(px, bottom);
+    ctx.stroke();
+    ctx.fillStyle = '#8792a3';
+    ctx.textAlign = i === 0 ? 'left' : i === ticks ? 'right' : 'center';
+    const label = state.end - state.start > 86400 ? date(time).slice(5, 16) : clock(time).slice(0, 5);
+    ctx.fillText(label, px, bottom + 23);
   }
-  const {extent, ticks: yTicks} = chartScale(peak);
-  const min = -extent, max = extent;
-  const x = t => left+(t-state.start)/(state.end-state.start || 1)*(right-left);
-  const y = v => bottom-(v-min)/(max-min)*(bottom-top);
-  geometry = {left,right,top,bottom,x,y};
-  ctx.font = '10px ui-monospace, monospace'; ctx.lineWidth = 1;
-  for (const v of yTicks) {
-    const py = y(v);
-    const boundaryColor = ratingLimits.includes(Math.abs(v)) ? deviationColor(v) : null;
-    ctx.strokeStyle = boundaryColor ? boundaryColor + '50' : '#272d37';ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();
-    ctx.fillStyle = boundaryColor ?? '#8792a3';ctx.textAlign='right';ctx.fillText(String(v),left-12,py+3);
-  }
-  const ticks = w < 600 ? 3 : 6;
-  for (let i=0;i<=ticks;i++) {
-    const t = state.start+(state.end-state.start)*i/ticks, px=x(t);
-    ctx.strokeStyle='#202630';ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.stroke();
-    ctx.fillStyle='#8792a3';ctx.textAlign=i===0?'left':i===ticks?'right':'center';
-    ctx.fillText(state.end-state.start>86400 ? date(t).slice(5,16) : clock(t).slice(0,5),px,bottom+23);
-  }
-  ctx.setLineDash([]);ctx.strokeStyle='#ffffff';ctx.lineWidth=.6;
-  ctx.beginPath();ctx.moveTo(left,y(0));ctx.lineTo(right,y(0));ctx.stroke();
-  ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
+
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 0.6;
+  ctx.beginPath();
+  ctx.moveTo(left, y(0));
+  ctx.lineTo(right, y(0));
+  ctx.stroke();
+}
+
+function markExtreme(row, {x, y}) {
+  const value = (row[1] - 1) * 10000;
+  ctx.beginPath();
+  ctx.arc(x(row[0]), y(value), 4, 0, Math.PI * 2);
+  ctx.fillStyle = deviationColor(value);
+  ctx.fill();
+  ctx.strokeStyle = '#14181f';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, top, right - left, bottom - top);
+  ctx.clip();
   // Symmetric hard stops color both sides by absolute peg deviation.
   const lineColor = ratingGradient(ctx, top, bottom, extent);
   // Fade the fill at wider time scales, independently of history loading progress.
-  const secondsPerPixel = (state.end-state.start) / Math.max(1, right-left);
+  const secondsPerPixel = (state.end - state.start) / Math.max(1, right - left);
   const fillAlpha = Math.max(8, Math.round(32 / Math.sqrt(Math.max(1, secondsPerPixel / 6))));
   const areaColor = ratingGradient(ctx, top, bottom, extent, fillAlpha.toString(16).padStart(2, '0'));
   const area = new Path2D();
-  ctx.strokeStyle=lineColor;ctx.lineWidth=1.1;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();let previous;
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 1.1;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  let previous;
   // Draw range endpoints, preserving pixel extrema and every real block gap.
-  for(const {row, move} of pixelRows(state.rows, x)) {
-    const px=x(row[0]),py=y((row[1]-1)*10000);
+  for (const {row, move} of pixelRows(state.rows, x)) {
+    const px = x(row[0]), py = y((row[1] - 1) * 10000);
     if (move) {
-      if (previous) {area.lineTo(x(previous[0]),y(0));area.closePath();}
-      area.moveTo(px,y(0));
-      ctx.moveTo(px,py);
-    } else ctx.lineTo(px,py);
-    area.lineTo(px,py);
-    previous=row;
+      if (previous) {
+        area.lineTo(x(previous[0]), y(0));
+        area.closePath();
+      }
+      area.moveTo(px, y(0));
+      ctx.moveTo(px, py);
+    } else {
+      ctx.lineTo(px, py);
+    }
+    area.lineTo(px, py);
+    previous = row;
   }
-  if (previous) {area.lineTo(x(previous[0]),y(0));area.closePath();}
-  ctx.fillStyle=areaColor;ctx.fill(area);
+  if (previous) {
+    area.lineTo(x(previous[0]), y(0));
+    area.closePath();
+  }
+  ctx.fillStyle = areaColor;
+  ctx.fill(area);
   ctx.stroke();
-  function markExtreme(row) {
-    const value = (row[1]-1)*10000, px = x(row[0]), py = y(value);
-    const color = deviationColor(value);
-    ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);ctx.fillStyle = color;ctx.fill();
-    ctx.strokeStyle = '#14181f';ctx.lineWidth = 2;ctx.stroke();
-  }
   if (high && low) {
-    const highBps = Number(((high[1]-1)*10000).toFixed(2));
-    const lowBps = Number(((low[1]-1)*10000).toFixed(2));
+    const highBps = Number(((high[1] - 1) * 10000).toFixed(2));
+    const lowBps = Number(((low[1] - 1) * 10000).toFixed(2));
     if (highBps !== lowBps) {
-      markExtreme(high);markExtreme(low);
+      markExtreme(high, {x, y});
+      markExtreme(low, {x, y});
     }
   }
   ctx.restore();
-  if (backing.width !== width || backing.height !== height) {
-    backing.width = width; backing.height = height;
+}
+
+function drawOverlay({left, right, top, bottom, x, y}, width, height) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, top, right - left, bottom - top);
+  ctx.clip();
+  if (state.drag) {
+    ctx.fillStyle = '#ec83b122';
+    ctx.fillRect(Math.min(...state.drag), top, Math.abs(state.drag[1] - state.drag[0]), bottom - top);
   }
-  const backingContext = backing.getContext('2d');
-  backingContext.clearRect(0, 0, width, height);
-  backingContext.drawImage(canvas, 0, 0);
-  chartDirty = false;
-  } else {
-    ctx.drawImage(backing, 0, 0, w, h);
-  }
-  const {x,y} = geometry;
-  ctx.save();ctx.beginPath();ctx.rect(left,top,right-left,bottom-top);ctx.clip();
-  if(state.drag) {ctx.fillStyle='#ec83b122';ctx.fillRect(Math.min(...state.drag),top,Math.abs(state.drag[1]-state.drag[0]),bottom-top);}
-  $('tooltip').hidden=true;
-  if(state.hover!==null && state.rows.at(state.hover)) {
-    const row=state.rows.at(state.hover),px=x(row[0]),py=y((row[1]-1)*10000);
-    ctx.strokeStyle='#7e899b';ctx.lineWidth=1;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.moveTo(left,py);ctx.lineTo(right,py);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle=deviationColor((row[1]-1)*10000);ctx.beginPath();ctx.arc(px,py,3,0,Math.PI*2);ctx.fill();
-    const tip=$('tooltip');tip.hidden=false;tip.replaceChildren();
-    const stamp=document.createElement('div');stamp.textContent=`${date(row[0])} UTC`;
-    const value=document.createElement('strong');value.textContent=`${signed((row[1]-1)*10000)} bps`;
-    value.style.color=deviationColor((row[1]-1)*10000);
-    const price=document.createElement('div');price.textContent=`${row[1].toFixed(8)} USDT`;
-    tip.append(stamp,value,price);tip.style.left=`${Math.max(0,Math.min(px+16,w-230))}px`;tip.style.top=`${Math.max(0,Math.min(py+16,h-100))}px`;
+  const tip = $('tooltip');
+  tip.hidden = true;
+  const row = state.hover === null ? null : state.rows.at(state.hover);
+  if (row) {
+    const bps = (row[1] - 1) * 10000;
+    const px = x(row[0]), py = y(bps);
+    ctx.strokeStyle = '#7e899b';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, top);
+    ctx.lineTo(px, bottom);
+    ctx.moveTo(left, py);
+    ctx.lineTo(right, py);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = deviationColor(bps);
+    ctx.beginPath();
+    ctx.arc(px, py, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    tip.hidden = false;
+    tip.replaceChildren();
+    const stamp = document.createElement('div');
+    stamp.textContent = `${date(row[0])} UTC`;
+    const value = document.createElement('strong');
+    value.textContent = `${signed(bps)} bps`;
+    value.style.color = deviationColor(bps);
+    const price = document.createElement('div');
+    price.textContent = `${row[1].toFixed(8)} USDT`;
+    tip.append(stamp, value, price);
+    tip.style.left = `${Math.max(0, Math.min(px + 16, width - 230))}px`;
+    tip.style.top = `${Math.max(0, Math.min(py + 16, height - 100))}px`;
   }
   ctx.restore();
 }
-function position(event) {return Math.max(geometry.left,Math.min(geometry.right,event.clientX-canvas.getBoundingClientRect().left));}
+
+function draw() {
+  if (drawFrame !== null) {
+    cancelAnimationFrame(drawFrame);
+    drawFrame = null;
+  }
+  // Render at least two pixels per CSS pixel for smoother thin lines.
+  const rect = canvas.getBoundingClientRect();
+  const dpr = Math.max(2, window.devicePixelRatio || 1);
+  const width = Math.round(rect.width * dpr), height = Math.round(rect.height * dpr);
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+    chartDirty = true;
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (chartDirty) {
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'miter';
+    ctx.setLineDash([]);
+    let peak = 0;
+    let high = state.extremes?.high, low = state.extremes?.low;
+    if (high && low) peak = Math.max(Math.abs((high[1] - 1) * 10000), Math.abs((low[1] - 1) * 10000));
+    for (const row of [state.rows.low, state.rows.high].filter(Boolean)) {
+      peak = Math.max(peak, Math.abs((row[1] - 1) * 10000));
+      if (!high || row[1] > high[1]) high = row;
+      if (!low || row[1] < low[1]) low = row;
+    }
+    const {extent, ticks} = chartScale(peak);
+    const left = 65, right = rect.width - 20, top = 18, bottom = rect.height - 35;
+    const x = time => left + (time - state.start) / (state.end - state.start || 1) * (right - left);
+    const y = value => bottom - (value + extent) / (2 * extent) * (bottom - top);
+    geometry = {left, right, top, bottom, x, y};
+    drawGrid(geometry, rect.width, ticks);
+    drawPrices(geometry, extent, high, low);
+
+    if (backing.width !== width || backing.height !== height) {
+      backing.width = width;
+      backing.height = height;
+    }
+    const backingContext = backing.getContext('2d');
+    backingContext.clearRect(0, 0, width, height);
+    backingContext.drawImage(canvas, 0, 0);
+    chartDirty = false;
+  } else {
+    ctx.drawImage(backing, 0, 0, rect.width, rect.height);
+  }
+  drawOverlay(geometry, rect.width, rect.height);
+}
+
+function position(event) {
+  const px = event.clientX - canvas.getBoundingClientRect().left;
+  return Math.max(geometry.left, Math.min(geometry.right, px));
+}
+
+function timeAtPixel(px) {
+  return state.start + (px - geometry.left) / (geometry.right - geometry.left) * (state.end - state.start);
+}
+
+function zoomToSelection(startPixel, endPixel) {
+  if (Math.abs(startPixel - endPixel) <= 8) return;
+  const start = timeAtPixel(Math.min(startPixel, endPixel));
+  const end = timeAtPixel(Math.max(startPixel, endPixel));
+  if (end - start < 1) return;
+  state.zoom = [start, end];
+  state.live = false;
+  writeViewUrl();
+  updateViewControls();
+  refresh();
+}
+
 canvas.addEventListener('pointermove', event => {
   if (!geometry || !state.rows.length) return;
-  const px=position(event);
-  if(state.drag) state.drag[1]=px;
-  const t=state.start+(px-geometry.left)/(geometry.right-geometry.left)*(state.end-state.start);
-  state.hover = state.rows.nearest(t);
+  const px = position(event);
+  if (state.drag) state.drag[1] = px;
+  state.hover = state.rows.nearest(timeAtPixel(px));
   scheduleDraw();
 });
-canvas.addEventListener('pointerleave',()=>{if(!state.drag){state.hover=null;scheduleDraw();}});
-canvas.addEventListener('pointerdown',event=>{if(!geometry || event.button!==0)return;state.drag=[position(event),position(event)];canvas.setPointerCapture(event.pointerId);});
-canvas.addEventListener('pointerup',event=>{
-  if(!state.drag)return;
-  const [a,b]=state.drag;state.drag=null;
-  if(Math.abs(a-b)>8){const time=px=>state.start+(px-geometry.left)/(geometry.right-geometry.left)*(state.end-state.start);const window=[time(Math.min(a,b)),time(Math.max(a,b))];if(window[1]-window[0]>=1){state.zoom=window;state.live=false;writeViewUrl();updateViewControls();refresh();}}
-  canvas.releasePointerCapture(event.pointerId);draw();
+canvas.addEventListener('pointerleave', () => {
+  if (!state.drag) {
+    state.hover = null;
+    scheduleDraw();
+  }
 });
-canvas.addEventListener('pointercancel',()=>{state.drag=null;draw();});
+canvas.addEventListener('pointerdown', event => {
+  if (!geometry || event.button !== 0) return;
+  state.drag = [position(event), position(event)];
+  canvas.setPointerCapture(event.pointerId);
+});
+canvas.addEventListener('pointerup', event => {
+  if (!state.drag) return;
+  const [start, end] = state.drag;
+  state.drag = null;
+  zoomToSelection(start, end);
+  canvas.releasePointerCapture(event.pointerId);
+  draw();
+});
+canvas.addEventListener('pointercancel', () => {
+  state.drag = null;
+  draw();
+});
+
 function writeViewUrl() {
   const url = new URL(location.pathname, location.origin);
   const resolution = [...resolutions].find(([, seconds]) => seconds === state.range)[0];
@@ -330,8 +484,13 @@ function updateViewControls() {
   $('live').title = 'Refresh prices';
 }
 function reset() {
-  state.zoom = null; state.live = true; state.start = 0; state.end = 0;
-  writeViewUrl(); updateViewControls(); refresh();
+  state.zoom = null;
+  state.live = true;
+  state.start = 0;
+  state.end = 0;
+  writeViewUrl();
+  updateViewControls();
+  refresh();
 }
 const chartPanel = $('chart-panel');
 let chartFullscreen = false;
@@ -341,7 +500,8 @@ function updateFullscreen() {
   document.body.classList.toggle('chart-fullscreen', active);
   $('fullscreen').setAttribute('aria-pressed', String(active));
   $('fullscreen').textContent = active ? 'Exit fullscreen' : 'Fullscreen';
-  state.drag = null; state.hover = null;
+  state.drag = null;
+  state.hover = null;
   chartDirty = true;
   requestAnimationFrame(draw);
 }
@@ -357,7 +517,14 @@ document.addEventListener('keydown', event => {
 });
 canvas.addEventListener('dblclick', toggleFullscreen);
 $('fullscreen').onclick = toggleFullscreen;
-canvas.addEventListener('keydown',event=>{if(['ArrowLeft','ArrowRight'].includes(event.key)){event.preventDefault();state.hover=Math.max(0,Math.min(state.rows.length-1,(state.hover??state.rows.length-1)+(event.key==='ArrowRight'?1:-1)));draw();}});
+canvas.addEventListener('keydown', event => {
+  if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  event.preventDefault();
+  const current = state.hover ?? state.rows.length - 1;
+  const step = event.key === 'ArrowRight' ? 1 : -1;
+  state.hover = Math.max(0, Math.min(state.rows.length - 1, current + step));
+  draw();
+});
 function updateRangeButtons() {
   document.querySelectorAll('[data-range]').forEach(button =>
     button.setAttribute('aria-pressed', String(Number(button.dataset.range) === state.range)));
@@ -369,9 +536,14 @@ document.querySelectorAll('[data-range]').forEach(button => button.onclick = () 
 });
 window.addEventListener('popstate', () => {
   const view = linkedView();
-  state.range = view.range; state.zoom = view.zoom; state.live = !view.zoom;
-  state.start = 0; state.end = 0;
-  updateRangeButtons(); updateViewControls(); refresh();
+  state.range = view.range;
+  state.zoom = view.zoom;
+  state.live = !view.zoom;
+  state.start = 0;
+  state.end = 0;
+  updateRangeButtons();
+  updateViewControls();
+  refresh();
 });
 updateRangeButtons();
 updateViewControls();
@@ -387,17 +559,22 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
   });
 });
 new ResizeObserver(draw).observe($('plot'));
-setInterval(()=>{if(((state.live&&!state.zoom)||state.historyLoading)&&!document.hidden&&!loading)refresh();},6000);
+function needsRefresh() {
+  return (state.live && !state.zoom) || state.historyLoading;
+}
+setInterval(() => {
+  if (needsRefresh() && !document.hidden && !loading) refresh();
+}, 6000);
 // Age the last received timestamps independently of network requests or chart redraws.
 setInterval(updateFreshness, 1000);
 window.addEventListener('offline', updateFreshness);
 window.addEventListener('online', () => {
   updateFreshness();
-  if ((state.live && !state.zoom) || state.historyLoading) refresh();
+  if (needsRefresh()) refresh();
 });
 document.addEventListener('visibilitychange', () => {
   updateFreshness();
-  if (!document.hidden && ((state.live && !state.zoom) || state.historyLoading)) refresh();
+  if (!document.hidden && needsRefresh()) refresh();
 });
 if (acceptVersion(document.querySelector('meta[name="app-version"]')?.content)) {
   // Every price response checks the version, including when live updates resume.
