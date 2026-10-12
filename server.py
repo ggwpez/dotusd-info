@@ -35,7 +35,7 @@ SUMMARY_SAMPLES = 256
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'archive_reader.py', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
+             ('server.py', 'archive_reader.py', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     digest = hashlib.sha256()
     for name, body in files.items():
         digest.update(name.encode() + b'\0' + body + b'\0')
@@ -60,7 +60,7 @@ def load_release():
     }
     template = assets['index.html']
     for name, values in pages.items():
-        html = template
+        html = template.replace(b'__DETAILS__', files['coingecko-details.html'] if name == 'coingecko.html' else b'')
         for key, value in values.items():
             html = html.replace(f'__{key}__'.encode(), value.encode())
         assets[name] = html.replace(

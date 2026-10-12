@@ -1,0 +1,33 @@
+<section class="explain-grid" aria-label="Understanding the DEX price">
+<article class="panel explain-card calculation-card" aria-labelledby="calculation-heading">
+<div class="label">Calculation &amp; terminology</div>
+<h2 id="calculation-heading">From two DOT pairs to one dotUSD price</h2>
+<p>Both tickers express a token amount per DOT. Dividing them cancels out DOT and gives the price of one dotUSD in USDT.</p>
+<div class="price-formula" aria-label="USDT per dotUSD equals USDT per DOT divided by dotUSD per DOT"><span>USDT per dotUSD</span><span aria-hidden="true">=</span><span>USDT per DOT ÷ dotUSD per DOT</span></div>
+<p class="calculation-example">Example: 1.998 USDT per DOT ÷ 2 dotUSD per DOT = <strong>0.999 USDT per dotUSD</strong>.</p>
+<dl class="term-list">
+<div><dt>Ticker</dt><dd>A market snapshot for a trading pair. We use the Asset Hub DEX’s DOT/USDT and DOT/dotUSD tickers.</dd></div>
+<div><dt>Base &amp; quote</dt><dd>DOT is the base token in both pairs. USDT and dotUSD are the quote tokens: the units in which each DOT price is expressed.</dd></div>
+<div><dt>Last price</dt><dd>The most recent qualifying trade within the previous 24 hours. If none qualifies, the DEX uses the current pool reserve ratio.</dd></div>
+<div><dt>Qualifying trade</dt><dd>A swap with at least 10,000 of each token’s smallest units on each side: 0.000001 DOT and 0.01 USDT or dotUSD. This dust filter excludes tiny swaps whose prices are distorted by rounding.</dd></div>
+</dl>
+<p class="card-source">Source: <a href="https://polkadot-hub-dex.parity.io/">Asset Hub DEX tickers</a> · <a href="https://github.com/paritytech/asset-hub-dex-api/blob/main/src/tickers/tickers.ts">Calculation rules</a>. This page uses DEX data only; it does not call CoinGecko.</p>
+</article>
+<article class="panel explain-card" aria-labelledby="peg-explained-heading">
+<div class="label">Reading the chart</div>
+<h2 id="peg-explained-heading">How tight is the peg?</h2>
+<p>The reference is <strong>1 dotUSD = 1 USDT</strong>. A basis point (bps) is 0.01%; 100 bps equals 1%.</p>
+<p class="small-formula">Deviation in bps = (price − 1) × 10,000</p>
+<p>Positive values mean dotUSD trades above USDT; negative values mean it trades below. A price of 0.999 is −10 bps. The rating uses the absolute deviation, so +10 and −10 bps receive the same rating.</p>
+<dl class="rating-definitions"><div><dt>Excellent</dt><dd>≤ 5 bps</dd></div><div><dt>Good</dt><dd>&gt; 5 to 20 bps</dd></div><div><dt>Fair</dt><dd>&gt; 20 to 50 bps</dd></div><div><dt>Poor</dt><dd>&gt; 50 to 100 bps</dd></div><div><dt>Horrible</dt><dd>&gt; 100 bps</dd></div></dl>
+<p class="card-source">These are this site’s rating thresholds. The comparison measures the peg against USDT, not an independent US-dollar reference.</p>
+</article>
+<article class="panel explain-card" aria-labelledby="history-explained-heading">
+<div class="label">Updates &amp; history</div>
+<h2 id="history-explained-heading">What each sample represents</h2>
+<p>The live chart checks for updates every <strong>6 seconds</strong>. An observation can repeat the previous price: a refresh does not imply a new trade or a newly finalized block.</p>
+<p>Historical samples reconstruct both ticker legs from finalized Asset Hub swaps, using the same trade filter, 24-hour window and reserve fallback. They follow the normal chart’s block range and estimated timestamps.</p>
+<p>The two latest trades may have happened at different times. That is why this last-trade calculation can differ from the main chart’s pool reserve calculation, which reads both pools at the same finalized block.</p>
+<p class="card-source">History is imported gradually in small batches. Newly imported history appears on a periodic refresh. These prices are not execution quotes for a new swap.</p>
+</article>
+</section>
