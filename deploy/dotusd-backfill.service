@@ -9,9 +9,8 @@ Type=oneshot
 User=prometheus
 Group=prometheus
 WorkingDirectory=/opt/dotusd-info
-ExecStart=/usr/bin/python3 /opt/dotusd-info/backfill.py
-Restart=on-failure
-RestartSec=30
+ExecStart=/usr/bin/python3 /opt/dotusd-info/backfill.py --database /var/lib/dotusd-backfill/archive.sqlite3
+Restart=no
 TimeoutStartSec=infinity
 Nice=15
 CPUQuota=25%
@@ -20,7 +19,9 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/dotusd-info
+ReadOnlyPaths=/var/lib/dotusd-info /var/lib/arb-peg
+ReadWritePaths=/var/lib/dotusd-backfill
+IOSchedulingClass=idle
 UMask=0022
 
 [Install]

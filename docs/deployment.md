@@ -29,25 +29,40 @@ collector database. It uses only Parity's
 collector's boundary hash, and preserves both the original block timestamp and
 pool reserves. Pool decoding is shared with the extracted `archive_reader.py`.
 
-Historical samples live in `/var/lib/dotusd-info/archive.sqlite3`; Prometheus and
-the live collector database are unchanged. The chart worker imports new archive
-rows every six seconds, independently of visitor requests. The estimated chart
-clock is extended backwards from the existing boundary, spacing tied timestamps
-by two seconds; original block timestamps remain in SQLite. Archive loads never
-mark a failed live refresh as healthy.
+Production reads one final archive, `/var/lib/dotusd-info/archive.sqlite3`.
+Backfill writes only to the temporary `/var/lib/dotusd-backfill/archive.sqlite3`.
+The importer refuses the published path (including aliases), and its service mounts
+production data read-only. It is manually started, has no automatic retries, and
+uses a 25% CPU cap, low process priority and idle disk priority.
 
-The backfill service should remain disabled between manual runs. Completed archives
-use rollback journaling so the read-only web service does not depend on WAL sidecars.
-
-`dotusd-backfill.service` runs with the existing prometheus user, restarts on
-failure, resumes committed batches, and exits after verifying complete block
-coverage. Dependencies on the server: `python3-websocket` and `python3-xxhash`.
-After `./deploy/deploy.sh server`, install/start it with:
+Keep the service disabled between manual runs. Install the scripts and unit, then:
 
 ```sh
-ssh server 'sudo install -d -o prometheus -g prometheus -m 0755 /var/lib/dotusd-info'
+ssh server 'sudo install -d -o prometheus -g prometheus -m 0755 /var/lib/dotusd-backfill'
 scp deploy/dotusd-backfill.service server:/tmp/dotusd-backfill.service
 ssh server 'sudo install -m 0644 /tmp/dotusd-backfill.service /etc/systemd/system/dotusd-backfill.service && sudo systemctl daemon-reload && sudo systemctl start --no-block dotusd-backfill'
 ```
+
+For an existing partial archive, seed the temporary database with SQLite's backup
+API in 64-page batches, pausing 20 ms between batches. Use `publish_archive.py --seed-staging` for this throttled copy. Preserve sequence IDs: the
+web server uses them as its import cursor. Do not modify the published database.
+The importer verifies the chain and live boundary and resumes the staging copy.
+Dependencies on the server: `python3-websocket` and `python3-xxhash`.
+
+After the service completes, publish with the separately throttled command:
+
+```sh
+ssh server 'sudo systemd-run --unit=dotusd-archive-publish --wait --collect --pipe -p CPUQuota=10% -p MemoryMax=192M -p Nice=19 -p IOSchedulingClass=idle /usr/bin/python3 /opt/dotusd-info/publish_archive.py --cleanup-staging'
+```
+
+Publication copies 64 SQLite pages per step with a 20 ms pause, checks SQLite
+integrity, contiguous block coverage, clock order, the live boundary, and exact
+preservation of every published row and sequence ID. An identical archive is a
+no-op. A changed archive is made available with an atomic rename, after preserving
+the prior file as `archive.sqlite3.previous` for rollback. No web restart is needed;
+the existing worker lazily imports new rows in its usual 2,000-row batches. Once
+production verification succeeds, remove the rollback file. The temporary staging
+database is removed only after successful publication with `--cleanup-staging`.
+No background backfill or second permanent archive remains.
 
 Inspect progress with `ssh server journalctl -u dotusd-backfill -n 20 --no-pager`.

@@ -14,6 +14,8 @@ GENESIS = '0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f'
 START = 21572110
 RPC = 'wss://polkadot-asset-hub-rpc.polkadot.io'
 BATCH = 32
+PUBLISHED = Path('/var/lib/dotusd-info/archive.sqlite3')
+STAGING = Path('/var/lib/dotusd-backfill/archive.sqlite3')
 
 
 class Archive:
@@ -63,6 +65,8 @@ class Archive:
 
 
 def database(path):
+    if path.resolve() == PUBLISHED.resolve() or (path.exists() and PUBLISHED.exists() and path.samefile(PUBLISHED)):
+        raise ValueError('Backfill must not write to the published archive; use staging')
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
     # Read-only consumers cannot recreate WAL sidecars after the writer exits.
@@ -87,7 +91,7 @@ def store_batch(db, rows, next_time):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--database', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
+    parser.add_argument('--database', type=Path, default=STAGING)
     parser.add_argument('--live-database', default='/var/lib/arb-peg/peg.sqlite3')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
