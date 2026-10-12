@@ -50,3 +50,32 @@ class AppTests(unittest.TestCase):
         JSON.stringify(true);
         """
         self.assertTrue(evaluate(source))
+
+    def test_display_scales_preserve_prices_and_do_not_refetch(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        let requests = 0;
+        refresh = () => requests++;
+        state.start = 100; state.end = 200;
+        state.rows = RangeSeries.fromWire([[110, 1, .999]]);
+        summaryValues = {last: state.rows.at(-1), low: state.rows.low, high: state.rows.high};
+        state.hover = 0;
+        for (const [scale, expected, tip] of [
+          ['percent', '-0.1000', '-0.1000%'],
+          ['dollars', '$0.999000', '$0.999000'],
+          ['bps', '-10.00', '-10.00 bps'],
+        ]) {
+          elements.get('display-scale').events.change({target: {value: scale}});
+          draw();
+          require(elements.get('latest').textContent === expected, scale + ' summary');
+          require(elements.get('tooltip').children[1].textContent === tip, scale + ' tooltip');
+          require(elements.get('rating-value').textContent === 'Good', 'rating unchanged');
+          require(state.rows.at(-1)[1] === .999, 'source price unchanged');
+        }
+        require(requests === 0, 'display changes never refetch history');
+        JSON.stringify(true);
+        """
+        self.assertTrue(evaluate(source))

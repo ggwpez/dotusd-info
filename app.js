@@ -63,6 +63,49 @@ function scheduleDraw() {
   if (drawFrame === null) drawFrame = requestAnimationFrame(draw);
 }
 const signed = v => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+// Display units never alter stored prices, rating thresholds, or subscriptions.
+let displayScale = 'bps';
+try {
+  const saved = localStorage.getItem('dotusd-display-scale');
+  if (['bps', 'percent', 'dollars'].includes(saved)) displayScale = saved;
+} catch {}
+function formatScale(bps, unit = false, axis = false) {
+  if (displayScale === 'dollars') return '$' + (1 + bps / 10000).toFixed(axis ? 4 : 6);
+  if (displayScale === 'percent') {
+    const value = bps / 100;
+    return (axis ? value.toFixed(2) : (value > 0 ? '+' : '') + value.toFixed(4)) + (unit ? '%' : '');
+  }
+  return (axis ? String(bps) : signed(bps)) + (unit ? ' bps' : '');
+}
+function ratingBand(index) {
+  const threshold = value => displayScale === 'bps' ? value + ' bps' :
+    displayScale === 'percent' ? (value / 100).toFixed(2) + '%' :
+      '$' + (value / 10000).toFixed(4);
+  const band = index === 0 ? '≤ ' + threshold(5) :
+    index === 4 ? '> ' + threshold(100) :
+      '> ' + threshold(ratingLimits[index - 1]) + '–' + threshold(ratingLimits[index]);
+  return band + (displayScale === 'dollars' ? ' from $1' : '');
+}
+function applyScale() {
+  $('display-scale').value = displayScale;
+  document.body.dataset.displayScale = displayScale;
+  $('metric-label').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Price deviation';
+  $('metric-unit').textContent = displayScale === 'bps' ? 'bps' : displayScale === 'percent' ? '%' : '';
+  $('range-unit').textContent = displayScale === 'bps' ? 'Basis points' : displayScale === 'percent' ? 'Percent' : 'Dollar price (USDT)';
+  $('chart-unit').textContent = $('range-unit').textContent.toLowerCase();
+  $('chart-title').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Peg deviation';
+  canvas.setAttribute('aria-label', 'dotUSD chart in ' + $('chart-unit').textContent +
+    '. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples.');
+  document.querySelectorAll('[data-rating]').forEach(segment => {
+    const index = Number(segment.dataset.rating);
+    const label = ratingNames[index] + ': ' + ratingBand(index);
+    segment.title = label;
+    segment.setAttribute('aria-label', label);
+  });
+  chartDirty = true;
+  summary();
+  scheduleDraw();
+}
 const ratingColors = ['#73bf69', '#63c8ae', '#dfc464', '#f29b58', '#f2495c'];
 const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
@@ -73,7 +116,6 @@ function status(text, kind) {
 }
 const ratingNames = ['Excellent', 'Good', 'Fair', 'Poor', 'Horrible'];
 const ratingLimits = [5, 20, 50, 100];
-const ratingBands = ['≤ 5 bps', '> 5–20 bps', '> 20–50 bps', '> 50–100 bps', '> 100 bps'];
 let hoveredRating = null, focusedRating = null;
 function ratingForBps(bps) {
   if (!Number.isFinite(bps)) return -1;
@@ -106,16 +148,16 @@ function updateRating() {
     else segment.removeAttribute('aria-current');
   });
   $('rating-value').textContent = displayed < 0 ? '-' : ratingNames[displayed];
-  $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : ratingBands[displayed];
+  $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : ratingBand(displayed);
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
   const ready = summaryValues?.last;
-  $('latest').textContent = ready ? signed((ready[1] - 1) * 10000) : '-';
+  $('latest').textContent = ready ? formatScale((ready[1] - 1) * 10000) : '-';
   $('price').textContent = ready ? ready[1].toFixed(6) : '-';
   const low = ready ? (summaryValues.low[1]-1)*10000 : 0;
   const high = ready ? (summaryValues.high[1]-1)*10000 : 0;
-  $('extremes').textContent = ready ? `${signed(low)} / ${signed(high)}` : '-';
+  $('extremes').textContent = ready ? `${formatScale(low)} / ${formatScale(high)}` : '-';
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history…${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
   $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading samples…' : source.empty);
   $('message').hidden = !state.error && !!last;
@@ -247,7 +289,7 @@ function drawGrid({left, right, top, bottom, x, y}, width, yTicks) {
     ctx.stroke();
     ctx.fillStyle = boundaryColor ?? '#8792a3';
     ctx.textAlign = 'right';
-    ctx.fillText(String(value), left - 12, py + 3);
+    ctx.fillText(formatScale(value, false, true), left - 12, py + 3);
   }
 
   const ticks = width < 600 ? 3 : 6;
@@ -380,7 +422,7 @@ function drawOverlay({left, right, top, bottom, x, y}, width, height) {
     const stamp = document.createElement('div');
     stamp.textContent = `${date(row[0])} UTC`;
     const value = document.createElement('strong');
-    value.textContent = `${signed(bps)} bps`;
+    value.textContent = formatScale(bps, true);
     value.style.color = deviationColor(bps);
     const price = document.createElement('div');
     price.textContent = `${row[1].toFixed(8)} ${source.currency}`;
@@ -421,7 +463,7 @@ function draw() {
       if (!low || row[1] < low[1]) low = row;
     }
     const {extent, ticks} = chartScale(peak);
-    const left = 65, right = rect.width - 20, top = 18, bottom = rect.height - 35;
+    const left = displayScale === 'dollars' ? 82 : 65, right = rect.width - 20, top = 18, bottom = rect.height - 35;
     const x = time => left + (time - state.start) / (state.end - state.start || 1) * (right - left);
     const y = value => bottom - (value + extent) / (2 * extent) * (bottom - top);
     geometry = {left, right, top, bottom, x, y};
@@ -574,6 +616,12 @@ window.addEventListener('popstate', () => {
   updateViewControls();
   refresh();
 });
+$('display-scale').addEventListener('change', event => {
+  displayScale = event.target.value;
+  try { localStorage.setItem('dotusd-display-scale', displayScale); } catch {}
+  applyScale();
+});
+applyScale();
 updateRangeButtons();
 updateViewControls();
 $('live').onclick = () => refresh(true);
