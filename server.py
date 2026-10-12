@@ -11,6 +11,7 @@ import logging
 from contextlib import closing, contextmanager
 import json
 import math
+import os
 import socket
 import sqlite3
 import subprocess
@@ -44,10 +45,26 @@ def load_release():
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
     # Keep source modules separate, but deliver one self-contained document.
     assets['inline.js'] = assets['ranges.js'] + b'\n' + assets['app.js'].split(b'\n', 1)[1]
-    assets['index.html'] = assets['index.html'].replace(
-        b'__FAVICON__', b'data:image/svg+xml;base64,' + base64.b64encode(files['favicon.svg'])).replace(
-        b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
-        b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
+    pages = {
+        'index.html': dict(QUOTE='USDT', PAGE_PATH='/', SOURCE='pools', SOURCE_LABEL='PEG MONITOR',
+                           DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
+                           PRICE_LABEL='Spot price', OTHER_PATH='/coingecko', OTHER_LABEL='Compare CoinGecko',
+                           SOURCE_NOTE='Pool reserve price · dotUSD → DOT → USDT · excludes fees and slippage.'),
+        'coingecko.html': dict(QUOTE='USD', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='COINGECKO',
+                               DESCRIPTION='Monitor dotUSD / USD peg deviation using CoinGecko market prices.',
+                               PRICE_LABEL='CoinGecko price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
+                               SOURCE_NOTE='USD prices from <a href="https://www.coingecko.com/en/coins/dotusd">CoinGecko</a> · '
+                                           '5-minute samples for the past day, hourly for older history · source checked every 5 minutes.'),
+    }
+    template = assets['index.html']
+    for name, values in pages.items():
+        html = template
+        for key, value in values.items():
+            html = html.replace(f'__{key}__'.encode(), value.encode())
+        assets[name] = html.replace(
+            b'__FAVICON__', b'data:image/svg+xml;base64,' + base64.b64encode(files['favicon.svg'])).replace(
+            b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
+            b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
     return version, assets
 
 METRIC = '{__name__=~"arb_peg_dotusd_usdt|arb_peg_block_number",clock="estimated_2s"}'
@@ -290,12 +307,12 @@ class HistoryCache:
         self.generation = 0
         self.responses = ResponseCache()
 
-    def merge(self, rows, now, mark_fresh=True):
+    def merge(self, rows, now, mark_fresh=True, replace=False):
         # Serialize writers, but let readers use the previous immutable snapshot
         # while a replacement is built. Only publication takes the shared lock.
         with self.writer_lock:
             with self.lock:
-                previous = self.rows
+                previous = () if replace else self.rows
             # Merge by timestamp to deduplicate overlapping refreshes and preserve gaps.
             by_time = {row[0]: row for row in previous if row[0] > now - HISTORY_SECONDS}
             by_time.update({row[0]: tuple(row) for row in rows
@@ -443,6 +460,67 @@ class HistoryWorker:
             self.stop.wait(6 if ready or failed else 0.05)
 
 
+class CoinGeckoWorker:
+    """Fetch once for all visitors; use the same history cache and wire format as pools."""
+    def __init__(self, cache, http=None, api_key=None):
+        self.cache = cache
+        self.http = http or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.api_key = api_key
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.run, name='coingecko-history', daemon=True)
+        self.older = []
+        self.older_fetched_at = None
+
+    def fetch(self, days):
+        request = urllib.request.Request(
+            f'https://api.coingecko.com/api/v3/coins/dotusd/market_chart?vs_currency=usd&days={days}&precision=full',
+            headers={'Accept': 'application/json', 'User-Agent': 'dotusd-info/1.0'})
+        if self.api_key:
+            request.add_header('x-cg-demo-api-key', self.api_key)
+        with self.http.open(request, timeout=20) as response:
+            body = response.read(MAX_UPSTREAM_BYTES + 1)
+        if len(body) > MAX_UPSTREAM_BYTES:
+            raise ValueError('CoinGecko response exceeds size limit')
+        prices = json.loads(body).get('prices')
+        if not isinstance(prices, list) or len(prices) > MAX_SAMPLES:
+            raise ValueError('Invalid CoinGecko history')
+        rows = []
+        for pair in prices:
+            if not isinstance(pair, list) or len(pair) != 2:
+                raise ValueError('Invalid CoinGecko price')
+            stamp, price = pair
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+                   not math.isfinite(v) or v <= 0 for v in pair):
+                raise ValueError('Invalid CoinGecko price')
+            # There is no block number for an aggregated market price.
+            rows.append((stamp / 1000, price, None))
+        return rows
+
+    def poll(self):
+        now = time.time()
+        if self.older_fetched_at is None or now - self.older_fetched_at >= 3600:
+            self.older = self.fetch(7)
+            self.older_fetched_at = now
+        recent = self.fetch(1)
+        # Replace the moving snapshot, including corrected/removed samples. Do not
+        # accumulate the endpoint's transient final point on every poll.
+        rows = [row for row in self.older if row[0] <= now - 86400]
+        rows.extend(row for row in recent if row[0] > now - 86400)
+        self.cache.merge(rows, time.time(), replace=True)
+        with self.cache.lock:
+            self.cache.history_ready = True
+
+    def run(self):
+        while not self.stop.is_set():
+            delay = 300
+            try:
+                self.poll()
+            except Exception:
+                delay = 600
+                logging.exception('CoinGecko history refresh failed')
+            self.stop.wait(delay)
+
+
 class CacheServer(HTTPServer):
     """Four fixed workers and a bounded FIFO for short request bursts."""
     handler_count = 4
@@ -452,6 +530,7 @@ class CacheServer(HTTPServer):
 
     def __init__(self, address, handler):
         self.version, self.assets = load_release()
+        self.coingecko_cache = HistoryCache()
         script_hash = base64.b64encode(hashlib.sha256(self.assets['inline.js']).digest()).decode()
         style_hash = base64.b64encode(hashlib.sha256(self.assets['style.css']).digest()).decode()
         self.content_security_policy = (
@@ -533,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == '/api/version':
             self.respond(200, {'version': self.server.version})
             return
-        if url.path == '/api/prices':
+        if url.path in ('/api/prices', '/api/coingecko/prices'):
             try:
                 params = urllib.parse.parse_qs(url.query, max_num_fields=6, keep_blank_values=True)
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
@@ -558,7 +637,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
                 return
             try:
-                chunks = self.server.cache.response(start, end, window, after_block, raw, streaming)
+                cache = self.server.coingecko_cache if url.path == '/api/coingecko/prices' else self.server.cache
+                chunks = cache.response(start, end, window, after_block, raw, streaming)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                 return
@@ -571,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, TimeoutError):
                 pass
             return
-        filename = {'/': 'index.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css', '/social-preview.png': 'social-preview.png'}.get(url.path)
+        filename = {'/': 'index.html', '/coingecko': 'coingecko.html', '/coingecko/': 'coingecko.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css', '/social-preview.png': 'social-preview.png'}.get(url.path)
         if not filename:
             self.respond(404, {'error': 'Not found'})
             return
@@ -617,6 +697,8 @@ def main():
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
     worker = None
+    coingecko = CoinGeckoWorker(server.coingecko_cache, api_key=os.environ.get('COINGECKO_DEMO_API_KEY'))
+    coingecko.thread.start()
     try:
         with price_source(args.upstream, args.ssh_host) as upstream:
             worker = HistoryWorker(server.cache, upstream, archive=args.archive)
@@ -630,9 +712,11 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        coingecko.stop.set()
         if worker is not None:
             worker.stop.set()
             worker.thread.join(timeout=25)
+        coingecko.thread.join(timeout=45)
         server.server_close()
 
 

@@ -115,3 +115,27 @@ ranges. The previous six-hour request scheme totaled about 312 KB of JSON and 10
 parse/cache construction at 1.5 ms versus raw JSON parsing at 12.2 ms; drawing
 point preparation at 0.8 ms versus 1.4 ms. These are component timings over 20
 measured runs after five warmups, not end-to-end browser performance guarantees.
+
+## CoinGecko comparison
+
+`/` and `/coingecko` render one HTML template with source-specific labels. Both
+include identical CSS and JavaScript, including the same refresh, stream parsing,
+browser history, rating and chart code. Comparison links preserve query parameters.
+`/api/coingecko/prices` uses the same handler, bounded `HistoryCache`, response cache
+and wire formats as `/api/prices`, with a separate cache to keep the sources isolated.
+
+One background worker calls CoinGecko's dotUSD `market_chart` endpoint with
+`vs_currency=usd`: `days=1` every 300 seconds (five-minute samples), and `days=7`
+once per hour (hourly samples). The recent day replaces overlapping hourly data.
+Each publication replaces the snapshot so corrected prices and transient endpoint
+samples do not accumulate. Failed fetches preserve both history and its original
+freshness time; retries wait ten minutes. Empty successful responses remain empty.
+The optional `COINGECKO_DEMO_API_KEY` is sent in a server-side header.
+
+CoinGecko timestamps remain unchanged and block numbers are null. The browser
+refreshes the full selected window every minute, allowing revisions and removals;
+it does not use the pool block cursor. The renderer connects timestamp samples
+within 15 minutes for the recent day, or 90 minutes for older hourly history,
+and breaks longer gaps. Pool charts retain their original block-gap rules.
+CoinGecko data is marked delayed after 15 minutes without a successful fetch or
+recent sample. No visitor request calls CoinGecko directly.

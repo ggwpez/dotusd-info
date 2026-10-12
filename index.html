@@ -1,27 +1,27 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>dotUSD · Peg monitor</title><link rel="icon" type="image/svg+xml" href="__FAVICON__">
-<meta name="description" content="Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.">
-<link rel="canonical" href="https://dotusd.info/">
+<meta name="description" content="__DESCRIPTION__">
+<link rel="canonical" href="https://dotusd.info__PAGE_PATH__">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="dotUSD Peg Monitor">
-<meta property="og:url" content="https://dotusd.info/">
-<meta property="og:title" content="dotUSD / USDT · Peg monitor">
-<meta property="og:description" content="Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.">
+<meta property="og:url" content="https://dotusd.info__PAGE_PATH__">
+<meta property="og:title" content="dotUSD / __QUOTE__ · Peg monitor">
+<meta property="og:description" content="__DESCRIPTION__">
 <meta property="og:image" content="https://dotusd.info/social-preview.png?v=2">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Screenshot of the dotUSD / USDT peg monitor showing price deviation and historical chart.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="dotUSD / USDT · Peg monitor">
-<meta name="twitter:description" content="Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.">
+<meta name="twitter:title" content="dotUSD / __QUOTE__ · Peg monitor">
+<meta name="twitter:description" content="__DESCRIPTION__">
 <meta name="twitter:image" content="https://dotusd.info/social-preview.png?v=2">
 <meta name="twitter:image:alt" content="Screenshot of the dotUSD / USDT peg monitor showing price deviation and historical chart.">
 <!-- INLINE_STYLE --></head>
-<body>
+<body data-price-source="__SOURCE__">
 <main>
-<header><div class="identity"><img id="title-logo" class="mark" width="32" height="32" alt=""><h1>dotUSD <span>/ USDT</span></h1><span class="tag">PEG MONITOR</span></div><div id="status" role="status">Connecting…</div></header>
+<header><div class="identity"><img id="title-logo" class="mark" width="32" height="32" alt=""><h1>dotUSD <span>/ __QUOTE__</span></h1><span class="tag">__SOURCE_LABEL__</span></div><div id="status" role="status">Connecting…</div></header>
 <section class="summary" aria-label="Market summary"><div class="peg-rating" aria-labelledby="rating-heading">
 <div class="rating-bar" role="list" aria-label="Peg tightness scale">
 <div class="rating-segment" data-rating="0" role="listitem" tabindex="0" title="Excellent: at most 5 bps" aria-label="Excellent: at most 5 bps"></div>
@@ -32,12 +32,13 @@
 </div>
 <div class="rating-copy"><div class="label" id="rating-heading">Peg tightness</div><div class="stat" id="rating-value" role="status">-</div><div class="muted" id="rating-caption">Absolute deviation</div></div>
 </div>
-<div class="primary"><div class="label">Price deviation</div><div class="value"><span id="latest">-</span><span class="unit">bps</span></div><div class="muted">Relative to 1.00 USDT</div></div><div><div class="label">Spot price</div><div class="stat" id="price">-</div><div class="muted">USDT per dotUSD</div></div><div><div class="label">Range low / high</div><div class="stat" id="extremes">-</div><div class="muted">Basis points · selected window</div></div>
+<div class="primary"><div class="label">Price deviation</div><div class="value"><span id="latest">-</span><span class="unit">bps</span></div><div class="muted">Relative to 1.00 __QUOTE__</div></div><div><div class="label">__PRICE_LABEL__</div><div class="stat" id="price">-</div><div class="muted">__QUOTE__ per dotUSD</div></div><div><div class="label">Range low / high</div><div class="stat" id="extremes">-</div><div class="muted">Basis points · selected window</div></div>
 </section>
 <section class="panel" id="chart-panel" aria-label="Deviation chart"><div class="toolbar"><div><h2>Peg deviation</h2><span class="legend"><i></i> dotUSD <span class="muted">· basis points · color = peg tightness</span></span></div><div class="controls"><div class="ranges" aria-label="Time range"><button data-range="900">15m</button><button data-range="3600">1h</button><button data-range="21600">6h</button><button data-range="86400" aria-pressed="true">24h</button><button data-range="604800">7d</button></div><button id="fullscreen" aria-pressed="false" title="Toggle fullscreen (double-click graph)">Fullscreen</button><button id="live" data-live="true" aria-label="Refresh prices; automatic updates every 6 seconds" title="Refresh prices"><svg class="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7a9 9 0 0 0-15-2L2 8m0-6v6h6M4 17a9 9 0 0 0 15 2l3-3m0 6v-6h-6"/></svg><span id="live-label">6s</span></button></div></div>
-<div class="plot" id="plot"><canvas id="chart" tabindex="0" aria-label="dotUSD deviation in basis points. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples."></canvas><div id="message" role="status">Loading finalized-block prices…</div><div id="tooltip" hidden></div></div>
+<div class="plot" id="plot"><canvas id="chart" tabindex="0" aria-label="dotUSD deviation in basis points. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples."></canvas><div id="message" role="status">Loading prices…</div><div id="tooltip" hidden></div></div>
 <div class="chart-footer"><span id="window">—</span><span>Drag to zoom <span class="separator">·</span> Double-click for fullscreen <span class="separator">·</span> UTC</span></div></section>
 <footer>
+<p>__SOURCE_NOTE__ <a id="compare-source" href="__OTHER_PATH__">__OTHER_LABEL__ →</a></p>
 <p class="disclaimer">This site only monitors and displays publicly available data. We do not deploy dotUSD or facilitate its issuance, trading, or use.</p>
 </footer>
 </main><!-- INLINE_SCRIPT -->

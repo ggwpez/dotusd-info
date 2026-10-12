@@ -133,11 +133,11 @@ export class RangeSeries {
     const before = this.at(next - 1), after = this.at(next);
     return next > 0 && time - before[0] < after[0] - time ? next - 1 : next;
   }
-  *points() {
+  *points(connect = connected) {
     let previous;
     for (const run of this.runs) {
       const first = sample(run, 0);
-      yield {row: first, move: !connected(previous, first)};
+      yield {row: first, move: !connect(previous, first)};
       if (run.count > 1 && run.db === 1 && run.block !== null) {
         yield {row: sample(run, run.count - 1), move: false};
       } else {
@@ -188,7 +188,7 @@ export class BrowserHistory {
   }
 }
 
-export function* pixelRows(rows, x) {
+export function* pixelRows(rows, x, connect) {
   let bucket = [], pixel;
   function* flush() {
     if (!bucket.length) return;
@@ -199,7 +199,7 @@ export function* pixelRows(rows, x) {
     }
     for (const i of [...new Set([0, low, high, bucket.length - 1])].sort((a, b) => a - b)) yield bucket[i];
   }
-  for (const point of rows.points()) {
+  for (const point of rows.points(connect)) {
     const nextPixel = Math.floor(x(point.row[0]));
     if (point.move || nextPixel !== pixel) {
       yield* flush(); bucket = [];

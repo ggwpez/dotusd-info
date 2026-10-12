@@ -1,5 +1,19 @@
 import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.js?v=__APP_VERSION__';
 const $ = id => document.getElementById(id);
+const coingecko = document.body.dataset.priceSource === 'coingecko';
+const source = coingecko ? {
+  endpoint: '/api/coingecko/prices', currency: 'USD', pollSeconds: 60,
+  staleFetch: 900, stalePrice: 900, sampleLabel: 'CoinGecko sample',
+  empty: 'CoinGecko has no dotUSD USD prices in this window.',
+} : {
+  endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
+  staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
+  empty: 'No price samples in this window',
+};
+// Aggregated prices have timestamps, not block numbers. Break the line when
+// more than one expected interval is missing; retain block-gap rules for pools.
+const connectSamples = coingecko ? (a, b) => a && b && b[0] > a[0] &&
+  b[0] - a[0] <= (a[0] > Date.now()/1000 - 86400 ? 900 : 5400) : undefined;
 $('title-logo').src = document.querySelector('link[rel="icon"]').href;
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
@@ -103,7 +117,7 @@ function summary() {
   const high = ready ? (summaryValues.high[1]-1)*10000 : 0;
   $('extremes').textContent = ready ? `${signed(low)} / ${signed(high)}` : '-';
   $('window').textContent = `${date(state.start)} — ${date(state.end)} · ${rows.length.toLocaleString()} samples${state.historyLoading ? ` · loading history…${state.serverWarming ? ' · server loading stored data' : ''}` : ''}`;
-  $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading samples…' : 'No price samples in this window');
+  $('message').textContent = state.error || (last ? '' : state.historyLoading ? 'Loading samples…' : source.empty);
   $('message').hidden = !state.error && !!last;
   updateFreshness();
 }
@@ -112,15 +126,15 @@ function updateFreshness() {
   const last = state.rows.at(-1);
   const now = Date.now()/1000;
   const age = last ? Math.max(0, Math.round(now - last[0])) : null;
-  const sampleAge = last ? ` · last finalized ~${age}s ago` : '';
+  const sampleAge = last ? ` · last ${source.sampleLabel} ~${age}s ago` : '';
   if (!state.live || state.zoom) status('Historical view', 'paused');
   else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
   else if (state.error) status(`Connection error${sampleAge}`, 'error');
-  else if (!last) status('Waiting for finalized prices', 'stale');
-  else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > 30)
+  else if (!last) status(coingecko ? 'No CoinGecko prices' : 'Waiting for finalized prices', 'stale');
+  else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
-  else if (age > 180) status(`Data delayed${sampleAge}`, 'stale');
-  else status(`● Live · finalized ~${age}s ago`, 'live');
+  else if (age > source.stalePrice) status(`Data delayed${sampleAge}`, 'stale');
+  else status(`● Live · ${source.sampleLabel} ~${age}s ago`, 'live');
 }
 
 const historyCache = new BrowserHistory();
@@ -143,7 +157,7 @@ async function refresh(force = false) {
   const live = state.live && !state.zoom;
   const last = historyCache.rows.window(start, end).at(-1);
   // Advance only from a completed history snapshot; warming/backfills need the full window.
-  const incremental = live && !state.serverWarming && Number.isSafeInteger(last?.[2]) &&
+  const incremental = !coingecko && live && !state.serverWarming && Number.isSafeInteger(last?.[2]) &&
     !missing.some(([a]) => a < last[0]);
   const left = incremental ? last[0] : start;
   // Keep completed numbers visible during ordinary live polls.
@@ -162,7 +176,7 @@ async function refresh(force = false) {
   try {
     if (!force && !live && !missing.length) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
-    const response = await fetch(`/api/prices?start=${start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
+    const response = await fetch(`${source.endpoint}?start=${start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
       const result = await response.json();
@@ -284,7 +298,7 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   ctx.beginPath();
   let previous;
   // Draw range endpoints, preserving pixel extrema and every real block gap.
-  for (const {row, move} of pixelRows(state.rows, x)) {
+  for (const {row, move} of pixelRows(state.rows, x, connectSamples)) {
     const px = x(row[0]), py = y((row[1] - 1) * 10000);
     if (move) {
       if (previous) {
@@ -355,7 +369,7 @@ function drawOverlay({left, right, top, bottom, x, y}, width, height) {
     value.textContent = `${signed(bps)} bps`;
     value.style.color = deviationColor(bps);
     const price = document.createElement('div');
-    price.textContent = `${row[1].toFixed(8)} USDT`;
+    price.textContent = `${row[1].toFixed(8)} ${source.currency}`;
     tip.append(stamp, value, price);
     tip.style.left = `${Math.max(0, Math.min(px + 16, width - 230))}px`;
     tip.style.top = `${Math.max(0, Math.min(py + 16, height - 100))}px`;
@@ -477,10 +491,11 @@ function writeViewUrl() {
   if (url.href !== location.href) history.pushState(null, '', url);
 }
 function updateViewControls() {
+  $('compare-source').href = (coingecko ? '/' : '/coingecko') + location.search;
   $('live').hidden = !state.live || !!state.zoom;
   $('live').dataset.live = String(state.live);
-  $('live-label').textContent = state.live ? '6s' : 'Refresh';
-  $('live').setAttribute('aria-label', state.live ? 'Refresh prices; automatic updates every 6 seconds' : 'Refresh prices');
+  $('live-label').textContent = state.live ? `${source.pollSeconds}s` : 'Refresh';
+  $('live').setAttribute('aria-label', state.live ? `Refresh prices; automatic updates every ${source.pollSeconds} seconds` : 'Refresh prices');
   $('live').title = 'Refresh prices';
 }
 function reset() {
@@ -564,7 +579,7 @@ function needsRefresh() {
 }
 setInterval(() => {
   if (needsRefresh() && !document.hidden && !loading) refresh();
-}, 6000);
+}, source.pollSeconds * 1000);
 // Age the last received timestamps independently of network requests or chart redraws.
 setInterval(updateFreshness, 1000);
 window.addEventListener('offline', updateFreshness);

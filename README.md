@@ -12,6 +12,24 @@ Prices come from the dotUSD → DOT → USDT pools. They are quoted against USDT
 do not include trading fees or slippage. Timestamps are estimated, and missing
 blocks appear as gaps in the chart.
 
+## Compare with CoinGecko
+
+Open `/coingecko` for the same chart using CoinGecko's aggregated dotUSD **USD**
+prices. The footer links switch between sources while preserving the range and
+zoom. Both views use the same peg-rating thresholds, renderer and history stream.
+CoinGecko prices include market/trade effects and are not directly equivalent to
+the pool reserve price against USDT.
+
+The server checks CoinGecko every five minutes, fetching five-minute samples for
+the past day and hourly samples for older history (refreshed hourly). The browser
+checks the server cache every minute. Missing CoinGecko data shows an empty chart;
+it never falls back to pool prices. At implementation time, CoinGecko returned
+an empty dotUSD price history.
+
+Public API access is attempted by default. If your access requires a Demo API
+key, set `COINGECKO_DEMO_API_KEY` in the server environment; it stays server-side.
+Failed requests retain the last successful data, with delayed-data status.
+
 ## Run it locally
 
 The app uses Python 3.10+ and plain JavaScript. There is no frontend build step,
