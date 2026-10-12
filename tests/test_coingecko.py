@@ -142,7 +142,8 @@ class CoinGeckoTests(unittest.TestCase):
             worker = page.CoinGeckoWorker(cache, history_path=path)
             rows = [[now-600, .99, None], [now-30, 1., None]]
             payload = dict(source='dex-last-trade-usdt-backfill-v2', samples=rows,
-                           evidence=[dict(timestamp=t, usdtPerDot=p*2, dotusdPerDot='2', tradeTimestamp=(t-60)*1000)
+                           evidence=[dict(timestamp=t, usdtPerDot=p*2, dotusdPerDot='2', chainTimestamp=t*1000,
+                                              tradeTimestamp=(t-60)*1000, usdtTradeTimestamp=(t-60)*1000)
                                      for t,p,_ in rows])
             pending.write_text(json.dumps(payload))
             worker.load_backfill()

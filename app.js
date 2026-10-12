@@ -130,7 +130,7 @@ function updateFreshness() {
   if (!state.live || state.zoom) status('Historical view', 'paused');
   else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
   else if (state.error) status(`Connection error${sampleAge}`, 'error');
-  else if (!last) status(coingecko ? 'Waiting for USD estimate' : 'Waiting for finalized prices', 'stale');
+  else if (!last) status(coingecko ? 'Waiting for DEX prices' : 'Waiting for finalized prices', 'stale');
   else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
   else if (age > source.stalePrice) status(`Data delayed${sampleAge}`, 'stale');
@@ -138,6 +138,7 @@ function updateFreshness() {
 }
 
 const historyCache = new BrowserHistory();
+let nextComparisonHistoryRefresh = 0;
 async function refresh(force = false) {
   if (reloading) return;
   controller?.abort();
@@ -157,9 +158,11 @@ async function refresh(force = false) {
   const live = state.live && !state.zoom;
   const last = historyCache.rows.window(start, end).at(-1);
   // Advance only from a completed history snapshot; warming/backfills need the full window.
-  const incremental = !coingecko && live && !state.serverWarming && Number.isSafeInteger(last?.[2]) &&
+  const refreshHistory = coingecko && Date.now() >= nextComparisonHistoryRefresh;
+  const incremental = live && !force && !state.serverWarming &&
+    (coingecko ? !!last && !refreshHistory : Number.isSafeInteger(last?.[2])) &&
     !missing.some(([a]) => a < last[0]);
-  const left = incremental ? last[0] : start;
+  const left = incremental ? Math.max(start, Math.min(last[0], end - 1)) : start;
   // Keep completed numbers visible during ordinary live polls.
   if (!(sameWindow && (live ? incremental : !missing.length))) summaryValues = null;
   const publish = rows => {
@@ -174,9 +177,9 @@ async function refresh(force = false) {
   publish(historyCache.rows);
   let timeout;
   try {
-    if (!force && !live && !missing.length) return;
+    if (!force && !live && !missing.length && !refreshHistory) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
-    const response = await fetch(`${source.endpoint}?start=${start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
+    const response = await fetch(`${source.endpoint}?start=${coingecko ? left : start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental && !coingecko ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
       const result = await response.json();
@@ -200,6 +203,7 @@ async function refresh(force = false) {
         }
       }
     }
+    if (coingecko && !incremental) nextComparisonHistoryRefresh = Date.now() + 60000;
     historyCache.merge(new RangeSeries(runs), left, end, state.fetchedAt, !state.serverWarming);
     state.historyLoading = historyCache.missing(start, end).length > 0;
     publish(historyCache.rows);
@@ -585,7 +589,8 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
 });
 new ResizeObserver(draw).observe($('plot'));
 function needsRefresh() {
-  return (state.live && !state.zoom) || state.historyLoading;
+  return (state.live && !state.zoom) || state.historyLoading ||
+    (coingecko && Date.now() >= nextComparisonHistoryRefresh);
 }
 setInterval(() => {
   if (needsRefresh() && !document.hidden && !loading) refresh();

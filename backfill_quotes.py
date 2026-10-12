@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reconstruct USD estimates locally from historical DEX trades and CoinGecko DOT prices.
+"""Reconstruct DEX-only last-trade prices for the normal chart's exact sample range.
 
 Requires substrate-interface and curl. Never opens or writes a production database.
 """
@@ -15,9 +15,15 @@ import archive_reader
 RPC = 'https://polkadot-asset-hub-rpc.polkadot.io'
 GENESIS = '0x68d56f15f85d3136970ec16946040bc1752654e906147f7e43e9d539d7c3de2f'
 START = 21572110
+BATCH_BLOCKS = 32
+RPC_INTERVAL = 0.5
+_last_request = 0.0
 
 
 def request(url, payload=None):
+    global _last_request
+    time.sleep(max(0, _last_request + RPC_INTERVAL - time.monotonic()))
+    _last_request = time.monotonic()
     command = ['curl', '-fsS', '--max-time', '45']
     if payload is not None:
         command += ['-H', 'content-type: application/json', '--data-binary', '@-']
@@ -54,11 +60,11 @@ def is_dot(location):
     return location == {'parents': 1, 'interior': 'Here'}
 
 
-def is_dotusd(location):
-    return location == {'parents': 0, 'interior': {'X2': [{'PalletInstance': 50}, {'GeneralIndex': 7873}]}}
+def is_asset(location, asset_id):
+    return location == {'parents': 0, 'interior': {'X2': [{'PalletInstance': 50}, {'GeneralIndex': asset_id}]}}
 
 
-def qualifying_trades(events):
+def qualifying_trades(events, asset_id=7873):
     result = []
     for index, record in enumerate(events):
         event = record.get('event', record)
@@ -66,9 +72,9 @@ def qualifying_trades(events):
             continue
         path = event['attributes']['path']
         for hop, ((a, amount_a), (b, amount_b)) in enumerate(zip(path, path[1:])):
-            if is_dot(a) and is_dotusd(b):
+            if is_dot(a) and is_asset(b, asset_id):
                 dot, asset = amount_a, amount_b
-            elif is_dotusd(a) and is_dot(b):
+            elif is_asset(a, asset_id) and is_dot(b):
                 dot, asset = amount_b, amount_a
             else:
                 continue
@@ -91,6 +97,8 @@ class Reconstruction:
         if work.exists():
             for line in work.read_text().splitlines():
                 value = json.loads(line)
+                if value.get('source') != 'dex-both-legs-v2':
+                    raise ValueError('Use a new work cache: old caches contain only one ticker leg')
                 self.blocks[value['number']] = value
                 self.stamps[value['number']] = value['timestamp']
         genesis, head_hash = batch([('chain_getBlockHash', [0]), ('chain_getFinalizedHead', [])])
@@ -169,34 +177,34 @@ class Reconstruction:
                     if runtime['specVersion'] != self.decoder.runtime_version:
                         raise ValueError('Runtime changed; reconstruct each runtime separately')
                     encoded = bytes.fromhex(raw[2:])
-                    trades = []
+                    trades = {'7873': [], '1984': []}
                     if any(needle in encoded for needle in self.needles):
                         from scalecodec.base import ScaleBytes
                         events = self.decoder.runtime_config.create_scale_object(
                             self.storage.value_scale_type, data=ScaleBytes(raw), metadata=self.decoder.metadata).decode()
-                        trades = qualifying_trades(events)
-                    record = dict(number=n, timestamp=int.from_bytes(bytes.fromhex(stamp[2:]), 'little'), trades=trades)
+                        trades = {str(asset): qualifying_trades(events, asset) for asset in (7873, 1984)}
+                    record = dict(source='dex-both-legs-v2', number=n, timestamp=int.from_bytes(bytes.fromhex(stamp[2:]), 'little'), trades=trades)
                     self.blocks[n] = record
                     self.stamps[n] = record['timestamp']
                     file.write(json.dumps(record) + '\n')
             time.sleep(.05)
         return [self.blocks[n] for n in numbers]
 
-    def quote(self, number, timestamp):
+    def quote(self, number, timestamp, asset_id=7873):
         cursor = number
-        while cursor >= START:
-            numbers = list(range(cursor, max(START-1, cursor-32), -1))
+        while cursor >= max(1, number-50000):
+            numbers = list(range(cursor, max(0, cursor-32), -1))
             for record in self.read_blocks(numbers):
                 if record['timestamp'] < timestamp - 86400000:
-                    return self.reserve_quote(number)
-                if record['timestamp'] <= timestamp and record['trades']:
-                    return record['trades'][-1]['quote'], record['number'], record['timestamp']
+                    return self.reserve_quote(number, asset_id)
+                if record['timestamp'] <= timestamp and record['trades'][str(asset_id)]:
+                    return record['trades'][str(asset_id)][-1]['quote'], record['number'], record['timestamp']
             cursor -= len(numbers)
-        return self.reserve_quote(number)
+        return self.reserve_quote(number, asset_id)
 
-    def reserve_quote(self, number):
+    def reserve_quote(self, number, asset_id=7873):
         self.load_hashes([number])
-        pair = b'\x01\x00\x00\x02\x04\x32\x05' + archive_reader.compact(7873)
+        pair = b'\x01\x00\x00\x02\x04\x32\x05' + archive_reader.compact(asset_id)
         raw = batch([('state_call', ['AssetConversionApi_get_reserves', '0x'+pair.hex(), self.hashes[number]])])[0]
         data = bytes.fromhex(raw[2:])
         if len(data) != 33 or data[0] != 1:
@@ -205,31 +213,76 @@ class Reconstruction:
         return str(Decimal(asset * 10**22 // dot) / 10**18), None, None
 
 
+def reconstruct_targets(worker, targets, output, chunk_size=1024):
+    """One output sample per normal-chart block, with independent last-trade state per leg."""
+    output.mkdir(parents=True, exist_ok=True)
+    last = {}
+    rows, evidence = [], []
+    first = targets[0][2]
+    worker.read_blocks([first])
+    stamp = worker.stamps[first]
+    for asset in (7873, 1984):
+        last[asset] = worker.quote(first, stamp, asset)
+    for offset in range(0, len(targets), BATCH_BLOCKS):
+        group = targets[offset:offset+BATCH_BLOCKS]
+        # Include intervening blocks even if the original chart has a collection gap.
+        left = first if offset == 0 else targets[offset-1][2] + 1
+        right = group[-1][2]
+        needed = {row[2]: row[0] for row in group}
+        for begin in range(left, right+1, BATCH_BLOCKS):
+            for record in worker.read_blocks(list(range(begin, min(right+1, begin+BATCH_BLOCKS)))):
+                number, chain_stamp = record['number'], record['timestamp']
+                for asset in (7873, 1984):
+                    trades = record['trades'][str(asset)]
+                    if trades:
+                        last[asset] = trades[-1]['quote'], number, chain_stamp
+                if number not in needed:
+                    continue
+                legs = {}
+                for asset in (7873, 1984):
+                    quote, block, when = last[asset]
+                    if when is None or when < chain_stamp - 86400000:
+                        quote, block, when = worker.reserve_quote(number, asset)
+                    legs[asset] = quote, block, when
+                stamp = needed[number]
+                dotusd, dotusd_block, dotusd_time = legs[7873]
+                usdt, usdt_block, usdt_time = legs[1984]
+                rows.append([stamp, float(Decimal(usdt) / Decimal(dotusd)), None])
+                evidence.append(dict(timestamp=stamp, block=number, chainTimestamp=chain_stamp,
+                                     dotusdPerDot=dotusd, usdtPerDot=usdt,
+                                     tradeBlock=dotusd_block, tradeTimestamp=dotusd_time,
+                                     usdtTradeBlock=usdt_block, usdtTradeTimestamp=usdt_time))
+        if len(rows) >= chunk_size or offset+BATCH_BLOCKS >= len(targets):
+            path = output / f"{int(rows[0][0]*1000)}.json"
+            temporary = path.with_suffix('.tmp')
+            temporary.write_text(json.dumps(dict(source='dex-last-trade-usdt-backfill-v2',
+                                                  samples=rows, evidence=evidence), allow_nan=False))
+            temporary.replace(path)
+            print(f'Completed {min(offset+BATCH_BLOCKS,len(targets))}/{len(targets)} samples: {path}', flush=True)
+            rows, evidence = [], []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--references', type=Path, required=True, help='Saved CoinGecko polkadot market_chart response')
-    parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--work', type=Path, required=True, help='Local resumable block cache')
+    parser.add_argument('--targets', type=Path, required=True, help='Saved normal-chart raw API response')
+    parser.add_argument('--output', type=Path, required=True, help='Local directory for bounded import batches')
+    parser.add_argument('--work', type=Path, required=True, help='Local resumable two-leg block cache')
     args = parser.parse_args()
-    references = sorted(json.loads(args.references.read_text())['prices'], reverse=True)
-    reconstruction = Reconstruction(args.work)
-    numbers = reconstruction.locate([stamp for stamp, _ in references])
-    print(f'Located {len(numbers)} reference timestamps', flush=True)
-    output = json.loads(args.output.read_text()) if args.output.exists() else dict(source='dex-coingecko-usd-backfill-v1', samples=[], evidence=[])
-    done = {row[0] for row in output['samples']}
-    for (stamp, usd), number in zip(references, numbers):
-        if stamp/1000 in done:
+    targets = json.loads(args.targets.read_text())['samples']
+    if not targets or any(not isinstance(row[2], int) for row in targets):
+        raise ValueError('Targets must contain finalized block numbers')
+    if any(a[0] >= b[0] or a[2] >= b[2] for a,b in zip(targets,targets[1:])):
+        raise ValueError('Targets must be strictly ordered by time and block')
+    worker = Reconstruction(args.work)
+    if targets[-1][2] > worker.head:
+        raise ValueError('Target exceeds finalized head')
+    # Newest batches first restore shared links promptly, then extend to the same oldest block.
+    for stop in range(len(targets), 0, -1024):
+        group = targets[max(0, stop-1024):stop]
+        path = args.output / f"{int(group[0][0]*1000)}.json"
+        if path.exists():
             continue
-        quote, trade_block, trade_time = reconstruction.quote(number, stamp)
-        price = float(Decimal(str(usd)) / Decimal(quote))
-        output['samples'].append([stamp/1000, price, None])
-        output['evidence'].append(dict(timestamp=stamp/1000, dotUsd=usd, dotusdPerDot=quote,
-                                       block=number, tradeBlock=trade_block, tradeTimestamp=trade_time))
-        output['samples'].sort()
-        temporary = args.output.with_suffix('.tmp')
-        temporary.write_text(json.dumps(output, allow_nan=False))
-        temporary.replace(args.output)
-        print(f'{len(output["samples"])}/{len(references)} timestamp={stamp/1000} price={price:.9f} cached_blocks={len(reconstruction.blocks)}', flush=True)
+        reconstruct_targets(worker, group, args.output)
 
 
 if __name__ == '__main__':

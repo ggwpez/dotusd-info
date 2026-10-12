@@ -572,7 +572,7 @@ class CoinGeckoWorker:
         if payload.get('source') != 'dex-last-trade-usdt-backfill-v2':
             raise ValueError('Wrong quote backfill source')
         rows, evidence = payload['samples'], payload['evidence']
-        if not rows or len(rows) > MAX_SAMPLES or len(evidence) != len(rows):
+        if not rows or len(rows) > 2048 or len(evidence) != len(rows):
             raise ValueError('Invalid quote backfill size')
         by_time = {item['timestamp']: item for item in evidence}
         now, previous = time.time(), -1
@@ -586,8 +586,15 @@ class CoinGeckoWorker:
             expected = float(self.positive(item['usdtPerDot']) / self.positive(item['dotusdPerDot']))
             if not math.isclose(price, expected, rel_tol=1e-12):
                 raise ValueError('Backfill quote does not match its reference inputs')
-            if item['tradeTimestamp'] is not None and not stamp * 1000 - 86400000 <= item['tradeTimestamp'] <= stamp * 1000:
-                raise ValueError('Backfill trade lies outside the ticker window')
+            # Chart timestamps use the normal feed's estimated two-second clock;
+            # the ticker's 24-hour trade window uses the actual chain timestamp.
+            chain_stamp = float(self.positive(item['chainTimestamp']))
+            if chain_stamp > now * 1000 + 60000:
+                raise ValueError('Backfill block timestamp is in the future')
+            for key in ('tradeTimestamp', 'usdtTradeTimestamp'):
+                when = item[key]
+                if when is not None and not chain_stamp - 86400000 <= when <= chain_stamp:
+                    raise ValueError('Backfill trade lies outside the ticker window')
             previous = stamp
         with self.cache.lock:
             existing = {row[0] for row in self.cache.rows}

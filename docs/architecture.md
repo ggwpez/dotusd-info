@@ -139,14 +139,24 @@ Visitor requests read memory only. Samples are marked delayed after 30 seconds.
 
 ### Reconstructed estimate import
 
-**Legacy:** `backfill_quotes.py` currently generates the retired v1 formula and
-its artifacts are rejected by the v2 worker. It runs outside production, using Python `substrate-interface`
-for SCALE decoding and `curl` for bounded public archive RPC requests. It matches
-`SwapExecuted` and `SwapCreditExecuted` paths, asset decimals and the DEX's
-10,000-base-unit dust threshold, and chooses the final qualifying event at or
-before each historical CoinGecko DOT/USD timestamp. It checks the chain genesis
-and runtime version and retains local resumable block and timestamp caches.
-Evidence includes each reference price, DEX quote, block and trade timestamp.
+`backfill_quotes.py` reads the normal chart's exact sample timestamps and finalized
+block numbers. Both the dotUSD and USDT ticker legs are reconstructed from
+`SwapExecuted` / `SwapCreditExecuted`, with the DEX's 10,000-base-unit dust rule,
+24-hour window and reserve fallback. Evidence records each leg independently.
+Chart timestamps retain the normal chart's estimated clock; trade expiry uses
+actual chain time. No CoinGecko price or reference is used.
+
+Reconstruction works newest-first in 1,024-sample batches, with at most 32 blocks
+per RPC batch and a 0.5-second minimum interval between HTTP requests. The local
+block cache is resumable and rejected if it contains the obsolete single-leg schema.
+`import_quote_batches.py` sends one batch at a time, waits for persistence, and
+waits at least 15 seconds between imports. It gates on the normal API responding
+within three seconds and service memory below 180 MiB. It stops if a staged import
+is not consumed within two minutes. Imported markers allow safe resumption.
+The live server rejects batches larger than 2,048 samples.
+
+Live browser polls fetch only new timestamp samples; a full refresh once per minute
+picks up newly imported history, including in a fixed historical view.
 
 Place the completed artifact atomically at `backfill.json` beside the configured
 quote history file. The independent quote worker checks between live polls, validates

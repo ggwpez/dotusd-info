@@ -27,8 +27,12 @@ actual price changes depend on the upstream snapshot. Failed requests preserve
 last successful data and freshness. Persistence runs at most once per minute.
 
 The comparison history uses `dex-last-trade-usdt-v2`. Old CoinGecko-derived history
-and imports are rejected rather than mixed into this calculation. The old
-`backfill_quotes.py` reconstruction tool is legacy and cannot produce v2 imports.
+and imports are rejected rather than mixed into this calculation. `backfill_quotes.py` reconstructs both trade legs for every finalized block in a
+saved normal-chart raw response. It works newest-first in 1,024-sample batches,
+using at most 32 blocks per archive batch and two RPC HTTP requests per second.
+`import_quote_batches.py` imports those batches sequentially, at least 15 seconds
+apart, checking service memory and the normal API before and after each import.
+No historical reconstruction runs inside the serving process.
 
 ## Run it locally
 
