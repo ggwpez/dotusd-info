@@ -141,7 +141,8 @@ validated. RPC failures retain successful state and retry the failed block.
 Samples use finalized block timestamps and null block numbers for the existing
 comparison stream contract. Repeated heads add no sample. A chain timestamp more
 than 120 seconds old or 30 seconds in the future is rejected. Browser polling
-remains every six seconds; samples are marked delayed after 30 seconds. Storage
+remains every six seconds; failed fetches are marked delayed after 30 seconds,
+and chain samples after 180 seconds to allow normal finality lag. Storage
 is atomically checkpointed at most once per minute, separately from pool ingestion.
 The `hub-rpc-last-trade-usdt-v3` marker rejects older ticker observations. Visitor
 requests read memory only. This remains an on-chain USDT cross-price, not a

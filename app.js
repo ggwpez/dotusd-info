@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const coingecko = document.body.dataset.priceSource === 'coingecko';
 const source = coingecko ? {
   endpoint: '/api/coingecko/prices', currency: 'USDT', pollSeconds: 6,
-  staleFetch: 30, stalePrice: 30, sampleLabel: 'finalized Hub sample',
+  staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized Hub sample',
   empty: 'No finalized Hub samples available in this window.',
 } : {
   endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,

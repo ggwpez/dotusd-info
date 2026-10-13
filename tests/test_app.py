@@ -41,6 +41,10 @@ class AppTests(unittest.TestCase):
         require(!connectSamples([now - 100000, 1, null], [now - 92800, 1, null]), 'break missing hourly data');
         updateFreshness();
         require(elements.get('status').dataset.state === 'live', '2 second sample is fresh');
+        state.rows = RangeSeries.fromWire([[now - 60, null, 1.001]]); updateFreshness();
+        require(elements.get('status').dataset.state === 'live', 'normal finality lag is fresh');
+        state.rows = RangeSeries.fromWire([[now - 181, null, 1.001]]); updateFreshness();
+        require(elements.get('status').textContent.startsWith('Data delayed'), 'stalled chain is delayed');
         state.fetchedAt = now - 1000; updateFreshness();
         require(elements.get('status').textContent.startsWith('Updates delayed'), 'failed source refresh becomes stale');
         state.rows = new RangeSeries(); state.error = null; state.historyLoading = false;
