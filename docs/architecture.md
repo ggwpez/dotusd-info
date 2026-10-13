@@ -124,18 +124,28 @@ browser history, rating and chart code. Comparison links preserve query paramete
 `/api/coingecko/prices` uses the same handler, bounded `HistoryCache`, response cache
 and wire formats as `/api/prices`, with a separate cache to keep the sources isolated.
 
-An independent worker fetches only Asset Hub DEX `/tickers` every six seconds.
-It divides `DOT_1984.last_price` by `DOT_7873.last_price`, giving USDT per dotUSD.
-Both tickers use the DEX's last qualifying trade (or reserve fallback).
-No external CoinGecko API or API key is used. Missing, ambiguous or invalid quotes
-fail without replacing the last successful observation. The DEX rejects stale snapshots.
+An independent worker reads Polkadot Hub RPC directly through `hub_quotes.py`.
+There are no exchange ticker or CoinGecko API requests. `--hub-rpc` selects the
+HTTP archive endpoint. The reader verifies the genesis, obtains the finalized
+head, and decodes `System.Events` using the runtime metadata for each block.
+Both legs use the shared `qualifying_trades` decoder from `backfill_quotes.py`.
 
-Observations use collection time and null block numbers and are retained for seven
-days. The browser refreshes every six seconds using the shared rendering logic.
-Storage is atomically checkpointed at most once per minute, separately from pool
-ingestion. Reload preserves freshness. The `dex-last-trade-usdt-v2` source marker
-prevents previous CoinGecko-derived observations from entering the corrected feed.
-Visitor requests read memory only. Samples are marked delayed after 30 seconds.
+Startup scans backward until each leg's latest qualifying trade is found or the
+entire 24-hour chain-time window is exhausted. The reader then processes every
+intervening finalized block in order. Each poll reads at most 32 blocks; partial
+scans resume without publishing an incomplete price. A leg without a qualifying
+trade uses its pool reserves at the target finalized block. USDT per DOT divided
+by dotUSD per DOT gives USDT per dotUSD. Both assets' six-decimal metadata is
+validated. RPC failures retain successful state and retry the failed block.
+
+Samples use finalized block timestamps and null block numbers for the existing
+comparison stream contract. Repeated heads add no sample. A chain timestamp more
+than 120 seconds old or 30 seconds in the future is rejected. Browser polling
+remains every six seconds; samples are marked delayed after 30 seconds. Storage
+is atomically checkpointed at most once per minute, separately from pool ingestion.
+The `hub-rpc-last-trade-usdt-v3` marker rejects older ticker observations. Visitor
+requests read memory only. This remains an on-chain USDT cross-price, not a
+reproduction of CoinGecko's external market selection and USD conversion.
 
 ### Reconstructed estimate import
 

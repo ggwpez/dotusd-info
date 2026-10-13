@@ -4,11 +4,13 @@ cd "$(dirname "$0")/.."
 host=${1:-server}
 python3 -m unittest discover -s tests -v
 ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
-rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' server.py archive_reader.py backfill.py backfill_quotes.py publish_archive.py coingecko-details.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
+rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' server.py archive_reader.py hub_quotes.py requirements.txt backfill.py backfill_quotes.py publish_archive.py coingecko-details.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
 rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' deploy/dotusd-info.service deploy/dotusd-info.caddy "$host:/opt/dotusd-info/deploy/"
 ssh "$host" 'sudo -n sh -s' <<'REMOTE'
 set -eu
 systemctl is-active --quiet arb-prometheus arb-peg
+/usr/bin/python3 -m venv /opt/dotusd-info/.venv
+/opt/dotusd-info/.venv/bin/pip install -r /opt/dotusd-info/requirements.txt
 systemd-analyze verify /opt/dotusd-info/deploy/dotusd-info.service
 install -m 0644 /opt/dotusd-info/deploy/dotusd-info.service /etc/systemd/system/dotusd-info.service
 systemctl daemon-reload

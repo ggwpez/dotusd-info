@@ -9,7 +9,10 @@ replace it with your own alias or `user@host`.
 
 Run `./deploy/deploy.sh` from this checkout (optionally pass an SSH host).
 Requires Python 3.10+, Caddy, the existing arbitrage data services, rsync, and
-passwordless sudo on the target. No external Python packages are needed.
+passwordless sudo and `python3-venv` on the target. Deployment installs
+`requirements.txt` into `/opt/dotusd-info/.venv` for the Hub runtime decoder.
+The comparison worker uses the public Hub archive RPC by default; set
+`--hub-rpc URL` in the service command to use another Hub archive node.
 
 The app runs as a dedicated dynamic user at `/opt/dotusd-info`, listening only
 on `127.0.0.1:3001`. `dotusd-info.service` restarts automatically and is enabled
@@ -73,9 +76,9 @@ This is separate from pool archive backfill. Run reconstruction on a workstation
 
 ```sh
 python3 -m venv /tmp/dotusd-quote-work
-/tmp/dotusd-quote-work/bin/pip install substrate-interface
-curl -fsS 'https://api.coingecko.com/api/v3/coins/polkadot/market_chart?vs_currency=usd&days=1&precision=full' -o /tmp/dot-history.json
-/tmp/dotusd-quote-work/bin/python backfill_quotes.py --references /tmp/dot-history.json --output /tmp/quote-backfill.json --work /tmp/quote-blocks.jsonl
+/tmp/dotusd-quote-work/bin/pip install -r requirements.txt
+curl -fsS 'https://dotusd.info/api/prices?format=raw' -o /tmp/pool-history.json
+/tmp/dotusd-quote-work/bin/python backfill_quotes.py --targets /tmp/pool-history.json --output /tmp/quote-backfill --work /tmp/quote-blocks.jsonl
 ```
 
 Keep the evidence artifact locally. Transfer it to a temporary server path, then
@@ -84,4 +87,4 @@ the web service. Never replace `history.json` while the quote worker is running.
 The worker validates and merges it within a minute without restarting the website;
 the temporary import is removed after its contents are saved to the final history.
 Confirm the comparison API has the expected timestamps and the normal page remains
-healthy. `substrate-interface` is needed only for reconstruction, not web serving.
+healthy. `substrate-interface` is required by both reconstruction and the live Hub RPC reader.

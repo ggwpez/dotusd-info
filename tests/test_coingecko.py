@@ -13,28 +13,14 @@ from test_server import page
 
 
 class CoinGeckoTests(unittest.TestCase):
-    def test_fetch_bounds_and_rejects_other_hosts(self):
-        http = Mock()
-        worker = page.CoinGeckoWorker(page.HistoryCache(), http=http)
-        http.open.return_value = io.BytesIO(b'[]')
-        self.assertEqual(worker.fetch(worker.DEX_URL), [])
-        http.open.assert_called_once()
-        with self.assertRaisesRegex(ValueError, 'Only Asset Hub DEX'):
-            worker.fetch('https://api.coingecko.com/api/v3/simple/price')
-        http.open.assert_called_once()
-        http.open.return_value = io.BytesIO(b' ' * (page.MAX_UPSTREAM_BYTES + 1))
-        with self.assertRaisesRegex(ValueError, 'size limit'):
-            worker.fetch(worker.DEX_URL)
-
     def test_quote_orientation_persistence_and_failed_refresh(self):
         now = 1800000000
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'history.json'
             cache = page.HistoryCache()
             worker = page.CoinGeckoWorker(cache, history_path=path)
-            reference = {'ticker_id': 'DOT_1984', 'base_currency': 'DOT', 'target_currency': '1984', 'last_price': '2.02'}
-            ticker = {'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '2'}
-            worker.fetch = Mock(return_value=[reference, ticker])
+            worker.source = Mock()
+            worker.source.read.return_value = (now, {'1984': '2.02', '7873': '2'})
             with patch.object(page.time, 'time', return_value=now):
                 worker.poll()
             self.assertEqual(cache.rows, ((now, 1.01, None),))
@@ -45,15 +31,13 @@ class CoinGeckoTests(unittest.TestCase):
             self.assertEqual(loaded.rows, cache.rows)
             self.assertEqual(loaded.fetched_at, now)  # restarting does not refresh old quotes
             before = cache.rows, cache.fetched_at, path.read_bytes()
-            for response in ([], [ticker, ticker], [dict(ticker, last_price='NaN')],
-                             [dict(ticker, last_price='0')], [dict(ticker, last_price=True)],
-                             [dict(ticker, target_currency='1984')]):
-                worker.fetch = Mock(return_value=[reference] + response)
+            for bad in ('NaN', '0', True, '-1', 'Infinity'):
+                worker.source.read.return_value = (now+300, {'1984': '2.02', '7873': bad})
                 with self.assertRaises(ValueError), patch.object(page.time, 'time', return_value=now+300):
                     worker.poll()
                 self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
-            worker.fetch = Mock(return_value=[ticker])
-            with self.assertRaisesRegex(ValueError, 'missing'):
+            worker.source.read.side_effect = OSError('RPC unavailable')
+            with self.assertRaises(OSError):
                 worker.poll()
             self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
 
@@ -61,21 +45,36 @@ class CoinGeckoTests(unittest.TestCase):
         cache = page.HistoryCache()
         worker = page.CoinGeckoWorker(cache)
         worker.save_history = Mock()
-        worker.fetch = Mock(return_value=[
-            dict(ticker_id='DOT_1984', base_currency='DOT', target_currency='1984', last_price='2'),
-            dict(ticker_id='DOT_7873', base_currency='DOT', target_currency='7873', last_price='2')])
+        worker.source = Mock()
         self.assertEqual(worker.POLL_SECONDS, 6)
         for stamp in (1800000000, 1800000006, 1800000012):
+            worker.source.read.return_value = (stamp, {'1984': '2', '7873': '2'})
             with patch.object(page.time, 'time', return_value=stamp), patch.object(page.time, 'monotonic', return_value=stamp):
                 worker.poll()
         self.assertEqual(len(cache.rows), 3)
         worker.save_history.assert_called_once()
-        self.assertTrue(all(call.args == (worker.DEX_URL,) for call in worker.fetch.call_args_list))
+        self.assertEqual(worker.source.read.call_count, 3)
+
+    def test_incomplete_scan_and_stale_chain_do_not_refresh_cache(self):
+        now = time.time()
+        cache = page.HistoryCache()
+        cache.merge([(now-60, 1., None)], now-60)
+        source = Mock()
+        worker = page.CoinGeckoWorker(cache, source=source)
+        before = cache.rows, cache.fetched_at
+        source.read.return_value = None
+        worker.poll()
+        self.assertEqual((cache.rows, cache.fetched_at), before)
+        for stamp in (now-121, now+31):
+            source.read.return_value = (stamp, {'1984': '1', '7873': '1'})
+            with patch.object(page.time, 'time', return_value=now), self.assertRaises(ValueError):
+                worker.poll()
+            self.assertEqual((cache.rows, cache.fetched_at), before)
 
     def test_old_coingecko_history_is_not_reused(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'history.json'
-            path.write_text(json.dumps(dict(source='dex-coingecko-usd-v1', samples=[[time.time(), 1, None]], fetchedAt=time.time())))
+            path.write_text(json.dumps(dict(source='dex-last-trade-usdt-v2', samples=[[time.time(), 1, None]], fetchedAt=time.time())))
             cache = page.HistoryCache()
             page.CoinGeckoWorker(cache, history_path=path).load_history()
             self.assertEqual(cache.rows, ())
@@ -85,8 +84,8 @@ class CoinGeckoTests(unittest.TestCase):
         cache = page.HistoryCache()
         cache.merge([(now-604799, .99, None)], now-300)
         worker = page.CoinGeckoWorker(cache)
-        worker.fetch = Mock(return_value=[{'ticker_id': 'DOT_1984', 'base_currency': 'DOT', 'target_currency': '1984', 'last_price': '1'},
-            {'ticker_id': 'DOT_7873', 'base_currency': 'DOT', 'target_currency': '7873', 'last_price': '1'}])
+        worker.source = Mock()
+        worker.source.read.return_value = (now+300, {'1984': '1', '7873': '1'})
         with patch.object(page.time, 'time', return_value=now+300):
             worker.poll()
         self.assertEqual(cache.rows, ((now+300, 1., None),))

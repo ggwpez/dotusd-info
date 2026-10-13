@@ -14,30 +14,43 @@ blocks appear as gaps in the chart.
 
 ## Compare with CoinGecko
 
-Open `/coingecko` for dotUSD / **USDT** calculated entirely from Asset Hub DEX
-last-trade tickers: `DOT_1984.last_price / DOT_7873.last_price`. Both legs use the
-DEX's qualifying-trade rules and its reserve fallback when no trade qualifies.
-**No CoinGecko requests or prices are used.** The route name refers to the DEX's
-CoinGecko-compatible ticker format, not an external price source.
+Open `/coingecko` for dotUSD / **USDT** calculated directly from Polkadot Hub
+RPC: `USDT per DOT / dotUSD per DOT`. Both legs use the latest qualifying
+finalized swap within 24 hours, or pool reserves at the same finalized block
+when no trade qualifies. Swaps must contain at least 10,000 raw units on each
+side. **No exchange ticker API or CoinGecko API is called.** This is a Hub-only
+cross-price, not a reproduction of CoinGecko's aggregated USD price.
 
-Both pages refresh every six seconds and share the renderer, subscription logic,
-peg-rating thresholds and history stream. The normal page retains its synchronized
-pool-reserve calculation. The comparison worker polls the DEX every six seconds;
-actual price changes depend on the upstream snapshot. Failed requests preserve
-last successful data and freshness. Persistence runs at most once per minute.
+The worker verifies the Hub genesis hash and decodes swap events using runtime
+metadata. Startup searches backward for both trades, then follows every finalized
+block, including blocks missed between polls. Reads are bounded to 32 blocks per
+poll; incomplete scans and RPC failures publish no new observation. Both pages
+share the renderer, peg-rating thresholds and history stream.
 
-The comparison history uses `dex-last-trade-usdt-v2`. Old CoinGecko-derived history
-and imports are rejected rather than mixed into this calculation. `backfill_quotes.py` reconstructs both trade legs for every finalized block in a
+Configure an HTTP archive RPC with `--hub-rpc URL` (default:
+`https://polkadot-asset-hub-rpc.polkadot.io`). The endpoint must retain at least
+24 hours of state for startup. Samples use finalized block timestamps; repeated
+heads do not refresh freshness. Heads older than 120 seconds are rejected.
+Persistence runs at most once per minute.
+
+The comparison history uses `hub-rpc-last-trade-usdt-v3`. Old observed ticker
+history is rejected. Validated on-chain reconstruction imports remain supported.
+`backfill_quotes.py` reconstructs both trade legs for every finalized block in a
 saved normal-chart raw response. It works newest-first in 1,024-sample batches,
 using at most 32 blocks per archive batch and two RPC HTTP requests per second.
 `import_quote_batches.py` imports those batches sequentially, at least 15 seconds
 apart, checking service memory and the normal API before and after each import.
-No historical reconstruction runs inside the serving process.
+Historical chart imports run separately from the live RPC worker’s startup scan.
 
 ## Run it locally
 
 The app uses Python 3.10+ and plain JavaScript. There is no frontend build step,
-and the chart server needs no extra Python packages.
+and the Hub swap decoder uses `substrate-interface`. Install the runtime dependencies:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
 
 You will need a data source, though: a Prometheus instance with the pool-price
 history. The live data collector and Prometheus are not included in this repo.
@@ -47,7 +60,7 @@ both with the `clock="estimated_2s"` label.
 If Prometheus is running locally, start the chart with:
 
 ```sh
-python3 server.py --upstream http://127.0.0.1:9090/api/v1 --no-browser
+.venv/bin/python server.py --upstream http://127.0.0.1:9090/api/v1 --no-browser
 ```
 
 Then open <http://127.0.0.1:3001>. Give the server a moment to load the price
@@ -56,15 +69,15 @@ history. It needs a working data source before it can show the chart.
 If Prometheus is on another machine, connect through SSH:
 
 ```sh
-python3 server.py --ssh-host user@host
+.venv/bin/python server.py --ssh-host user@host
 ```
 
 Replace `user@host` with your SSH destination. The app forwards the remote
 machine's port 9090 and opens the chart in your browser. Running
-`python3 server.py` without options uses the SSH alias `server`.
+`.venv/bin/python server.py` without options uses the SSH alias `server`.
 
 For more options, including the listening port and archive path, run
-`python3 server.py --help`.
+`.venv/bin/python server.py --help`.
 
 ## Working on the code
 

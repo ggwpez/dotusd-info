@@ -35,7 +35,7 @@ SUMMARY_SAMPLES = 256
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'archive_reader.py', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
+             ('server.py', 'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     digest = hashlib.sha256()
     for name, body in files.items():
         digest.update(name.encode() + b'\0' + body + b'\0')
@@ -52,11 +52,11 @@ def load_release():
                            PRICE_LABEL='Spot price', OTHER_PATH='/coingecko', OTHER_LABEL='Compare CoinGecko',
                            SOURCE_NOTE='Pool reserve price · dotUSD → DOT → USDT · excludes fees and slippage.'),
         'coingecko.html': dict(QUOTE='USDT', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='DEX LAST-TRADE PRICE',
-                               DESCRIPTION='dotUSD / USDT using Asset Hub DEX last-trade tickers.',
+                               DESCRIPTION='dotUSD / USDT from finalized Polkadot Hub swaps via RPC.',
                                PRICE_LABEL='Last-trade price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
-                               SOURCE_NOTE='<a href="https://polkadot-hub-dex.parity.io/">Asset Hub DEX</a>: '
-                                           'USDT per DOT ÷ dotUSD per DOT. DEX ticker methodology; no CoinGecko data. '
-                                           'Checked every 6 seconds; prices change when the upstream ticker changes.'),
+                               SOURCE_NOTE='Polkadot Hub RPC: USDT per DOT ÷ dotUSD per DOT. '
+                                           'Finalized swaps and reserves; no exchange or CoinGecko API. '
+                                           'Checked every 6 seconds; samples use finalized block timestamps.'),
     }
     template = assets['index.html']
     for name, values in pages.items():
@@ -463,28 +463,18 @@ class HistoryWorker:
 
 
 class CoinGeckoWorker:
-    """Cross Asset Hub DEX last-trade tickers; never call an external price provider."""
+    """Cross finalized Hub swap prices read directly through RPC."""
     POLL_SECONDS = 6
     HISTORY_BYTES = 32 * 1024 * 1024
-    DEX_URL = 'https://polkadot-hub-dex.parity.io/tickers'
 
-    def __init__(self, cache, http=None, history_path=None):
+    def __init__(self, cache, source=None, history_path=None):
+        from hub_quotes import HubQuotes
         self.cache = cache
-        self.http = http or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.source = source or HubQuotes()
         self.last_saved = None
         self.history_path = history_path
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='coingecko-history', daemon=True)
-
-    def fetch(self, url):
-        request = urllib.request.Request(url, headers={'Accept': 'application/json', 'User-Agent': 'dotusd-info/1.0'})
-        if url != self.DEX_URL:
-            raise ValueError('Only Asset Hub DEX requests are allowed')
-        with self.http.open(request, timeout=20) as response:
-            body = response.read(MAX_UPSTREAM_BYTES + 1)
-        if len(body) > MAX_UPSTREAM_BYTES:
-            raise ValueError('Quote response exceeds size limit')
-        return json.loads(body)
 
     @staticmethod
     def positive(value):
@@ -499,19 +489,17 @@ class CoinGeckoWorker:
         return number
 
     def poll(self):
-        tickers = self.fetch(self.DEX_URL)
-        def quote(asset):
-            matches = [ticker for ticker in tickers if ticker.get('ticker_id') == f'DOT_{asset}'
-                       and ticker.get('base_currency') == 'DOT' and ticker.get('target_currency') == asset]
-            if len(matches) != 1:
-                raise ValueError('DEX ticker is missing or ambiguous')
-            return self.positive(matches[0]['last_price'])
-        # Both legs come from the same DEX snapshot, with identical trade/dust rules.
-        price = float(quote('1984') / quote('7873'))
+        snapshot = self.source.read()
+        if snapshot is None:
+            return
+        stamp, legs = snapshot
         now = time.time()
+        if not math.isfinite(stamp) or not now - 120 <= stamp <= now + 30:
+            raise ValueError('Stale or future finalized Hub timestamp')
+        price = float(self.positive(legs['1984']) / self.positive(legs['7873']))
         if not math.isfinite(price) or price <= 0:
-            raise ValueError('Invalid converted USD price')
-        self.cache.merge([(now, price, None)], now)
+            raise ValueError('Invalid converted USDT price')
+        self.cache.merge([(stamp, price, None)], now)
         with self.cache.lock:
             self.cache.history_ready = True
         # Persistence is isolated from both the pool archive and live ingestion.
@@ -529,7 +517,7 @@ class CoinGeckoWorker:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         with self.cache.lock:
             rows, fetched = self.cache.rows, self.cache.fetched_at
-        body = json.dumps({'source': 'dex-last-trade-usdt-v2', 'fetchedAt': fetched, 'samples': rows}, allow_nan=False)
+        body = json.dumps({'source': 'hub-rpc-last-trade-usdt-v3', 'fetchedAt': fetched, 'samples': rows}, allow_nan=False)
         temporary = self.history_path.with_suffix('.tmp')
         temporary.write_text(body)
         temporary.replace(self.history_path)
@@ -542,7 +530,7 @@ class CoinGeckoWorker:
         if len(body) > self.HISTORY_BYTES:
             raise ValueError('Saved quote history exceeds size limit')
         saved = json.loads(body)
-        if saved.get('source') != 'dex-last-trade-usdt-v2':
+        if saved.get('source') != 'hub-rpc-last-trade-usdt-v3':
             logging.warning('Ignoring history from a different price methodology')
             return
         rows = saved['samples']
@@ -800,13 +788,17 @@ def main():
     parser.add_argument('--ssh-host', default='server', help='SSH config host or user@host (default: server)')
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
-    parser.add_argument('--coingecko-history', type=Path, help='Optional file for observed USD estimate history')
+    parser.add_argument('--coingecko-history', type=Path, help='Optional file for Hub RPC USDT price history')
+    parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
+                        help='Polkadot Hub HTTP archive RPC for finalized swaps and reserves')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
     worker = None
-    coingecko = CoinGeckoWorker(server.coingecko_cache, history_path=args.coingecko_history)
+    from hub_quotes import HubChain, HubQuotes
+    coingecko = CoinGeckoWorker(server.coingecko_cache, source=HubQuotes(HubChain(args.hub_rpc)),
+                               history_path=args.coingecko_history)
     coingecko.thread.start()
     try:
         with price_source(args.upstream, args.ssh_host) as upstream:

@@ -16,7 +16,7 @@ class AppTests(unittest.TestCase):
         source += '\ncheckApp(); JSON.stringify(true);'
         self.assertTrue(evaluate(source))
 
-    def test_coingecko_uses_dex_timestamps_and_shared_rendering(self):
+    def test_coingecko_uses_hub_timestamps_and_shared_rendering(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += "\ndocument.body.dataset.priceSource = 'coingecko'; location.search = '?resolution=7d';"
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
@@ -45,7 +45,7 @@ class AppTests(unittest.TestCase):
         require(elements.get('status').textContent.startsWith('Updates delayed'), 'failed source refresh becomes stale');
         state.rows = new RangeSeries(); state.error = null; state.historyLoading = false;
         summaryValues = null; summary();
-        require(elements.get('message').textContent.includes('No DEX observations available'), 'honest empty state');
+        require(elements.get('message').textContent.includes('No finalized Hub samples available'), 'honest empty state');
         require(elements.get('price').textContent === '-', 'empty state has no fabricated price');
         JSON.stringify(true);
         """

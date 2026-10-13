@@ -3,8 +3,8 @@ const $ = id => document.getElementById(id);
 const coingecko = document.body.dataset.priceSource === 'coingecko';
 const source = coingecko ? {
   endpoint: '/api/coingecko/prices', currency: 'USDT', pollSeconds: 6,
-  staleFetch: 30, stalePrice: 30, sampleLabel: 'DEX observation',
-  empty: 'No DEX observations available in this window.',
+  staleFetch: 30, stalePrice: 30, sampleLabel: 'finalized Hub sample',
+  empty: 'No finalized Hub samples available in this window.',
 } : {
   endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
@@ -172,7 +172,7 @@ function updateFreshness() {
   if (!state.live || state.zoom) status('Historical view', 'paused');
   else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
   else if (state.error) status(`Connection error${sampleAge}`, 'error');
-  else if (!last) status(coingecko ? 'Waiting for DEX prices' : 'Waiting for finalized prices', 'stale');
+  else if (!last) status(coingecko ? 'Waiting for finalized Hub prices' : 'Waiting for finalized prices', 'stale');
   else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
   else if (age > source.stalePrice) status(`Data delayed${sampleAge}`, 'stale');
