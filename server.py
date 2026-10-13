@@ -49,11 +49,12 @@ def load_release():
     pages = {
         'index.html': dict(QUOTE='USDT', PAGE_PATH='/', SOURCE='pools', SOURCE_LABEL='PEG MONITOR',
                            DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
-                           PRICE_LABEL='Spot price', OTHER_PATH='/coingecko', OTHER_LABEL='Compare CoinGecko',
+                           PRICE_LABEL='Spot price', COMPARE_LINK='',
                            SOURCE_NOTE='Pool reserve price · dotUSD → DOT → USDT · excludes fees and slippage.'),
         'coingecko.html': dict(QUOTE='USDT', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='DEX LAST-TRADE PRICE',
                                DESCRIPTION='dotUSD / USDT from finalized Polkadot Hub swaps via RPC.',
-                               PRICE_LABEL='Last-trade price', OTHER_PATH='/', OTHER_LABEL='Compare pool price',
+                               PRICE_LABEL='Last-trade price',
+                               COMPARE_LINK=' <a id="compare-source" href="/">Compare pool price →</a>',
                                SOURCE_NOTE='Polkadot Hub RPC: USDT per DOT ÷ dotUSD per DOT. '
                                            'Finalized swaps and reserves; no exchange or CoinGecko API. '
                                            'Checked every 6 seconds; samples use finalized block timestamps.'),

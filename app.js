@@ -547,7 +547,8 @@ function writeViewUrl() {
   if (url.href !== location.href) history.pushState(null, '', url);
 }
 function updateViewControls() {
-  $('compare-source').href = (coingecko ? '/' : '/coingecko') + location.search;
+  const compareLink = $('compare-source');
+  if (compareLink) compareLink.href = (coingecko ? '/' : '/coingecko') + location.search;
   $('live').hidden = !state.live || !!state.zoom;
   $('live').dataset.live = String(state.live);
   $('live-label').textContent = state.live ? `${source.pollSeconds}s` : 'Refresh';
