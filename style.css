@@ -17,7 +17,7 @@ body.chart-fullscreen{overflow:hidden}
 #chart-panel.is-fullscreen .plot{flex:1;min-height:0;height:auto}
 #chart-panel.is-fullscreen .toolbar,#chart-panel.is-fullscreen .chart-footer{flex-shrink:0}
 
-footer a{color:#a7b8cf}footer p:first-child{text-align:left}
+footer a{color:#a7b8cf}footer p:first-child:not(.disclaimer){text-align:left}
 
 .explain-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:32px}
 .explain-card{display:flex;flex-direction:column;padding:30px;min-width:0}.explain-card h2{font-size:20px;line-height:1.35;letter-spacing:-.3px;margin:0 0 24px;font-weight:600;text-wrap:balance}
