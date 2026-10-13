@@ -50,7 +50,7 @@ def load_release():
         'index.html': dict(QUOTE='USDT', PAGE_PATH='/', SOURCE='pools', SOURCE_LABEL='PEG MONITOR',
                            DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
                            PRICE_LABEL='Spot price', COMPARE_LINK='',
-                           SOURCE_NOTE='Pool reserve price · dotUSD → DOT → USDT · excludes fees and slippage.'),
+                           SOURCE_NOTE=''),
         'coingecko.html': dict(QUOTE='USDT', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='DEX LAST-TRADE PRICE',
                                DESCRIPTION='dotUSD / USDT from finalized Polkadot Hub swaps via RPC.',
                                PRICE_LABEL='Last-trade price',
@@ -67,6 +67,7 @@ def load_release():
         html = template.replace(b'__DETAILS__', details)
         for key, value in values.items():
             html = html.replace(f'__{key}__'.encode(), value.encode())
+        html = html.replace(b'<p></p>\n', b'')
         assets[name] = html.replace(
             b'__FAVICON__', b'data:image/svg+xml;base64,' + base64.b64encode(files['favicon.svg'])).replace(
             b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
