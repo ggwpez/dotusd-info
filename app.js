@@ -106,7 +106,7 @@ function applyScale() {
   summary();
   scheduleDraw();
 }
-const ratingColors = ['#19ac4f', '#78b87a', '#dfc464', '#f29b58', '#f2495c'];
+const ratingColors = ['#19ac4f', '#63c8ae', '#dfc464', '#f29b58', '#f2495c'];
 // Keep the peg green, then blend toward each successive color as deviation grows.
 // The open-ended red band reaches its full color at 150 bps.
 const colorLevels = [5, 20, 50, 100, 150];
