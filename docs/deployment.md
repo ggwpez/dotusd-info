@@ -88,3 +88,11 @@ The worker validates and merges it within a minute without restarting the websit
 the temporary import is removed after its contents are saved to the final history.
 Confirm the comparison API has the expected timestamps and the normal page remains
 healthy. `substrate-interface` is required by both reconstruction and the live Hub RPC reader.
+
+
+The Hub runtime decoder and price caches share a 512 MiB service limit. For a
+bounded history import, use `import_quote_batches.py --max-memory-mib 384` to
+leave at least 128 MiB below that cap; the default remains 180 MiB for smaller
+installations. Reconstruction runs on the workstation. Existing import batches
+can be replayed from a fresh directory after validation, without restarting the
+web service or replacing its live history file.

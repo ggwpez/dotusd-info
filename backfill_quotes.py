@@ -108,7 +108,10 @@ class Reconstruction:
         self.head = int(header['number'], 16)
         self.decoder = make_decoder()
         self.decoder.init_runtime(block_hash=head_hash)
-        self.storage = self.decoder.create_storage_key('System', 'Events')
+        from substrateinterface.storage import StorageKey
+        self.storage = StorageKey.create_from_storage_function(
+            'System', 'Events', [], runtime_config=self.decoder.runtime_config,
+            metadata=self.decoder.metadata)
         self.needles = [bytes([module.value['index'], event.value['index']])
                         for module in self.decoder.metadata.pallets if module.name == 'AssetConversion'
                         for event in module.events if event.name in ('SwapExecuted', 'SwapCreditExecuted')]

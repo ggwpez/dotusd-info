@@ -11,16 +11,19 @@ import subprocess
 import time
 
 REMOTE_GATE = '''sudo -n python3 - <<'REMOTE'
-import pathlib, subprocess, urllib.request
+import json, pathlib, subprocess, time, urllib.request
 pending = pathlib.Path('/var/lib/dotusd-quotes/backfill.json')
 if pending.exists():
     raise SystemExit(2)
 used = int(subprocess.check_output(['systemctl','show','dotusd-info','--property=MemoryCurrent','--value']))
 if used > 180 * 1024 * 1024:
     raise SystemExit(3)
-with urllib.request.urlopen('http://127.0.0.1:3001/api/prices', timeout=3) as response:
-    if response.status != 200:
-        raise SystemExit(4)
+now = time.time()
+for route in ('/api/prices', '/api/coingecko/prices'):
+    with urllib.request.urlopen(f'http://127.0.0.1:3001{route}?start={now-300}&end={now}&format=raw', timeout=3) as response:
+        data = json.load(response)
+        if response.status != 200 or now - (data.get('fetchedAt') or 0) > 180:
+            raise SystemExit(4)
 REMOTE'''
 REMOTE_INSTALL = '''sudo -n sh -c 'test ! -e /var/lib/dotusd-quotes/backfill.json && install -o $(stat -c %u /var/lib/dotusd-quotes/history.json) -g $(stat -c %g /var/lib/dotusd-quotes/history.json) -m 0600 /tmp/dotusd-dex-import.json /var/lib/dotusd-quotes/backfill.pending && mv /var/lib/dotusd-quotes/backfill.pending /var/lib/dotusd-quotes/backfill.json' '''
 
@@ -39,7 +42,12 @@ def main():
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--host', default='server')
     parser.add_argument('--expected-samples', type=int, required=True)
+    parser.add_argument('--max-memory-mib', type=int, default=180,
+                        help='Pause imports above this measured service memory usage')
     args = parser.parse_args()
+    if not 1 <= args.max_memory_mib <= 4096:
+        parser.error("--max-memory-mib must be between 1 and 4096")
+    gate = REMOTE_GATE.replace("180 * 1024 * 1024", f"{args.max_memory_mib} * 1024 * 1024")
     def remote(command):
         return subprocess.run(['ssh', '-o', 'ConnectTimeout=10', args.host, command], timeout=30, check=False)
     while True:
@@ -50,7 +58,7 @@ def main():
             remote('rm -f /tmp/dotusd-dex-import.json')
             return
         pending = [p for p in paths if not p.with_suffix('.imported').exists()]
-        if pending and remote(REMOTE_GATE).returncode == 0:
+        if pending and remote(gate).returncode == 0:
             path = pending[0]
             count = validate(json.loads(path.read_text()))
             subprocess.run(['scp', '-q', str(path), args.host+':/tmp/dotusd-dex-import.json'], timeout=30, check=True)
@@ -58,7 +66,7 @@ def main():
                 raise RuntimeError('Import staging failed')
             # Wait for consumption, persistence and healthy normal-price responses.
             deadline = time.monotonic() + 120
-            while remote(REMOTE_GATE).returncode != 0:
+            while remote(gate).returncode != 0:
                 if time.monotonic() > deadline:
                     raise TimeoutError('Import not consumed or production unhealthy; stopping')
                 time.sleep(15)
