@@ -47,7 +47,7 @@ def load_release():
     # Keep source modules separate, but deliver one self-contained document.
     assets['inline.js'] = assets['ranges.js'] + b'\n' + assets['app.js'].split(b'\n', 1)[1]
     pages = {
-        'index.html': dict(QUOTE='USDT', PAGE_PATH='/', SOURCE='pools', SOURCE_LABEL='PEG MONITOR',
+        'index.html': dict(QUOTE='USDT', PAGE_PATH='/', SOURCE='pools', SOURCE_LABEL='PRICE MONITOR',
                            DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
                            PRICE_LABEL='Spot price', COMPARE_LINK='',
                            SOURCE_NOTE=''),
