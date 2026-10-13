@@ -106,7 +106,7 @@ function applyScale() {
   summary();
   scheduleDraw();
 }
-const ratingColors = ['#19ac4f', '#63c8ae', '#dfc464', '#f29b58', '#f2495c'];
+const ratingColors = ['#19ac4f', '#78b87a', '#dfc464', '#f29b58', '#f2495c'];
 const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
