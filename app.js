@@ -176,7 +176,7 @@ function updateFreshness() {
   else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
   else if (age > source.stalePrice) status(`Data delayed${sampleAge}`, 'stale');
-  else status(`Live · ~${age}s ago`, 'live');
+  else status(`Live ~${age}s ago`, 'live');
 }
 
 const historyCache = new BrowserHistory();
