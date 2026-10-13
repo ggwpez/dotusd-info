@@ -107,7 +107,24 @@ function applyScale() {
   scheduleDraw();
 }
 const ratingColors = ['#19ac4f', '#78b87a', '#dfc464', '#f29b58', '#f2495c'];
-const deviationColor = bps => ratingColors[ratingForBps(bps)] ?? '#b7c0cf';
+// Keep the peg green, then blend toward each successive color as deviation grows.
+// The open-ended red band reaches its full color at 150 bps.
+const colorLevels = [5, 20, 50, 100, 150];
+function deviationColor(bps) {
+  if (!Number.isFinite(bps)) return '#b7c0cf';
+  const magnitude = Math.abs(bps);
+  const upper = colorLevels.findIndex(level => magnitude <= level);
+  if (upper === -1) return ratingColors.at(-1);
+  if (upper === 0) return ratingColors[0];
+  const fraction = (magnitude - colorLevels[upper - 1]) /
+    (colorLevels[upper] - colorLevels[upper - 1]);
+  const from = ratingColors[upper - 1], to = ratingColors[upper];
+  return '#' + [1, 3, 5].map(offset => {
+    const start = parseInt(from.slice(offset, offset + 2), 16);
+    const end = parseInt(to.slice(offset, offset + 2), 16);
+    return Math.round(start + (end - start) * fraction).toString(16).padStart(2, '0');
+  }).join('');
+}
 const clock = t => new Date(t * 1000).toISOString().slice(11, 19);
 const date = t => new Date(t * 1000).toISOString().replace('T', ' ').slice(0, 19);
 function status(text, kind) {
@@ -125,12 +142,10 @@ function ratingForBps(bps) {
 }
 function ratingGradient(context, top, bottom, extent, alpha = '') {
   const gradient = context.createLinearGradient(0, top, 0, bottom);
-  const levels = [extent, ...[...ratingLimits].reverse(), ...ratingLimits.map(v => -v), -extent]
+  const levels = [extent, ...[...colorLevels].reverse(), 0, ...colorLevels.map(v => -v), -extent]
     .filter((v, i, levels) => i === 0 || i === levels.length - 1 || Math.abs(v) < extent);
-  for (let i = 0; i < levels.length - 1; i++) {
-    const color = deviationColor((levels[i] + levels[i + 1]) / 2) + alpha;
-    gradient.addColorStop((extent - levels[i]) / (2 * extent), color);
-    gradient.addColorStop((extent - levels[i + 1]) / (2 * extent), color);
+  for (const level of levels) {
+    gradient.addColorStop((extent - level) / (2 * extent), deviationColor(level) + alpha);
   }
   return gradient;
 }
@@ -332,7 +347,7 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   ctx.beginPath();
   ctx.rect(left, top, right - left, bottom - top);
   ctx.clip();
-  // Symmetric hard stops color both sides by absolute peg deviation.
+  // A symmetric gradient blends colors by absolute peg deviation at every zoom level.
   const lineColor = ratingGradient(ctx, top, bottom, extent);
   // Fade the fill at wider time scales, independently of history loading progress.
   const secondsPerPixel = (state.end - state.start) / Math.max(1, right - left);

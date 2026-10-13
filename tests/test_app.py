@@ -55,6 +55,34 @@ class AppTests(unittest.TestCase):
         """
         self.assertTrue(evaluate(source))
 
+    def test_graph_colors_blend_symmetrically_without_zoom_dependent_cutoffs(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        require(deviationColor(0) === ratingColors[0], 'peg uses logo green');
+        require(!ratingColors.includes(deviationColor(10)), 'intermediate deviation blends colors');
+        require(deviationColor(1000) === ratingColors[4], 'extreme deviation stays red');
+        for (const boundary of ratingLimits) {
+          require(deviationColor(boundary - .00001) === deviationColor(boundary + .00001),
+            'color is continuous across rating boundaries');
+        }
+        require(ratingForBps(5) === 0 && ratingForBps(5.01) === 1, 'rating thresholds unchanged');
+        for (const extent of [5, 10, 20, 37, 100, 150, 200]) {
+          const stops = [];
+          const context = {createLinearGradient: () => ({addColorStop: (at, color) => stops.push([at, color])})};
+          ratingGradient(context, 0, 300, extent, '20');
+          require(stops[0][0] === 0 && stops.at(-1)[0] === 1, 'gradient covers full viewport');
+          require(stops.every(([at, color], i) => !i || at > stops[i - 1][0]), 'no duplicate hard stops');
+          require(stops[0][1] === deviationColor(extent) + '20', 'clipped edge uses interpolated color');
+          require(stops.every(([at, color], i) => color === stops[stops.length - 1 - i][1]),
+            'positive and negative deviations match');
+        }
+        JSON.stringify(true);
+        """
+        self.assertTrue(evaluate(source))
+
     def test_display_scales_preserve_prices_and_do_not_refetch(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
