@@ -51,10 +51,18 @@ class HubChain:
 
             self.decoder = Decoder(url=self.rpc.endpoint, auto_discover=False)
         # Metadata is selected for this block, including across runtime upgrades.
+        runtime_version = self.decoder.runtime_version
         try:
             self.decoder.init_runtime(block_hash=at)
         except Exception:
-            self.decoder = None
+            # init_runtime sets these before its RPCs finish. Invalidate the
+            # block shortcut so retrying the same block cannot skip setup.
+            self.decoder.block_hash = None
+            self.decoder.block_id = None
+            if self.decoder.runtime_version != runtime_version:
+                # A new runtime may only be partly initialized. Force setup on
+                # retry, retaining the decoder and its parsed metadata cache.
+                self.decoder.runtime_version = None
             raise
         from substrateinterface.storage import StorageKey
         storage = StorageKey.create_from_storage_function(

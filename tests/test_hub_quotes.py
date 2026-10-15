@@ -125,14 +125,92 @@ class HubChainTests(unittest.TestCase):
         chain.rpc.storage.assert_called_once_with('finalized-hash', [TIMESTAMP, 'events-key'])
         self.assertEqual(result, block(42, 123000))
 
-    def test_failed_runtime_setup_discards_partial_decoder(self):
+    def test_failed_runtime_setup_keeps_decoder_and_invalidates_block(self):
         chain = HubChain()
         chain.rpc = Mock()
         chain.decoder = Mock()
         chain.decoder.init_runtime.side_effect = OSError('metadata unavailable')
+        decoder = chain.decoder
         with self.assertRaises(OSError):
             chain.block(42)
-        self.assertIsNone(chain.decoder)
+        self.assertIs(chain.decoder, decoder)
+        self.assertIsNone(decoder.block_hash)
+        self.assertIsNone(decoder.block_id)
+
+    def test_real_runtime_initialization_recovers_at_each_failure_stage(self):
+        try:
+            from substrateinterface import SubstrateInterface
+        except ImportError:
+            self.skipTest('substrate-interface is not installed')
+
+        for initial_version in (None, 1):
+            for stage in ('rpc_request', 'get_block_runtime_version',
+                          'get_block_metadata', 'reload_type_registry', 'get_constant'):
+                with self.subTest(initial_version=initial_version, stage=stage):
+                    chain = HubChain()
+                    chain.rpc = Mock()
+                    chain.rpc.block_hash.return_value = 'target'
+                    decoder = SubstrateInterface(url='http://unused.invalid', auto_discover=False)
+                    chain.decoder = decoder
+                    decoder.runtime_version = initial_version
+                    decoder.rpc_request = Mock(return_value={'result': {'parentHash': 'parent'}})
+                    decoder.get_block_runtime_version = Mock(return_value={
+                        'specVersion': 2, 'transactionVersion': 1})
+                    metadata = Mock()
+                    decoder.get_block_metadata = Mock(return_value=metadata)
+                    decoder.reload_type_registry = Mock()
+                    decoder.implements_scaleinfo = Mock(return_value=True)
+                    decoder.runtime_config = Mock()
+                    decoder.get_constant = Mock(return_value=None)
+                    method = getattr(decoder, stage)
+                    method.side_effect = TimeoutError('RPC timeout')
+                    with self.assertRaises(TimeoutError):
+                        chain.block(42)
+                    self.assertIs(chain.decoder, decoder)
+                    self.assertIsNone(decoder.block_hash)
+                    self.assertIsNone(decoder.block_id)
+
+                    method.side_effect = None
+                    # Run the real library's retry and its early-return checks.
+                    decoder.init_runtime(block_hash='target')
+                    self.assertEqual(decoder.runtime_version, 2)
+                    self.assertIs(decoder.metadata, metadata)
+                    decoder.runtime_config.add_portable_registry.assert_called_with(metadata)
+                    decoder.runtime_config.set_active_spec_version_id.assert_called_with(2)
+                    decoder.get_constant.assert_called_with('System', 'SS58Prefix', block_hash='target')
+                    # Metadata already parsed before a late failure is reused.
+                    self.assertEqual(decoder.get_block_metadata.call_count,
+                                     2 if stage == 'get_block_metadata' else 1)
+
+    def test_timeout_on_unchanged_runtime_reuses_initialized_registry(self):
+        try:
+            from substrateinterface import SubstrateInterface
+        except ImportError:
+            self.skipTest('substrate-interface is not installed')
+        for stage in ('rpc_request', 'get_block_runtime_version'):
+            with self.subTest(stage=stage):
+                chain = HubChain()
+                chain.rpc = Mock()
+                chain.rpc.block_hash.return_value = 'target'
+                decoder = SubstrateInterface(url='http://unused.invalid', auto_discover=False)
+                chain.decoder = decoder
+                decoder.runtime_version = 1
+                decoder.rpc_request = Mock(return_value={'result': {'parentHash': 'parent'}})
+                decoder.get_block_runtime_version = Mock(return_value={'specVersion': 1})
+                decoder.reload_type_registry = Mock()
+                decoder.get_block_metadata = Mock()
+                method = getattr(decoder, stage)
+                for _ in range(3):
+                    method.side_effect = TimeoutError('RPC timeout')
+                    with self.assertRaises(TimeoutError):
+                        chain.block(42)
+                    method.side_effect = None
+                    decoder.init_runtime(block_hash='target')
+                    self.assertIs(chain.decoder, decoder)
+                    self.assertEqual(decoder.runtime_version, 1)
+                    decoder.block_hash = 'previous'
+                decoder.reload_type_registry.assert_not_called()
+                decoder.get_block_metadata.assert_not_called()
 
     def test_reserve_orientation_and_decimals(self):
         chain = HubChain()
