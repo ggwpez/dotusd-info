@@ -1,5 +1,6 @@
 """Finalized Hub RPC last-trade prices. No exchange or price-provider API."""
 from decimal import Decimal
+import gc
 import json
 import time
 import urllib.request
@@ -63,6 +64,9 @@ class HubChain:
                 # A new runtime may only be partly initialized. Force setup on
                 # retry, retaining the decoder and its parsed metadata cache.
                 self.decoder.runtime_version = None
+            # Reclaim cyclic decoder objects left by failed setup. Keep this
+            # safeguard off the normal block-processing path.
+            gc.collect()
             raise
         from substrateinterface.storage import StorageKey
         storage = StorageKey.create_from_storage_function(

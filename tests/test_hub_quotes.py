@@ -131,8 +131,10 @@ class HubChainTests(unittest.TestCase):
         chain.decoder = Mock()
         chain.decoder.init_runtime.side_effect = OSError('metadata unavailable')
         decoder = chain.decoder
-        with self.assertRaises(OSError):
-            chain.block(42)
+        with patch('hub_quotes.gc.collect') as collect:
+            with self.assertRaises(OSError):
+                chain.block(42)
+        collect.assert_called_once_with()
         self.assertIs(chain.decoder, decoder)
         self.assertIsNone(decoder.block_hash)
         self.assertIsNone(decoder.block_id)
