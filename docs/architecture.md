@@ -9,7 +9,9 @@ arbitrage Asset Hub RPC at `http://127.0.0.1:9944` and writes history into
 `arb-prometheus.service` at `127.0.0.1:9090`. This app reads that history through
 a bounded `/api/prices` endpoint backed entirely by an in-process cache.
 One background worker fetches recent prices at startup, then refreshes every six
-seconds with a five-minute overlap for delayed ingestion. Seven days of older
+seconds with a five-minute overlap before the last received sample (or the last
+query boundary, if earlier), so collector outages do not skip delayed ingestion.
+Seven days of older
 history are seeded in six-hour chunks without waiting between polling cycles.
 The API flags incomplete startup history; browsers retry incomplete ranges, including
 fixed shared ranges, until history is complete.

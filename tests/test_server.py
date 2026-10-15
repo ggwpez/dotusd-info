@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, Mock
 from urllib.error import HTTPError
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 from http.server import ThreadingHTTPServer
 
@@ -387,6 +387,37 @@ class CacheTests(unittest.TestCase):
         with patch.object(page.time, 'time', return_value=now + 18):
             worker.poll()
         worker.fetch.assert_called_once_with(now + 12 - 300, now + 18)
+
+    def test_delayed_collector_publication_recovers_beyond_overlap(self):
+        now = time.time()
+        cache = page.HistoryCache()
+        cache.merge([[now, 1.0, 50]], now)
+        http = Mock()
+        worker = page.HistoryWorker(cache, 'http://unused', http)
+        worker.cursor = now
+        worker.backfill_end = now - page.HISTORY_SECONDS
+
+        def response(rows):
+            return io.BytesIO(json.dumps({'status': 'success', 'data': {
+                'resultType': 'matrix', 'result': [
+                    {'metric': {'__name__': metric},
+                     'values': [[row[0], str(row[column])] for row in rows]}
+                    for metric, column in [('arb_peg_dotusd_usdt', 1),
+                                           ('arb_peg_block_number', 2)]
+                ]}}).encode())
+
+        # Queries succeed throughout an eight-minute collection outage.
+        for elapsed in (6, 240, 480):
+            http.open.return_value = response([[now, 1.0, 50]])
+            with patch.object(page.time, 'time', return_value=now + elapsed):
+                worker.poll()
+        recovered = [[now + i * 2, 1.01, 50 + i] for i in range(1, 244)]
+        http.open.return_value = response(recovered)
+        with patch.object(page.time, 'time', return_value=now + 486):
+            worker.poll()
+        query = parse_qs(urlsplit(http.open.call_args.args[0]).query)
+        self.assertIn('[786000ms]', query['query'][0])
+        self.assertEqual([row[2] for row in cache.rows], list(range(50, 294)))
 
     def test_failure_keeps_cached_data_and_retry_cursor(self):
         now = time.time()

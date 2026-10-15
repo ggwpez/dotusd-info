@@ -422,7 +422,12 @@ class HistoryWorker:
             self.cursor = now
             self.backfill_end = now - 3600
         elif now - self.cursor >= 6:
-            start = max(self.cursor - 300, now - HISTORY_SECONDS)
+            # A successful query can still contain only stale samples while the
+            # collector is offline. Keep querying from the last actual sample
+            # so delayed publication cannot fall behind the overlap window.
+            with self.cache.lock:
+                latest = self.cache.rows[-1][0] if self.cache.rows else self.cursor
+            start = max(min(self.cursor, latest) - 300, now - HISTORY_SECONDS)
             while start < now and not self.stop.is_set():
                 end = min(now, start + FETCH_SECONDS)
                 self.fetch(start, end)
