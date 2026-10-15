@@ -119,3 +119,15 @@ imports use the existing health gates and require no site restart. After import,
 fetch the same API window again and verify the samples, remaining gaps, and live
 freshness. This repairs historical outages; it does not change live collection or
 prevent gaps during future restarts.
+
+## Automatic pool gap recovery
+
+The supplied service enables `--gap-repair-history
+/var/lib/dotusd-quotes/pool-repairs.sqlite3`. This uses the existing writable
+state directory and needs no additional service or timer. It queries the Parity
+archive independently of the live collector, with eight blocks per pass, at most
+two sequential RPC requests per second and a one-minute pause after each pass.
+Restarting the website resumes saved progress. RPC failures back off up to
+fifteen minutes and do not interrupt live collection. Inspect `Archive gap repair`
+messages in `journalctl -u dotusd-info`. Omit the option to disable automatic
+repair. The seven-day retention bounds both repaired history and saved evidence.

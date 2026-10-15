@@ -10,7 +10,9 @@ particular period.
 
 Prices come from the dotUSD → DOT → USDT pools. They are quoted against USDT and
 do not include trading fees or slippage. Timestamps are estimated, and missing
-blocks appear as gaps in the chart.
+blocks appear as gaps in the chart. Production gradually repairs internal gaps
+from the Parity archive: up to eight blocks per pass, with a one-minute pause
+between passes. Open charts pick up repairs automatically.
 
 ## Compare with CoinGecko
 

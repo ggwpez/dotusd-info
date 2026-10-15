@@ -8,6 +8,39 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AppTests(unittest.TestCase):
+    def test_pool_history_refresh_bypasses_live_cursor_for_repairs(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        const setTimeout = () => 1;
+        const clearTimeout = () => {};
+        const requests = [];
+        const fetch = url => { requests.push(url); return new Promise(() => {}); };
+        reloading = false;
+        const now = Date.now()/1000;
+        state.start = now - 3600; state.end = now;
+        state.range = 3600; state.live = true; state.zoom = null;
+        state.serverWarming = false;
+        historyCache.merge(RangeSeries.fromWire([[now - 20, 10, 1], [0, now - 10, 15, 1]]),
+                           now - 3600, now, now, true);
+        nextHistoryRefresh = Date.now() + 60000;
+        refresh();
+        require(requests.length === 1 && requests[0].includes('afterBlock=15'), 'normal live cursor');
+        nextHistoryRefresh = 0;
+        refresh();
+        require(requests.length === 2 && !requests[1].includes('afterBlock'), 'repair refresh includes old blocks');
+        state.live = false;
+        require(needsRefresh(), 'fixed views also discover repairs');
+        nextHistoryRefresh = Date.now() + 60000;
+        state.historyLoading = false;
+        require(!needsRefresh(), 'fixed views rest between refreshes');
+        JSON.stringify(true);
+        """
+        self.assertTrue(evaluate(source))
+
     def test_drawing_hover_keyboard_and_drag_zoom(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')

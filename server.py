@@ -35,7 +35,7 @@ SUMMARY_SAMPLES = 256
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py', 'about-dotusd.html', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
+             ('server.py', 'gap_repair.py', 'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py', 'about-dotusd.html', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     digest = hashlib.sha256()
     for name, body in files.items():
         digest.update(name.encode() + b'\0' + body + b'\0')
@@ -313,8 +313,9 @@ class HistoryCache:
         self.history_ready = False
         self.generation = 0
         self.responses = ResponseCache()
+        self.repaired = {}
 
-    def merge(self, rows, now, mark_fresh=True, replace=False):
+    def merge(self, rows, now, mark_fresh=True, replace=False, missing_only=False):
         # Serialize writers, but let readers use the previous immutable snapshot
         # while a replacement is built. Only publication takes the shared lock.
         with self.writer_lock:
@@ -322,9 +323,30 @@ class HistoryCache:
                 previous = () if replace else self.rows
             # Merge by timestamp to deduplicate overlapping refreshes and preserve gaps.
             by_time = {row[0]: row for row in previous if row[0] > now - HISTORY_SECONDS}
-            by_time.update({row[0]: tuple(row) for row in rows
-                            if now - HISTORY_SECONDS < row[0] <= now})
+            rows = list(rows)
+            candidates = {row[2] for row in rows} if missing_only else set()
+            present = {row[2] for row in by_time.values() if row[2] in candidates} if missing_only else set()
+            repaired = {} if replace else dict(self.repaired)
+            for row in rows:
+                stamp, _, block = row
+                if not now - HISTORY_SECONDS < stamp <= now:
+                    continue
+                if missing_only and (stamp in by_time or block in present):
+                    continue
+                # Late collector data supersedes a repair even if its estimated
+                # timestamp differs; never keep two observations of one block.
+                if missing_only:
+                    repaired[block] = stamp
+                    present.add(block)
+                elif block is not None:
+                    old = repaired.pop(block, None)
+                    if old is not None:
+                        by_time.pop(old, None)
+                by_time[stamp] = tuple(row)
             replacement = tuple(by_time[t] for t in sorted(by_time)[-MAX_SAMPLES:])
+            self.repaired = {block: stamp for block, stamp in repaired.items()
+                             if replacement and stamp >= replacement[0][0] and
+                             by_time.get(stamp, (None, None, None))[2] == block}
             summaries = HistorySummaries(replacement)
             with self.lock:
                 self.rows = replacement
@@ -792,6 +814,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bind', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=3001)
@@ -799,6 +822,8 @@ def main():
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--coingecko-history', type=Path, help='Optional file for Hub RPC USDT price history')
+    parser.add_argument('--gap-repair-history', type=Path,
+                        help='Enable gradual Parity archive gap recovery, persisted in this SQLite file')
     parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
                         help='Polkadot Hub HTTP archive RPC for finalized swaps and reserves')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
@@ -806,6 +831,7 @@ def main():
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
     worker = None
+    repair = None
     from hub_quotes import HubChain, HubQuotes
     coingecko = CoinGeckoWorker(server.coingecko_cache, source=HubQuotes(HubChain(args.hub_rpc)),
                                history_path=args.coingecko_history)
@@ -814,6 +840,10 @@ def main():
         with price_source(args.upstream, args.ssh_host) as upstream:
             worker = HistoryWorker(server.cache, upstream, archive=args.archive)
             worker.thread.start()
+            if args.gap_repair_history:
+                from gap_repair import GapRepair
+                repair = GapRepair(server.cache, args.gap_repair_history)
+                repair.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
             url = f'http://{browser_host}:{server.server_port}'
             print(f'dotUSD: {url}', flush=True)
@@ -824,10 +854,14 @@ def main():
         pass
     finally:
         coingecko.stop.set()
+        if repair is not None:
+            repair.stop.set()
         if worker is not None:
             worker.stop.set()
             worker.thread.join(timeout=25)
         coingecko.thread.join(timeout=45)
+        if repair is not None:
+            repair.thread.join(timeout=15)
         server.server_close()
 
 

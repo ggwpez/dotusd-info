@@ -66,7 +66,7 @@ server returns only newer blocks within the displayed window. Empty responses
 retain the cursor, and reconnects catch up from it without a fixed overlap.
 An in-memory browser cache holds at most seven days / 350,000 samples, retaining completed historical coverage
 until those samples expire or are evicted. Incomplete history continues retrying;
-reload the page to discover later archive imports before the block cursor.
+both charts refresh the displayed history once per minute to discover repairs before the block cursor.
 Switching views reuses already fetched data. No samples are downsampled.
 Hover redraws are coalesced per animation frame and reuse canvas buffers.
 Caddy flushes upstream responses immediately.
@@ -83,7 +83,7 @@ and `/api/version` returns the version even while price history is warming up.
 The client checks this header before decoding price responses and reloads the
 current URL on a mismatch, preserving the linked range/zoom. Live polling checks
 the version through its price responses; there are no separate version requests.
-Completed fixed views stay idle until another data request is needed. Returning
+Completed fixed views check for history repairs once per minute while visible. Returning
 to a live tab or reconnecting refreshes prices and checks the version again.
 Network failures retry without forcing a reload.
 Assets remain tied to their startup snapshot during deployment; restart the
@@ -183,3 +183,27 @@ CoinGecko publishes [integration API standards](https://docs.google.com/document
 including the definition of `last_price` as the last transacted base/target price.
 Their [pricing methodology](https://www.coingecko.com/en/methodology) separately
 covers internal currency conversion, outlier filtering and market aggregation.
+
+## Automatic pool-history gap repair
+
+With `--gap-repair-history PATH`, a separate background worker fills internal
+block-number gaps in the retained seven-day pool history using only Parity's
+`https://polkadot-asset-hub-rpc.polkadot.io`. It waits for initial history loading
+and gives live ingestion two minutes before considering a gap. Timestamp pauses
+without missing block numbers are left intact. It does not extend the live tip.
+
+Each pass repairs at most eight blocks, newest gaps first. All RPC requests are
+sequential and spaced at least 500 ms apart, followed by a 60-second pause between
+passes. Failures back off from two minutes up to fifteen minutes. The worker
+verifies the Hub genesis and requires the gap's right boundary to be finalized.
+It uses the shared pool reserve decoder; unavailable pools remain gaps.
+
+Repairs preserve existing boundary samples and fit the chart's estimated
+two-second clock between them. Original chain timestamps, block hashes, prices
+and reserves are saved in a separate SQLite evidence database. Each small batch
+is committed atomically before publication, resumes after restart, and expires
+after seven days. The published backfill archive and collector database are never
+modified. Repaired samples do not refresh the live freshness timestamp. Delayed
+collector samples supersede repairs by block number, even if their estimated
+timestamps differ. Both open charts reload their displayed window once per minute
+to discover repaired samples, including in fixed historical views.

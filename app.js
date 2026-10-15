@@ -195,7 +195,7 @@ function updateFreshness() {
 }
 
 const historyCache = new BrowserHistory();
-let nextComparisonHistoryRefresh = 0;
+let nextHistoryRefresh = 0;
 async function refresh(force = false) {
   if (reloading) return;
   controller?.abort();
@@ -215,9 +215,9 @@ async function refresh(force = false) {
   const live = state.live && !state.zoom;
   const last = historyCache.rows.window(start, end).at(-1);
   // Advance only from a completed history snapshot; warming/backfills need the full window.
-  const refreshHistory = coingecko && Date.now() >= nextComparisonHistoryRefresh;
-  const incremental = live && !force && !state.serverWarming &&
-    (coingecko ? !!last && !refreshHistory : Number.isSafeInteger(last?.[2])) &&
+  const refreshHistory = Date.now() >= nextHistoryRefresh;
+  const incremental = live && !force && !state.serverWarming && !refreshHistory &&
+    (coingecko ? !!last : Number.isSafeInteger(last?.[2])) &&
     !missing.some(([a]) => a < last[0]);
   const left = incremental ? Math.max(start, Math.min(last[0], end - 1)) : start;
   // Keep completed numbers visible during ordinary live polls.
@@ -260,7 +260,7 @@ async function refresh(force = false) {
         }
       }
     }
-    if (coingecko && !incremental) nextComparisonHistoryRefresh = Date.now() + 60000;
+    if (!incremental) nextHistoryRefresh = Date.now() + 60000;
     historyCache.merge(new RangeSeries(runs), left, end, state.fetchedAt, !state.serverWarming);
     state.historyLoading = historyCache.missing(start, end).length > 0;
     publish(historyCache.rows);
@@ -654,7 +654,7 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
 new ResizeObserver(draw).observe($('plot'));
 function needsRefresh() {
   return (state.live && !state.zoom) || state.historyLoading ||
-    (coingecko && Date.now() >= nextComparisonHistoryRefresh);
+    (Date.now() >= nextHistoryRefresh);
 }
 setInterval(() => {
   if (needsRefresh() && !document.hidden && !loading) refresh();
