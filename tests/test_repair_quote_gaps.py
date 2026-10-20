@@ -30,7 +30,7 @@ class RepairQuoteGapsTests(unittest.TestCase):
             output = Path(directory)
             self.assertEqual(repair(worker, [(101, 115)], output), 2)
             payload = json.loads(next(output.glob('*.json')).read_text())
-        self.assertEqual(payload['samples'], [[104, 1, None], [109, .8, None]])
+        self.assertEqual(payload['samples'], [[104, 1, 11], [109, .8, 13]])
         self.assertEqual([e['chainTimestamp'] for e in payload['evidence']], [104000, 109000])
         self.assertEqual([e['block'] for e in payload['evidence']], [11, 13])
         worker.locate.assert_called_once_with([101000, 115000])

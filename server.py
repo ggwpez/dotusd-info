@@ -524,14 +524,16 @@ class CoinGeckoWorker:
         snapshot = self.source.read()
         if snapshot is None:
             return
-        stamp, legs = snapshot
+        stamp, legs, block = snapshot
         now = time.time()
         if not math.isfinite(stamp) or not now - 120 <= stamp <= now + 30:
             raise ValueError('Stale or future finalized Hub timestamp')
         price = float(self.positive(legs['1984']) / self.positive(legs['7873']))
         if not math.isfinite(price) or price <= 0:
             raise ValueError('Invalid converted USDT price')
-        self.cache.merge([(stamp, price, None)], now)
+        if type(block) is not int or not 0 <= block <= 9007199254740991:
+            raise ValueError('Invalid finalized block number')
+        self.cache.merge([(stamp, price, block)], now)
         with self.cache.lock:
             self.cache.history_ready = True
         # Persistence is isolated from both the pool archive and live ingestion.
@@ -569,7 +571,8 @@ class CoinGeckoWorker:
         for stamp, price, block in rows:
             self.positive(stamp)
             self.positive(price)
-            if block is not None or not isinstance(stamp, (int, float)) or not isinstance(price, (int, float)):
+            if ((block is not None and (type(block) is not int or not 0 <= block <= 9007199254740991)) or
+                    not isinstance(stamp, (int, float)) or not isinstance(price, (int, float))):
                 raise ValueError('Invalid saved quote sample')
         fetched = float(self.positive(saved['fetchedAt']))
         self.cache.merge(rows, time.time(), mark_fresh=False)
@@ -596,13 +599,19 @@ class CoinGeckoWorker:
             raise ValueError('Invalid quote backfill size')
         by_time = {item['timestamp']: item for item in evidence}
         now, previous = time.time(), -1
+        restored = []
         for stamp, price, block in rows:
             self.positive(stamp)
             self.positive(price)
             if (not isinstance(stamp, (int, float)) or not isinstance(price, (int, float)) or
-                    block is not None or not previous < stamp <= now):
+                    not previous < stamp <= now):
                 raise ValueError('Invalid quote backfill sample')
             item = by_time[stamp]
+            number = item.get('block', block)
+            if ((number is not None and (type(number) is not int or not 0 <= number <= 9007199254740991)) or
+                    (block is not None and (type(block) is not int or block != number))):
+                raise ValueError('Invalid quote backfill block')
+            restored.append([stamp, price, number])
             expected = float(self.positive(item['usdtPerDot']) / self.positive(item['dotusdPerDot']))
             if not math.isclose(price, expected, rel_tol=1e-12):
                 raise ValueError('Backfill quote does not match its reference inputs')
@@ -619,7 +628,7 @@ class CoinGeckoWorker:
         with self.cache.lock:
             existing = {row[0] for row in self.cache.rows}
         # Observations already collected by this server win timestamp collisions.
-        self.cache.merge([row for row in rows if row[0] not in existing], now, mark_fresh=False)
+        self.cache.merge([row for row in restored if row[0] not in existing], now, mark_fresh=False)
         with self.cache.lock:
             if self.cache.fetched_at is None:
                 self.cache.fetched_at = rows[-1][0]
@@ -742,35 +751,54 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path in ('/api/prices', '/api/coingecko/prices'):
             try:
-                params = urllib.parse.parse_qs(url.query, max_num_fields=6, keep_blank_values=True)
+                params = urllib.parse.parse_qs(url.query, max_num_fields=8, keep_blank_values=True)
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
-                start, end = time_window(params)
+                live = 'end' not in params
+                cache = self.server.coingecko_cache if url.path == '/api/coingecko/prices' else self.server.cache
+                with cache.lock:
+                    latest = cache.rows[-1][0] if cache.rows else 0
+                time_params = {**params, 'end': params.get('end', [max(time.time(), latest)])}
+                if live and 'start' in params:
+                    time_params['start'] = [max(float(params['start'][0]), float(time_params['end'][0]) - HISTORY_SECONDS)]
+                if 'startpoint' in params:
+                    # A block cursor replaces the timestamp lower bound. Keep
+                    # time bounds for the viewport, retention and upper limit.
+                    time_params['start'] = [float(time_params['end'][0]) - HISTORY_SECONDS]
+                start, end = time_window(time_params)
                 after_block = None
-                if 'afterBlock' in params:
-                    value = params['afterBlock']
+                cursor_name = 'startpoint' if 'startpoint' in params else 'afterBlock'
+                if cursor_name in params:
+                    value = params[cursor_name]
                     if len(value) != 1 or not value[0].isascii() or not value[0].isdigit():
                         raise ValueError('Invalid block cursor')
                     after_block = int(value[0])
                     if after_block > 9007199254740991:
                         raise ValueError('Invalid block cursor')
+                    if 'startpoint' in params and 'afterBlock' in params:
+                        raise ValueError('Choose one block cursor')
                 window = None
                 if 'windowStart' in params or 'windowEnd' in params:
-                    if 'windowStart' not in params or 'windowEnd' not in params:
+                    if 'windowStart' not in params or ('windowEnd' not in params and not live):
                         raise ValueError('Both window bounds are required')
-                    window = time_window({'start': params['windowStart'], 'end': params['windowEnd']})
-                    if not window[0] <= start < end <= window[1]:
+                    window_start = float(params['windowStart'][0])
+                    if live:
+                        window_start = max(window_start, end - HISTORY_SECONDS)
+                    window = time_window({'start': [window_start], 'end': params.get('windowEnd', [end])})
+                    if (not window[0] < end <= window[1] or
+                            ('startpoint' not in params and start < window[0])):
                         raise ValueError('Chunk must lie within the window')
             except (ValueError, OverflowError):
                 self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
                 return
             try:
-                cache = self.server.coingecko_cache if url.path == '/api/coingecko/prices' else self.server.cache
-                chunks = cache.response(start, end, window, after_block, raw, streaming)
+                # Do not clip a block cursor by a floating-point start time.
+                selection_start = time.time() - HISTORY_SECONDS if 'startpoint' in params else start
+                chunks = cache.response(selection_start, end, window, after_block, raw, streaming)
             except RuntimeError:
                 self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                 return
-            self.send_headers(200, 'application/x-ndjson' if streaming else 'application/json')
+            self.send_headers(200, 'application/x-ndjson' if streaming else 'application/json', history_end=end)
             try:
                 for chunk in chunks:
                     self.wfile.write(chunk)
@@ -799,10 +827,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_headers(status, content_type, len(body))
         self.wfile.write(body)
 
-    def send_headers(self, status, content_type, length=None, etag=None):
+    def send_headers(self, status, content_type, length=None, etag=None, history_end=None):
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('X-App-Version', self.server.version)
+        if history_end is not None:
+            self.send_header('X-History-End', str(history_end))
         if length is not None:
             self.send_header('Content-Length', str(length))
         self.send_header('Cache-Control', 'public, max-age=0, must-revalidate' if etag else 'no-store')

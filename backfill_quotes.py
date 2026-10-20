@@ -250,7 +250,7 @@ def reconstruct_targets(worker, targets, output, chunk_size=1024):
                 stamp = needed[number]
                 dotusd, dotusd_block, dotusd_time = legs[7873]
                 usdt, usdt_block, usdt_time = legs[1984]
-                rows.append([stamp, float(Decimal(usdt) / Decimal(dotusd)), None])
+                rows.append([stamp, float(Decimal(usdt) / Decimal(dotusd)), number])
                 evidence.append(dict(timestamp=stamp, block=number, chainTimestamp=chain_stamp,
                                      dotusdPerDot=dotusd, usdtPerDot=usdt,
                                      tradeBlock=dotusd_block, tradeTimestamp=dotusd_time,

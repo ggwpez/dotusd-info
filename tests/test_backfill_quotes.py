@@ -55,7 +55,7 @@ class QuoteReconstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             quotes.reconstruct_targets(worker, [[39,9,20],[41,9,21],[43,9,22]], Path(directory))
             payload = json.loads(next(Path(directory).glob('*.json')).read_text())
-        self.assertEqual(payload['samples'], [[39,1.,None],[41,.8,None],[43,1.2,None]])
+        self.assertEqual(payload['samples'], [[39,1.,20],[41,.8,21],[43,1.2,22]])
         self.assertEqual(payload['evidence'][1]['chainTimestamp'],42000)
         self.assertEqual(payload['evidence'][1]['usdtTradeTimestamp'],38000)
         self.assertEqual(importer.validate(payload),3)

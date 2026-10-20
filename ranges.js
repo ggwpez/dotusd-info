@@ -138,7 +138,7 @@ export class RangeSeries {
     for (const run of this.runs) {
       const first = sample(run, 0);
       yield {row: first, move: !connect(previous, first)};
-      if (run.count > 1 && run.db === 1 && run.block !== null) {
+      if (run.count > 1 && connect(first, sample(run, 1))) {
         yield {row: sample(run, run.count - 1), move: false};
       } else {
         for (let i = 1; i < run.count; i++) yield {row: sample(run, i), move: true};

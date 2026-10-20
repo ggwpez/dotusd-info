@@ -10,8 +10,8 @@ const source = coingecko ? {
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
   empty: 'No price samples in this window',
 };
-// Aggregated prices have timestamps, not block numbers. Break the line when
-// more than one expected interval is missing; retain block-gap rules for pools.
+// Quotes are observations rather than one sample per block, so use their
+// timestamp spacing for line gaps even when they carry block-number cursors.
 const connectSamples = coingecko ? (a, b) => a && b && b[0] > a[0] &&
   b[0] - a[0] <= 900 : undefined;
 $('title-logo').src = document.querySelector('link[rel="icon"]').href;
@@ -223,8 +223,8 @@ async function refresh(force = false, preferCache = false) {
   // View changes use the completed snapshot's endpoint. The next poll advances
   // it to now, rather than fetching just because time passed since that snapshot.
   const cachedEnd = preferCache && state.live ? historyCache.coverage.at(-1)?.[1] : null;
-  const end = state.zoom?.[1] ?? cachedEnd ?? (state.live || !state.end ? Date.now()/1000 : state.end);
-  const start = state.zoom?.[0] ?? end - state.range;
+  let end = state.zoom?.[1] ?? cachedEnd ?? (state.live || !state.end ? Date.now()/1000 : state.end);
+  let start = state.zoom?.[0] ?? end - state.range;
   const sameWindow = Math.abs((state.end - state.start) - (end - start)) < .01;
   state.start = start;
   state.end = end;
@@ -240,6 +240,7 @@ async function refresh(force = false, preferCache = false) {
     (coingecko ? !!last : Number.isSafeInteger(last?.[2])) &&
     !missing.some(([a]) => a < last[0]);
   const left = incremental ? Math.max(start, last[0]) : start;
+  const blockCursor = incremental && Number.isSafeInteger(last?.[2]) ? last[2] : null;
   // Keep completed numbers visible during ordinary live polls.
   if (!(sameWindow && (live ? incremental : !missing.length))) summaryValues = null;
   const publish = rows => {
@@ -260,12 +261,21 @@ async function refresh(force = false, preferCache = false) {
     // The API requires at least a one-second query, but the merge boundary
     // must remain at the last sample so an empty delta cannot delete it.
     const requestStart = coingecko ? Math.max(start, Math.min(left, end - 1)) : start;
-    const response = await fetch(`${source.endpoint}?start=${requestStart}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental && !coingecko ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
+    const lowerBound = blockCursor === null ? `start=${requestStart}` : `startpoint=${blockCursor}`;
+    const upperBound = live ? '' : `&end=${end}&windowEnd=${end}`;
+    const response = await fetch(`${source.endpoint}?${lowerBound}&windowStart=${start}${upperBound}&format=stream`, {signal: requestController.signal});
     if (ticket !== generation) return;
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
       const result = await response.json();
       throw new Error(result.error || 'Unable to load prices');
+    }
+    const responseEnd = Number(response.headers.get('X-History-End'));
+    if (live && Number.isFinite(responseEnd) && responseEnd > 0) {
+      end = responseEnd;
+      start = end - state.range;
+      state.start = start;
+      state.end = end;
     }
     const runs = [];
     let lastDraw = -Infinity;
@@ -276,7 +286,8 @@ async function refresh(force = false, preferCache = false) {
         state.serverWarming = message.historyReady === false;
         state.fetchedAt = message.fetchedAt;
       } else if (message.ranges) {
-        runs.push(...RangeSeries.fromWire(message.ranges).window(left, end).runs);
+        const batch = RangeSeries.fromWire(message.ranges);
+        runs.push(...(blockCursor === null ? batch.window(left, end) : batch).runs);
         if (performance.now() - lastDraw >= 32) {
           // Partial data is drawable, but only a finished stream marks cache coverage complete.
           publish(new RangeSeries([...historyCache.rows.window(-Infinity, left).runs, ...runs,

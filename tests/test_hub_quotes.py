@@ -27,10 +27,10 @@ class HubQuotesTests(unittest.TestCase):
                    12: block(12, 104000)}
         chain = self.chain(records, 10)
         source = HubQuotes(chain)
-        self.assertEqual(source.read(), (100, {'1984': '2', '7873': '2.5'}))
+        self.assertEqual(source.read(), (100, {'1984': '2', '7873': '2.5'}, 10))
         self.assertIsNone(source.read())
         chain.finalized.return_value = 12
-        self.assertEqual(source.read(), (104, {'1984': '3', '7873': '2.5'}))
+        self.assertEqual(source.read(), (104, {'1984': '3', '7873': '2.5'}, 12))
         self.assertEqual([c.args[0] for c in chain.block.call_args_list], [10, 9, 11, 12])
         self.assertEqual(chain.reserve.call_args_list[-1].args, (12, 7873))
 
@@ -43,15 +43,15 @@ class HubQuotesTests(unittest.TestCase):
         source.BLOCKS_PER_POLL = 1
         self.assertIsNone(source.read())
         chain.reserve.assert_not_called()
-        self.assertEqual(source.read(), (100000, {'1984': '3', '7873': '2.5'}))
+        self.assertEqual(source.read(), (100000, {'1984': '3', '7873': '2.5'}, 10))
         chain.finalized.return_value = 11
-        self.assertEqual(source.read(), (100002, {'1984': '2', '7873': '2.5'}))
+        self.assertEqual(source.read(), (100002, {'1984': '2', '7873': '2.5'}, 11))
 
     def test_missing_leg_requires_full_window_before_reserve_fallback(self):
         records = {10: block(10, 100000000, dotusd='2.5'),
                    9: block(9, 100000000-86400001, usdt='9')}
         source = HubQuotes(self.chain(records, 10))
-        self.assertEqual(source.read(), (100000, {'1984': '2', '7873': '2.5'}))
+        self.assertEqual(source.read(), (100000, {'1984': '2', '7873': '2.5'}, 10))
 
     def test_rpc_failure_retries_failed_block_and_never_skips_gap(self):
         records = {10: block(10, 100000, dotusd='2', usdt='2'),
@@ -68,7 +68,7 @@ class HubQuotesTests(unittest.TestCase):
         chain.block.side_effect = records.__getitem__
         source.BLOCKS_PER_POLL = 1
         self.assertIsNone(source.read())
-        self.assertEqual(source.read(), (104, {'1984': '3', '7873': '2.5'}))
+        self.assertEqual(source.read(), (104, {'1984': '3', '7873': '2.5'}, 12))
         chain.finalized.return_value = 11
         with self.assertRaisesRegex(ValueError, 'backwards'):
             source.read()
@@ -80,7 +80,7 @@ class HubQuotesTests(unittest.TestCase):
             source.read()
         self.assertIsNone(source.published)
         source.chain.reserve.side_effect = None
-        self.assertEqual(source.read(), (100, {'1984': '3', '7873': '2'}))
+        self.assertEqual(source.read(), (100, {'1984': '3', '7873': '2'}, 10))
 
     def test_wrong_chain_rejected_before_reading_head(self):
         chain = HubChain()

@@ -20,10 +20,10 @@ class CoinGeckoTests(unittest.TestCase):
             cache = page.HistoryCache()
             worker = page.CoinGeckoWorker(cache, history_path=path)
             worker.source = Mock()
-            worker.source.read.return_value = (now, {'1984': '2.02', '7873': '2'})
+            worker.source.read.return_value = (now, {'1984': '2.02', '7873': '2'}, 42)
             with patch.object(page.time, 'time', return_value=now):
                 worker.poll()
-            self.assertEqual(cache.rows, ((now, 1.01, None),))
+            self.assertEqual(cache.rows, ((now, 1.01, 42),))
             self.assertTrue(cache.history_ready)
             loaded = page.HistoryCache()
             with patch.object(page.time, 'time', return_value=now + 300):
@@ -32,7 +32,7 @@ class CoinGeckoTests(unittest.TestCase):
             self.assertEqual(loaded.fetched_at, now)  # restarting does not refresh old quotes
             before = cache.rows, cache.fetched_at, path.read_bytes()
             for bad in ('NaN', '0', True, '-1', 'Infinity'):
-                worker.source.read.return_value = (now+300, {'1984': '2.02', '7873': bad})
+                worker.source.read.return_value = (now+300, {'1984': '2.02', '7873': bad}, 42)
                 with self.assertRaises(ValueError), patch.object(page.time, 'time', return_value=now+300):
                     worker.poll()
                 self.assertEqual((cache.rows, cache.fetched_at, path.read_bytes()), before)
@@ -48,7 +48,7 @@ class CoinGeckoTests(unittest.TestCase):
         worker.source = Mock()
         self.assertEqual(worker.POLL_SECONDS, 6)
         for stamp in (1800000000, 1800000006, 1800000012):
-            worker.source.read.return_value = (stamp, {'1984': '2', '7873': '2'})
+            worker.source.read.return_value = (stamp, {'1984': '2', '7873': '2'}, 42)
             with patch.object(page.time, 'time', return_value=stamp), patch.object(page.time, 'monotonic', return_value=stamp):
                 worker.poll()
         self.assertEqual(len(cache.rows), 3)
@@ -66,7 +66,7 @@ class CoinGeckoTests(unittest.TestCase):
         worker.poll()
         self.assertEqual((cache.rows, cache.fetched_at), before)
         for stamp in (now-121, now+31):
-            source.read.return_value = (stamp, {'1984': '1', '7873': '1'})
+            source.read.return_value = (stamp, {'1984': '1', '7873': '1'}, 42)
             with patch.object(page.time, 'time', return_value=now), self.assertRaises(ValueError):
                 worker.poll()
             self.assertEqual((cache.rows, cache.fetched_at), before)
@@ -85,10 +85,10 @@ class CoinGeckoTests(unittest.TestCase):
         cache.merge([(now-604799, .99, None)], now-300)
         worker = page.CoinGeckoWorker(cache)
         worker.source = Mock()
-        worker.source.read.return_value = (now+300, {'1984': '1', '7873': '1'})
+        worker.source.read.return_value = (now+300, {'1984': '1', '7873': '1'}, 42)
         with patch.object(page.time, 'time', return_value=now+300):
             worker.poll()
-        self.assertEqual(cache.rows, ((now+300, 1., None),))
+        self.assertEqual(cache.rows, ((now+300, 1., 42),))
 
     def test_pages_share_assets_and_api_keeps_sources_separate(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
@@ -141,12 +141,12 @@ class CoinGeckoTests(unittest.TestCase):
             worker = page.CoinGeckoWorker(cache, history_path=path)
             rows = [[now-600, .99, None], [now-30, 1., None]]
             payload = dict(source='dex-last-trade-usdt-backfill-v2', samples=rows,
-                           evidence=[dict(timestamp=t, usdtPerDot=p*2, dotusdPerDot='2', chainTimestamp=t*1000,
+                           evidence=[dict(timestamp=t, block=42, usdtPerDot=p*2, dotusdPerDot='2', chainTimestamp=t*1000,
                                               tradeTimestamp=(t-60)*1000, usdtTradeTimestamp=(t-60)*1000)
                                      for t,p,_ in rows])
             pending.write_text(json.dumps(payload))
             worker.load_backfill()
-            self.assertEqual(cache.rows, ((now-600,.99,None),(now-30,1.002,None)))
+            self.assertEqual(cache.rows, ((now-600,.99,42),(now-30,1.002,None)))
             self.assertEqual(cache.fetched_at, now-10)
             self.assertFalse(pending.exists())
             self.assertEqual(len(json.loads(path.read_text())['samples']),2)

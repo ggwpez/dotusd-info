@@ -61,9 +61,15 @@ The client decodes and draws complete lines as they arrive, without expanding
 ranges or acknowledging batches. Network reads may split or combine lines.
 Full-window extrema keep the vertical scale stable during loading. Only a
 successfully finished stream enters the cache; interrupted streams retry.
-Live polls send `afterBlock` with the last received finalized block number; the
-server returns only newer blocks within the displayed window. Empty responses
-retain the cursor, and reconnects catch up from it without a fixed overlap.
+Live polls send `startpoint` with the last received finalized block number
+(exclusive: only larger block numbers are returned). They omit `end` and
+`windowEnd`; the server chooses the current snapshot boundary and reports it in
+`X-History-End`. `windowStart` controls chart extrema, not the block cursor.
+Explicit `end` timestamps still bound fixed historical queries. Timestamp `start`
+and the old `afterBlock` parameter remain supported for existing clients;
+`startpoint` takes precedence over `start` and cannot be combined with `afterBlock`.
+Initial history loads use timestamp ranges until a block cursor is available.
+Empty responses retain the cursor, and reconnects catch up without a fixed overlap.
 An in-memory browser cache holds at most seven days / 350,000 samples, retaining completed historical coverage
 until those samples expire or are evicted. Incomplete history continues retrying;
 both charts retry the displayed history once per minute only while it contains known gaps
@@ -142,8 +148,10 @@ trade uses its pool reserves at the target finalized block. USDT per DOT divided
 by dotUSD per DOT gives USDT per dotUSD. Both assets' six-decimal metadata is
 validated. RPC failures retain successful state and retry the failed block.
 
-Samples use finalized block timestamps and null block numbers for the existing
-comparison stream contract. Repeated heads add no sample. A chain timestamp more
+Samples retain finalized block timestamps and block numbers for exact live cursors.
+Existing saved samples with null block numbers remain readable; older backfill
+batches recover their block numbers from evidence when present. Repeated heads add
+no sample. A chain timestamp more
 than 120 seconds old or 30 seconds in the future is rejected. Browser polling
 remains every six seconds; failed fetches are marked delayed after 30 seconds,
 and chain samples after 180 seconds to allow normal finality lag. Storage
@@ -170,8 +178,9 @@ within three seconds and service memory below 180 MiB. It stops if a staged impo
 is not consumed within two minutes. Imported markers allow safe resumption.
 The live server rejects batches larger than 2,048 samples.
 
-Live browser polls fetch only new timestamp samples; a full refresh once per minute
-picks up newly imported history, including in a fixed historical view.
+Live browser polls fetch only newer blocks (timestamps for legacy samples without
+block numbers). Known gaps trigger history retries at most once per minute,
+including in a fixed historical view.
 
 Place the completed artifact atomically at `backfill.json` beside the configured
 quote history file. The independent quote worker checks between live polls, validates
@@ -207,5 +216,5 @@ is committed atomically before publication, resumes after restart, and expires
 after seven days. The published backfill archive and collector database are never
 modified. Repaired samples do not refresh the live freshness timestamp. Delayed
 collector samples supersede repairs by block number, even if their estimated
-timestamps differ. Both open charts reload their displayed window once per minute
-to discover repaired samples, including in fixed historical views.
+timestamps differ. Both open charts retry their displayed history once per minute
+only while known gaps remain, including in fixed historical views.

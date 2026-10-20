@@ -36,20 +36,21 @@ class AppTests(unittest.TestCase):
                     reloading = false;
                     state.range = 3600; state.live = true; state.zoom = null;
                     const stamp = now - .1;
-                    historyCache.merge(RangeSeries.fromWire([[stamp, coingecko ? null : 10, 1]]),
+                    historyCache.merge(RangeSeries.fromWire([[stamp, 10, 1]]),
                                        now - 3600, now - .05, now, true);
                     const pending = refresh();
-                    respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
+                    require(requests[0].includes('startpoint=10') && !requests[0].includes('?start='), 'block cursor replaces timestamp start');
+                    require(!requests[0].includes('&end=') && !requests[0].includes('windowEnd='), 'live requests are open-ended');
+                    respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 1) : APP_VERSION}, messages: [
                         {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
-                        // Timestamp queries can repeat the last sample because the API
-                        // requires a one-second interval; block cursors return no rows.
-                        {ranges: coingecko ? [[stamp, null, 1]] : []}, {done: true},
+                        {ranges: []}, {done: true},
                     ]});
                     await pending;
                     require(!state.error && !loading, 'stream completed');
                     require(historyCache.rows.length === 1 && historyCache.rows.at(-1)[0] === stamp,
                             'sub-second delta retains the last sample exactly once');
-                    require(!historyCache.missing(now - 3600, now).length, 'delta advances coverage');
+                    require(!historyCache.missing(now - 3600, now + 1).length, 'delta advances coverage to the server boundary');
+                    require(state.end === now + 1, 'chart uses server boundary');
                     const stale = refresh();
                     const finishStale = respond;
                     await refresh(false, true);
@@ -57,6 +58,13 @@ class AppTests(unittest.TestCase):
                     await stale;
                     require(!reloading, 'cancelled response cannot reload the page');
                     require(historyCache.rows.length === 1, 'cancelled response cannot alter cache');
+                    state.live = false; state.zoom = [now - 100, now - 50];
+                    const fixed = refresh(true);
+                    require(requests.at(-1).includes('&end=' + (now - 50)), 'fixed history retains explicit end');
+                    respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
+                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true}, {done: true},
+                    ]});
+                    await fixed;
                     return true;
                 })();
                 """
@@ -124,10 +132,10 @@ class AppTests(unittest.TestCase):
                            now - 3600, now, now, true);
         nextHistoryRefresh = Date.now() + 60000;
         refresh();
-        require(requests.length === 1 && requests[0].includes('afterBlock=15'), 'normal live cursor');
+        require(requests.length === 1 && requests[0].includes('startpoint=15'), 'normal live cursor');
         nextHistoryRefresh = 0;
         refresh();
-        require(requests.length === 2 && !requests[1].includes('afterBlock'), 'repair refresh includes old blocks');
+        require(requests.length === 2 && !requests[1].includes('startpoint'), 'repair refresh includes old blocks');
         state.live = false;
         require(needsRefresh(), 'fixed views also discover repairs');
         nextHistoryRefresh = Date.now() + 60000;
@@ -144,7 +152,7 @@ class AppTests(unittest.TestCase):
         require(requests.length === 2, 'complete fixed history makes no request');
         state.live = true;
         refresh();
-        require(requests.length === 3 && requests[2].includes('afterBlock=15'),
+        require(requests.length === 3 && requests[2].includes('startpoint=15'),
                 'complete live history keeps its cursor after the deadline');
         require(!hasHistoryGaps(RangeSeries.fromWire([[now - 1000, 1, 1], [0, now, 2, 1]])),
                 'timestamp pauses alone are not missing pool blocks');
@@ -195,6 +203,9 @@ class AppTests(unittest.TestCase):
         require(!connectSamples([now - 2000, 1, null], [now, 1, null]), 'break missing recent data');
         require(!connectSamples([now - 100000, 1, null], [now - 96400, 1, null]), 'older history also preserves observation gaps');
         require(!connectSamples([now - 100000, 1, null], [now - 92800, 1, null]), 'break missing hourly data');
+        const observed = RangeSeries.fromWire([[now - 20, 100, 1], [3, 6, 3]]);
+        const observedPoints = [...observed.points(connectSamples)];
+        require(observedPoints.length <= 3 && observedPoints.slice(1).every(point => !point.move), 'quote blocks do not create false gaps between observations');
         updateFreshness();
         require(elements.get('status').dataset.state === 'live', '2 second sample is fresh');
         state.rows = RangeSeries.fromWire([[now - 60, null, 1.001]]); updateFreshness();

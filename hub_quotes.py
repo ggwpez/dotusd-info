@@ -159,4 +159,4 @@ class HubQuotes:
             trade = self.last.get(asset)
             legs[asset] = trade[0] if trade and trade[1] >= self.timestamp - self.WINDOW_MS else fallback
         self.published = head
-        return self.timestamp / 1000, legs
+        return self.timestamp / 1000, legs, head

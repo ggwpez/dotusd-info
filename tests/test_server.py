@@ -23,6 +23,49 @@ spec.loader.exec_module(page)
 
 
 class PageTests(unittest.TestCase):
+    def test_startpoint_uses_blocks_and_live_requests_have_no_client_cutoff(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        now = time.time()
+        stamp = now - 10.123456
+        rows = [[stamp, .99, 10], [math.nextafter(stamp, math.inf), 1.01, 11],
+                [now + 1, 1., 12]]
+        for cache in (server.cache, server.coingecko_cache):
+            cache.merge(rows, now + 1)
+            cache.history_ready = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            for route in ('/api/prices', '/api/coingecko/prices'):
+                for encoding in ('raw', 'ranges-v1', 'stream'):
+                    query = f'?startpoint=10&windowStart={now-604800}&format={encoding}'
+                    with urlopen(base + route + query) as response:
+                        self.assertGreaterEqual(float(response.headers['X-History-End']), rows[-1][0])
+                        if encoding == 'stream':
+                            metadata, batch, done = [json.loads(line) for line in response]
+                            self.assertEqual(batch['ranges'], list(page.pack_ranges(rows[1:])))
+                            self.assertEqual(done, {'done': True})
+                        else:
+                            metadata = json.load(response)
+                            self.assertEqual(metadata['samples' if encoding == 'raw' else 'ranges'],
+                                             rows[1:] if encoding == 'raw' else list(page.pack_ranges(rows[1:])))
+                        self.assertEqual(metadata['extremes'], {'low': rows[0], 'high': rows[1]})
+                # A rounded timestamp start must not cut off a newer block.
+                with urlopen(base + route + f'?startpoint=10&start={now}&end={now+2}&format=raw') as response:
+                    self.assertEqual(json.load(response)['samples'], rows[1:])
+                with urlopen(base + route + f'?startpoint=11&end={now}&format=raw') as response:
+                    self.assertEqual(json.load(response)['samples'], [])
+                for value in ('', '-1', '1.5', 'NaN', '9007199254740992', '10&startpoint=11', '10&afterBlock=10'):
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(base + route + '?startpoint=' + value)
+                    self.assertEqual(error.exception.code, 400)
+                    error.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_release_version_tracks_code_and_freezes_assets(self):
         names = ('server.py', 'gap_repair.py', 'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py', 'about-dotusd.html', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')
         with tempfile.TemporaryDirectory() as directory:
