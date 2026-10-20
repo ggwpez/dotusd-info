@@ -262,8 +262,11 @@ async function refresh(force = false, preferCache = false) {
     // must remain at the last sample so an empty delta cannot delete it.
     const requestStart = coingecko ? Math.max(start, Math.min(left, end - 1)) : start;
     const lowerBound = blockCursor === null ? `start=${requestStart}` : `startpoint=${blockCursor}`;
-    const upperBound = live ? '' : `&end=${end}&windowEnd=${end}`;
-    const response = await fetch(`${source.endpoint}?${lowerBound}&windowStart=${start}${upperBound}&format=stream`, {signal: requestController.signal});
+    const upperBound = live ? '' : `&end=${end}`;
+    // History streams need full-window extrema before all chunks arrive.
+    // Incremental polls already have that history locally.
+    const statisticsWindow = incremental ? '' : `&windowStart=${start}${live ? '' : `&windowEnd=${end}`}`;
+    const response = await fetch(`${source.endpoint}?${lowerBound}${upperBound}${statisticsWindow}&format=stream`, {signal: requestController.signal});
     if (ticket !== generation) return;
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {

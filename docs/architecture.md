@@ -59,12 +59,15 @@ in one request. `?format=stream` returns newline-delimited JSON: a
 packed `ranges` lines of up to 8,192 samples each, then a `{"done":true}` line.
 The client decodes and draws complete lines as they arrive, without expanding
 ranges or acknowledging batches. Network reads may split or combine lines.
-Full-window extrema keep the vertical scale stable during loading. Only a
+Full-window extrema keep the vertical scale stable during history loading.
+Incremental polls omit the statistics window and compute extrema from the cached
+visible samples, including new samples and excluding those that leave the window. Only a
 successfully finished stream enters the cache; interrupted streams retry.
 Live polls send `startpoint` with the last received finalized block number
 (exclusive: only larger block numbers are returned). They omit `end` and
 `windowEnd`; the server chooses the current snapshot boundary and reports it in
-`X-History-End`. `windowStart` controls chart extrema, not the block cursor.
+`X-History-End`. History loads use `windowStart` for early chart extrema;
+incremental polls omit it. It does not constrain the block cursor.
 Explicit `end` timestamps still bound fixed historical queries. Timestamp `start`
 and the old `afterBlock` parameter remain supported for existing clients;
 `startpoint` takes precedence over `start` and cannot be combined with `afterBlock`.

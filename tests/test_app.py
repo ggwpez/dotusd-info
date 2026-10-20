@@ -41,6 +41,7 @@ class AppTests(unittest.TestCase):
                     const pending = refresh();
                     require(requests[0].includes('startpoint=10') && !requests[0].includes('?start='), 'block cursor replaces timestamp start');
                     require(!requests[0].includes('&end=') && !requests[0].includes('windowEnd='), 'live requests are open-ended');
+                    require(!requests[0].includes('windowStart='), 'incremental polls request no full-window statistics');
                     respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 1) : APP_VERSION}, messages: [
                         {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
                         {ranges: []}, {done: true},
@@ -58,9 +59,23 @@ class AppTests(unittest.TestCase):
                     await stale;
                     require(!reloading, 'cancelled response cannot reload the page');
                     require(historyCache.rows.length === 1, 'cancelled response cannot alter cache');
+                    historyCache.merge(RangeSeries.fromWire([[now - 3598.5, 8, .5], [0, now - 3598, 9, 1.5]]),
+                                       now - 3600, now - 3590, now, true);
+                    nextHistoryRefresh = Date.now() + 60000;
+                    const delta = refresh();
+                    require(!requests.at(-1).includes('windowStart='), 'delta still skips server extrema');
+                    respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 3) : APP_VERSION}, messages: [
+                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true, extremes: null},
+                        {ranges: [[now + 1, 11, .9], [0, now + 2, 12, 1.1]]}, {done: true},
+                    ]});
+                    await delta;
+                    require(summaryValues.low[1] === .9 && summaryValues.high[1] === 1.1,
+                            'local extrema include new samples and drop expired extrema');
                     state.live = false; state.zoom = [now - 100, now - 50];
                     const fixed = refresh(true);
                     require(requests.at(-1).includes('&end=' + (now - 50)), 'fixed history retains explicit end');
+                    require(requests.at(-1).includes('windowStart=') && requests.at(-1).includes('windowEnd='),
+                            'history loads retain early extrema for streaming');
                     respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
                         {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true}, {done: true},
                     ]});
