@@ -66,7 +66,9 @@ server returns only newer blocks within the displayed window. Empty responses
 retain the cursor, and reconnects catch up from it without a fixed overlap.
 An in-memory browser cache holds at most seven days / 350,000 samples, retaining completed historical coverage
 until those samples expire or are evicted. Incomplete history continues retrying;
-both charts refresh the displayed history once per minute to discover repairs before the block cursor.
+both charts retry the displayed history once per minute only while it contains known gaps
+(missing pool block numbers or quote timestamp gaps over 900 seconds). Complete history
+does not periodically reload; live polls continue fetching new samples.
 Switching views reuses already fetched data. No samples are downsampled.
 Hover redraws are coalesced per animation frame and reuse canvas buffers.
 Caddy flushes upstream responses immediately.

@@ -196,6 +196,20 @@ function updateFreshness() {
 
 const historyCache = new BrowserHistory();
 let nextHistoryRefresh = 0;
+function hasHistoryGaps(rows) {
+  let previous;
+  for (const run of rows.runs) {
+    const first = [run.t, run.price, run.block];
+    if (coingecko) {
+      if ((previous && first[0] - previous[0] > 900) || (run.count > 1 && run.dt > 900)) return true;
+    } else {
+      if ((previous && previous[2] !== null && run.block !== null && run.block > previous[2] + 1) ||
+          (run.count > 1 && run.block !== null && run.db > 1)) return true;
+    }
+    previous = rows.at(run.offset + run.count - 1);
+  }
+  return false;
+}
 async function refresh(force = false, preferCache = false) {
   if (reloading) return;
   controller?.abort();
@@ -216,9 +230,10 @@ async function refresh(force = false, preferCache = false) {
   state.extremes = null;
   const missing = historyCache.missing(start, end);
   const live = state.live && !state.zoom;
-  const last = historyCache.rows.window(start, end).at(-1);
+  const cachedRows = historyCache.rows.window(start, end);
+  const last = cachedRows.at(-1);
   // Advance only from a completed history snapshot; warming/backfills need the full window.
-  const refreshHistory = Date.now() >= nextHistoryRefresh;
+  const refreshHistory = Date.now() >= nextHistoryRefresh && hasHistoryGaps(cachedRows);
   const incremental = live && !force && !state.serverWarming && !refreshHistory &&
     (coingecko ? !!last : Number.isSafeInteger(last?.[2])) &&
     !missing.some(([a]) => a < last[0]);
@@ -658,7 +673,7 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
 new ResizeObserver(draw).observe($('plot'));
 function needsRefresh() {
   return (state.live && !state.zoom) || state.historyLoading ||
-    (Date.now() >= nextHistoryRefresh);
+    (Date.now() >= nextHistoryRefresh && hasHistoryGaps(state.rows));
 }
 setInterval(() => {
   if (needsRefresh() && !document.hidden && !loading) refresh();

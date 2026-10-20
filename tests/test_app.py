@@ -78,6 +78,23 @@ class AppTests(unittest.TestCase):
         nextHistoryRefresh = Date.now() + 60000;
         state.historyLoading = false;
         require(!needsRefresh(), 'fixed views rest between refreshes');
+        // Once repairs close the gap, an elapsed deadline must not refetch history.
+        historyCache.merge(RangeSeries.fromWire([[now - 20, 10, 1], [5, 2, 1]]),
+                           now - 3600, now, now, true);
+        state.start = now - 3600; state.end = now;
+        state.rows = historyCache.rows;
+        nextHistoryRefresh = 0;
+        require(!needsRefresh(), 'complete fixed history needs no periodic refresh');
+        refresh();
+        require(requests.length === 2, 'complete fixed history makes no request');
+        state.live = true;
+        refresh();
+        require(requests.length === 3 && requests[2].includes('afterBlock=15'),
+                'complete live history keeps its cursor after the deadline');
+        require(!hasHistoryGaps(RangeSeries.fromWire([[now - 1000, 1, 1], [0, now, 2, 1]])),
+                'timestamp pauses alone are not missing pool blocks');
+        require(hasHistoryGaps(RangeSeries.fromWire([[now - 20, 1, 1], [4, 2, 2]])),
+                'detect missing blocks inside compressed runs');
         JSON.stringify(true);
         """
         self.assertTrue(evaluate(source))
@@ -100,6 +117,16 @@ class AppTests(unittest.TestCase):
         function require(value, message) { if (!value) throw new Error(message); }
         require(source.endpoint === '/api/coingecko/prices', 'isolated API');
         require(source.pollSeconds === 6, 'six second refresh');
+        require(!hasHistoryGaps(RangeSeries.fromWire([[100, null, 1], [0, 200, null, 1]])),
+                'normal quote intervals need no history refresh');
+        require(hasHistoryGaps(RangeSeries.fromWire([[100, null, 1], [0, 1100, null, 1]])),
+                'missing quote intervals allow history retries');
+        state.live = false; state.zoom = null; state.historyLoading = false;
+        state.rows = RangeSeries.fromWire([[100, null, 1], [0, 200, null, 1]]);
+        nextHistoryRefresh = 0;
+        require(!needsRefresh(), 'complete quote history rests after the deadline');
+        state.rows = RangeSeries.fromWire([[100, null, 1], [0, 1100, null, 1]]);
+        require(needsRefresh(), 'gapped quote history retries after the deadline');
         require(elements.get('compare-source').href === '/?resolution=7d', 'comparison preserves range');
         reloading = false;
         const now = Date.now()/1000;
