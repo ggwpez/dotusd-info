@@ -164,7 +164,13 @@ export class BrowserHistory {
     ]);
     const evictedThrough = this.rows.length > 350000 ? this.rows.at(-350001)[0] : -Infinity;
     this.rows = this.rows.tail(350000);
-    const intervals = [...this.coverage, ...(complete ? [[start, end]] : [])].sort((a, b) => a[0] - b[0]);
+    // Replacing data with an incomplete response invalidates prior coverage
+    // of that interval; otherwise fixed views can stop retrying missing data.
+    const retained = this.coverage.flatMap(([left, right]) => {
+      if (complete || right <= start || left >= end) return [[left, right]];
+      return [...(left < start ? [[left, start]] : []), ...(right > end ? [[end, right]] : [])];
+    });
+    const intervals = [...retained, ...(complete ? [[start, end]] : [])].sort((a, b) => a[0] - b[0]);
     this.coverage = [];
     for (const interval of intervals) {
       if (interval[1] <= evictedThrough) continue;

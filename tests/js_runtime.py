@@ -7,9 +7,12 @@ import sys
 import unittest
 
 
-def evaluate(source):
+def evaluate(source, asynchronous=False):
     if shutil.which('node'):
-        result = subprocess.run(['node', '-e', f'console.log(eval({json.dumps(source)}))'],
+        command = f'console.log(eval({json.dumps(source)}))'
+        if asynchronous:
+            command = f'Promise.resolve(eval({json.dumps(source)})).then(value => console.log(JSON.stringify(value)), error => {{ console.error(error); process.exitCode = 1; }});'
+        result = subprocess.run(['node', '-e', command],
                                 capture_output=True, text=True, check=True)
         return json.loads(result.stdout)
     if sys.platform != 'darwin':
@@ -30,10 +33,23 @@ def evaluate(source):
         getattr(js, name).argtypes = args
         getattr(js, name).restype = result
     ctx = js.JSGlobalContextCreate(None)
+    if asynchronous:
+        source = f'''Promise.resolve(eval({json.dumps(source)})).then(
+            value => globalThis.testOutcome = {{value}},
+            error => globalThis.testOutcome = {{error: String(error)}});'''
     script = js.JSStringCreateWithUTF8CString(source.encode())
     try:
         error = ptr()
         result = js.JSEvaluateScript(ctx, script, None, None, 1, ctypes.byref(error))
+        if asynchronous and not error.value:
+            # JavaScriptCore drains promise jobs when the initial script returns.
+            js.JSStringRelease(script)
+            script = js.JSStringCreateWithUTF8CString(b'''
+                if (!globalThis.testOutcome) throw new Error('Async test did not finish');
+                if (testOutcome.error) throw new Error(testOutcome.error);
+                JSON.stringify(testOutcome.value);
+            ''')
+            result = js.JSEvaluateScript(ctx, script, None, None, 1, ctypes.byref(error))
         string = js.JSValueToStringCopy(ctx, error.value or result, None)
         try:
             buf = ctypes.create_string_buffer(js.JSStringGetMaximumUTF8CStringSize(string))

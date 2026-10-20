@@ -217,7 +217,9 @@ async function refresh(force = false, preferCache = false) {
   const ticket = ++generation;
   loading = true;
   const requestController = controller;
-  historyCache.expire(Date.now()/1000);
+  // Keep the completed snapshot intact during local navigation. Polls advance
+  // both its endpoint and its retention boundary together.
+  if (!preferCache) historyCache.expire(Date.now()/1000);
   // View changes use the completed snapshot's endpoint. The next poll advances
   // it to now, rather than fetching just because time passed since that snapshot.
   const cachedEnd = preferCache && state.live ? historyCache.coverage.at(-1)?.[1] : null;
@@ -237,7 +239,7 @@ async function refresh(force = false, preferCache = false) {
   const incremental = live && !force && !state.serverWarming && !refreshHistory &&
     (coingecko ? !!last : Number.isSafeInteger(last?.[2])) &&
     !missing.some(([a]) => a < last[0]);
-  const left = incremental ? Math.max(start, Math.min(last[0], end - 1)) : start;
+  const left = incremental ? Math.max(start, last[0]) : start;
   // Keep completed numbers visible during ordinary live polls.
   if (!(sameWindow && (live ? incremental : !missing.length))) summaryValues = null;
   const publish = rows => {
@@ -255,7 +257,11 @@ async function refresh(force = false, preferCache = false) {
     if (preferCache && !force && !missing.length) return;
     if (!force && !live && !missing.length && !refreshHistory) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
-    const response = await fetch(`${source.endpoint}?start=${coingecko ? left : start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental && !coingecko ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
+    // The API requires at least a one-second query, but the merge boundary
+    // must remain at the last sample so an empty delta cannot delete it.
+    const requestStart = coingecko ? Math.max(start, Math.min(left, end - 1)) : start;
+    const response = await fetch(`${source.endpoint}?start=${requestStart}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental && !coingecko ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
+    if (ticket !== generation) return;
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
       const result = await response.json();
@@ -270,7 +276,7 @@ async function refresh(force = false, preferCache = false) {
         state.serverWarming = message.historyReady === false;
         state.fetchedAt = message.fetchedAt;
       } else if (message.ranges) {
-        runs.push(...RangeSeries.fromWire(message.ranges).runs);
+        runs.push(...RangeSeries.fromWire(message.ranges).window(left, end).runs);
         if (performance.now() - lastDraw >= 32) {
           // Partial data is drawable, but only a finished stream marks cache coverage complete.
           publish(new RangeSeries([...historyCache.rows.window(-Infinity, left).runs, ...runs,
@@ -279,6 +285,7 @@ async function refresh(force = false, preferCache = false) {
         }
       }
     }
+    if (ticket !== generation) return;
     if (!incremental) nextHistoryRefresh = Date.now() + 60000;
     historyCache.merge(new RangeSeries(runs), left, end, state.fetchedAt, !state.serverWarming);
     state.historyLoading = historyCache.missing(start, end).length > 0;

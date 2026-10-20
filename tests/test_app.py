@@ -8,6 +8,60 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AppTests(unittest.TestCase):
+    def test_stream_completion_and_cancelled_responses(self):
+        for price_source in ('pool', 'coingecko'):
+            with self.subTest(price_source=price_source):
+                source = (ROOT / 'tests/app_test.js').read_text()
+                source += f'\ndocument.body.dataset.priceSource = "{price_source}";'
+                source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+                source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+                source += r"""
+                function require(value, message) { if (!value) throw new Error(message); }
+                class AbortController { constructor() { this.signal = {}; } abort() {} }
+                const setTimeout = () => 1;
+                const clearTimeout = () => {};
+                const performance = {now: () => 100};
+                const now = Date.now()/1000;
+                Date.now = () => now * 1000;
+                const requests = [];
+                let respond;
+                const fetch = url => {
+                    requests.push(url);
+                    return new Promise(resolve => { respond = resolve; });
+                };
+                readPriceStream = async function* (response) {
+                    for (const message of response.messages) yield message;
+                };
+                (async () => {
+                    reloading = false;
+                    state.range = 3600; state.live = true; state.zoom = null;
+                    const stamp = now - .1;
+                    historyCache.merge(RangeSeries.fromWire([[stamp, coingecko ? null : 10, 1]]),
+                                       now - 3600, now - .05, now, true);
+                    const pending = refresh();
+                    respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
+                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                        // Timestamp queries can repeat the last sample because the API
+                        // requires a one-second interval; block cursors return no rows.
+                        {ranges: coingecko ? [[stamp, null, 1]] : []}, {done: true},
+                    ]});
+                    await pending;
+                    require(!state.error && !loading, 'stream completed');
+                    require(historyCache.rows.length === 1 && historyCache.rows.at(-1)[0] === stamp,
+                            'sub-second delta retains the last sample exactly once');
+                    require(!historyCache.missing(now - 3600, now).length, 'delta advances coverage');
+                    const stale = refresh();
+                    const finishStale = respond;
+                    await refresh(false, true);
+                    finishStale({headers: {get: () => 'obsolete-release'}});
+                    await stale;
+                    require(!reloading, 'cancelled response cannot reload the page');
+                    require(historyCache.rows.length === 1, 'cancelled response cannot alter cache');
+                    return true;
+                })();
+                """
+                self.assertTrue(evaluate(source, asynchronous=True))
+
     def test_cached_range_changes_wait_for_poll(self):
         for price_source in ('pool', 'coingecko'):
             with self.subTest(price_source=price_source):
@@ -29,12 +83,13 @@ class AppTests(unittest.TestCase):
                     [0, end - 10, 15, 1]]), end - 604800, end, end, true);
                 // Even an overdue repair refresh can wait for the scheduled poll.
                 nextHistoryRefresh = 0;
-                for (const range of [86400, 3600, 21600]) {
+                for (const range of [86400, 3600, 21600, 604800]) {
                     state.range = range;
                     reset();
                     require(requests.length === 0, 'covered range never fetches');
                     require(state.end === end && state.start === end - range, 'snapshot bounds');
-                    require(state.rows.length === 1 && summaryValues.low[1] === 1, 'local rows and extrema');
+                    require(state.rows.length === (range === 604800 ? 2 : 1), 'local rows');
+                    require(summaryValues.low[1] === (range === 604800 ? .99 : 1), 'local extrema');
                     require(!loading && !state.historyLoading && needsRefresh(), 'ready for next poll');
                 }
                 refresh();

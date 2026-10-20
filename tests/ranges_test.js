@@ -74,6 +74,11 @@ function checkCache() {
   const partial = new BrowserHistory();
   partial.merge(old, 0, 210, 1, false);
   equal(partial.missing(0, 210), [[0, 210]], 'warming response is retried');
+  partial.merge(old, 0, 210, 2, true);
+  partial.merge(new RangeSeries(), 90, 110, 3, false);
+  equal(partial.missing(0, 210), [[90, 110]], 'incomplete replacement invalidates old coverage only within its bounds');
+  partial.merge(old.window(90, 110), 90, 110, 4, true);
+  equal(partial.missing(0, 210), [], 'completed retry restores coverage');
   const large = new RangeSeries([{t: 10, price: 1, block: 1, count: 400000, dt: 2, db: 1}]);
   partial.merge(large, 0, 800010, 2);
   assert(partial.rows.length === 350000 && partial.rows.runs.length === 1, 'bounded cache without unrolling');
