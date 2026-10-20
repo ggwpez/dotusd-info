@@ -8,6 +8,47 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AppTests(unittest.TestCase):
+    def test_cached_range_changes_wait_for_poll(self):
+        for price_source in ('pool', 'coingecko'):
+            with self.subTest(price_source=price_source):
+                source = (ROOT / 'tests/app_test.js').read_text()
+                source += f'\ndocument.body.dataset.priceSource = "{price_source}";'
+                source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+                source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+                source += r"""
+                function require(value, message) { if (!value) throw new Error(message); }
+                class AbortController { constructor() { this.signal = {}; } abort() {} }
+                const setTimeout = () => 1;
+                const clearTimeout = () => {};
+                const requests = [];
+                const fetch = url => { requests.push(url); return new Promise(() => {}); };
+                writeViewUrl = () => {};
+                reloading = false;
+                const end = Date.now()/1000 - 3;
+                historyCache.merge(RangeSeries.fromWire([[end - 90000, 10, .99],
+                    [0, end - 10, 15, 1]]), end - 604800, end, end, true);
+                // Even an overdue repair refresh can wait for the scheduled poll.
+                nextHistoryRefresh = 0;
+                for (const range of [86400, 3600, 21600]) {
+                    state.range = range;
+                    reset();
+                    require(requests.length === 0, 'covered range never fetches');
+                    require(state.end === end && state.start === end - range, 'snapshot bounds');
+                    require(state.rows.length === 1 && summaryValues.low[1] === 1, 'local rows and extrema');
+                    require(!loading && !state.historyLoading && needsRefresh(), 'ready for next poll');
+                }
+                refresh();
+                require(requests.length === 1, 'next poll still fetches');
+                refresh(true, true);
+                require(requests.length === 2, 'manual refresh still fetches');
+                historyCache.coverage = [[end - 3600, end]];
+                state.range = 86400;
+                reset();
+                require(requests.length === 3, 'uncached history fetches immediately');
+                JSON.stringify(true);
+                """
+                self.assertTrue(evaluate(source))
+
     def test_pool_history_refresh_bypasses_live_cursor_for_repairs(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')

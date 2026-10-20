@@ -196,16 +196,19 @@ function updateFreshness() {
 
 const historyCache = new BrowserHistory();
 let nextHistoryRefresh = 0;
-async function refresh(force = false) {
+async function refresh(force = false, preferCache = false) {
   if (reloading) return;
   controller?.abort();
   controller = new AbortController();
   const ticket = ++generation;
   loading = true;
   const requestController = controller;
-  const end = state.zoom?.[1] ?? (state.live || !state.end ? Date.now()/1000 : state.end);
-  const start = state.zoom?.[0] ?? end - state.range;
   historyCache.expire(Date.now()/1000);
+  // View changes use the completed snapshot's endpoint. The next poll advances
+  // it to now, rather than fetching just because time passed since that snapshot.
+  const cachedEnd = preferCache && state.live ? historyCache.coverage.at(-1)?.[1] : null;
+  const end = state.zoom?.[1] ?? cachedEnd ?? (state.live || !state.end ? Date.now()/1000 : state.end);
+  const start = state.zoom?.[0] ?? end - state.range;
   const sameWindow = Math.abs((state.end - state.start) - (end - start)) < .01;
   state.start = start;
   state.end = end;
@@ -234,6 +237,7 @@ async function refresh(force = false) {
   publish(historyCache.rows);
   let timeout;
   try {
+    if (preferCache && !force && !missing.length) return;
     if (!force && !live && !missing.length && !refreshHistory) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
     const response = await fetch(`${source.endpoint}?start=${coingecko ? left : start}&end=${end}&windowStart=${start}&windowEnd=${end}&format=stream${incremental && !coingecko ? `&afterBlock=${last[2]}` : ''}`, {signal: requestController.signal});
@@ -517,7 +521,7 @@ function zoomToSelection(startPixel, endPixel) {
   state.live = false;
   writeViewUrl();
   updateViewControls();
-  refresh();
+  refresh(false, true);
 }
 
 canvas.addEventListener('pointermove', event => {
@@ -577,7 +581,7 @@ function reset() {
   state.end = 0;
   writeViewUrl();
   updateViewControls();
-  refresh();
+  refresh(false, true);
 }
 const chartPanel = $('chart-panel');
 let chartFullscreen = false;
@@ -630,7 +634,7 @@ window.addEventListener('popstate', () => {
   state.end = 0;
   updateRangeButtons();
   updateViewControls();
-  refresh();
+  refresh(false, true);
 });
 $('display-scale').addEventListener('change', event => {
   displayScale = event.target.value;
