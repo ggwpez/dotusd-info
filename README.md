@@ -50,9 +50,12 @@ The app uses Python 3.10+ and plain JavaScript. There is no frontend build step,
 and the Hub swap decoder uses `substrate-interface`. Install the runtime dependencies:
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+just setup
 ```
+
+These shortcuts require `just`. Without it, create the environment with
+`python3 -m venv .venv` and install dependencies with
+`.venv/bin/python -m pip install -r requirements.txt`.
 
 You will need a data source, though: a Prometheus instance with the pool-price
 history. The live data collector and Prometheus are not included in this repo.
@@ -62,7 +65,7 @@ both with the `clock="estimated_2s"` label.
 If Prometheus is running locally, start the chart with:
 
 ```sh
-.venv/bin/python server.py --upstream http://127.0.0.1:9090/api/v1 --no-browser
+just run --upstream http://127.0.0.1:9090/api/v1 --no-browser
 ```
 
 Then open <http://127.0.0.1:3001>. Give the server a moment to load the price
@@ -71,15 +74,15 @@ history. It needs a working data source before it can show the chart.
 If Prometheus is on another machine, connect through SSH:
 
 ```sh
-.venv/bin/python server.py --ssh-host user@host
+just run --ssh-host user@host
 ```
 
 Replace `user@host` with your SSH destination. The app forwards the remote
 machine's port 9090 and opens the chart in your browser. Running
-`.venv/bin/python server.py` without options uses the SSH alias `server`.
+`just run` without options uses the SSH alias `server`.
 
 For more options, including the listening port and archive path, run
-`.venv/bin/python server.py --help`.
+`just run --help`. All arguments are forwarded to `server.py`.
 
 ## Working on the code
 
@@ -109,12 +112,33 @@ and documentation. Add new runtime files to that list and the deployment copy li
 Run the tests from the repo root:
 
 ```sh
-python3 -m unittest discover -s tests -v
+just test
 ```
 
+`just test` uses the environment created by `just setup`; the direct equivalent
+is `.venv/bin/python -m unittest discover -s tests -v`.
 The tests run locally and do not need access to the live data collector. JavaScript
 checks use Node.js, or JavaScriptCore on macOS. If neither is available, those
 checks are skipped.
+
+## Common commands
+
+Run `just` to list the commands. Run `just setup` once before local development.
+
+| Command | Purpose |
+| --- | --- |
+| `just setup` | Create `.venv` and install dependencies |
+| `just run [options]` | Start the app locally with optional server arguments |
+| `just test` | Run the test suite |
+| `just release [patch\|minor]` | Bump the version and refresh its hash; defaults to patch |
+| `just check-version` | Verify the recorded release hash |
+| `just deploy [host]` | Check the release, run tests, and deploy this checkout |
+| `just status [host]` | Inspect the deployed service |
+| `just logs [host]` | Read its latest 50 log entries |
+
+Deployment, status, and logs default to the SSH alias `server`. Deployment
+restarts the remote service. See the [deployment guide](docs/deployment.md)
+for prerequisites and specialized backfill and repair procedures.
 
 ## Agent instructions
 
@@ -125,7 +149,7 @@ instructions here so they stay in sync.
   `just release minor` for features. Run the bump after the final code edit so
   the recorded hash matches. Include the updated `VERSION` in the same commit.
 - Before committing application changes, run `just check-version` and
-  `python3 -m unittest discover -s tests -v`. Resolve failures before committing.
+  `just test` (after `just setup`). Resolve failures before committing.
 - Add new runtime files to `RELEASE_FILES` in `release.py` and the copy list in
   `deploy/deploy.sh` so hashing and deployment include them.
 - Documentation-only changes do not need a version bump or the full test suite.

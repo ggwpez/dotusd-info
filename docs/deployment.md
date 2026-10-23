@@ -8,11 +8,21 @@ paths for your own host. In the examples, `server` is an SSH configuration alias
 replace it with your own alias or `user@host`.
 
 Before releasing application changes, run `just release`
-(or `just release minor` for features), run the tests, and commit the updated `VERSION`
+(or `just release minor` for features), run `just test`, and commit the updated `VERSION`
 with the changes. The deployment script checks the recorded hash and runs the
 suite before contacting the server; a stale release stops deployment.
 
-Run `./deploy/deploy.sh` from this checkout (optionally pass an SSH host).
+Deploy the current checkout with:
+
+```sh
+just deploy             # use the SSH alias server
+# Or choose another host:
+just deploy user@host
+```
+
+Run only the command for your intended host. This copies the local files and
+restarts the remote service. It does not commit changes or bump the version.
+Without `just`, use `./deploy/deploy.sh [host]`.
 Requires Python 3.10+, Caddy, the existing arbitrage data services, rsync, and
 passwordless sudo and `python3-venv` on the target. Deployment installs
 `requirements.txt` into `/opt/dotusd-info/.venv` for the Hub runtime decoder.
@@ -25,8 +35,9 @@ at boot. Caddy imports `/etc/caddy/sites/dotusd-info.caddy` and provides HTTPS
 for `dotusd.info`, with `www.dotusd.info` redirecting to the main domain. The deployment validates Caddy before reload, backs up the
 previous site configuration, and does not replace other sites.
 
-Inspect with `ssh server systemctl status dotusd-info` and
-`ssh server journalctl -u dotusd-info -n 50 --no-pager`.
+Inspect the deployment with `just status` and `just logs`; both accept an
+optional host, for example `just logs user@host`. Logs show the latest 50 entries
+without following the stream. Run `just` to list all common commands.
 
 ## Archive backfill
 

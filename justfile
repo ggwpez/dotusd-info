@@ -11,3 +11,28 @@ release bump='patch':
 # Verify the recorded release hash matches the application.
 check-version:
     python3 release.py --check
+
+# Create the local Python environment and install dependencies.
+setup:
+    python3 -m venv .venv
+    .venv/bin/python -m pip install -r requirements.txt
+
+# Run locally; forwards options to server.py (defaults to SSH host "server").
+run *args:
+    .venv/bin/python server.py "$@"
+
+# Run the local test suite.
+test:
+    .venv/bin/python -m unittest discover -s tests -v
+
+# Check the release, run tests, and deploy the current checkout.
+deploy host='server':
+    ./deploy/deploy.sh "$1"
+
+# Show the deployed service's status.
+status host='server':
+    ssh "$1" systemctl status dotusd-info --no-pager
+
+# Show the deployed service's latest 50 log entries.
+logs host='server':
+    ssh "$1" journalctl -u dotusd-info -n 50 --no-pager
