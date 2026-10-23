@@ -215,11 +215,12 @@ class PageTests(unittest.TestCase):
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         try:
-            # Available even while history is warming; paused tabs use this endpoint.
-            with urlopen(base + '/api/version') as response:
-                self.assertEqual(json.load(response), {'version': server.version})
-                self.assertEqual(response.headers['X-App-Version'], server.version)
-                self.assertEqual(response.headers['Cache-Control'], 'no-store')
+            # Deployment checks work even while history is warming.
+            for route in ('/version', '/api/version'):
+                with urlopen(base + route) as response:
+                    self.assertEqual(json.load(response), {'version': server.version})
+                    self.assertEqual(response.headers['X-App-Version'], server.version)
+                    self.assertEqual(response.headers['Cache-Control'], 'no-store')
             with urlopen(base) as response:
                 self.assertIn(b'Peg deviation', response.read())
                 self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])

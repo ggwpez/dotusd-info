@@ -132,12 +132,14 @@ Run `just` to list the commands. Run `just setup` once before local development.
 | `just test` | Run the test suite |
 | `just release [patch\|minor]` | Bump the version and refresh its hash; defaults to patch |
 | `just check-version` | Verify the recorded release hash |
-| `just deploy [host]` | Check the release, run tests, and deploy this checkout |
+| `just deploy [host] [version-url]` | Check, test, deploy, and verify the public version |
 | `just status [host]` | Inspect the deployed service |
 | `just logs [host]` | Read its latest 50 log entries |
 
 Deployment, status, and logs default to the SSH alias `server`. Deployment
-restarts the remote service. See the [deployment guide](docs/deployment.md)
+restarts the remote service, then checks `/version` every 5 seconds for up to
+25 seconds, returning success when it matches the expected release or an error
+on timeout. See the [deployment guide](docs/deployment.md)
 for prerequisites and specialized backfill and repair procedures.
 
 ## Agent instructions

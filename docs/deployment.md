@@ -22,7 +22,22 @@ just deploy user@host
 
 Run only the command for your intended host. This copies the local files and
 restarts the remote service. It does not commit changes or bump the version.
-Without `just`, use `./deploy/deploy.sh [host]`.
+After the remote setup and health checks, deployment polls the public `/version`
+endpoint immediately, then every 5 seconds for up to 25 seconds. It returns
+success as soon as the JSON `version` matches the local `VERSION` captured before
+deployment. If the deadline expires, it exits with an error showing the last
+version mismatch or request failure. This 25-second limit applies to the final
+verification, not file transfer, dependency installation, or service startup.
+
+For another domain, pass its version URL explicitly:
+
+```sh
+just deploy user@host https://example.org/version
+```
+
+Without `just`, use `./deploy/deploy.sh [host] [version-url]`. Public verification
+requires `curl` locally. A verification failure does not roll back the deployment;
+inspect `just status` and `just logs` before retrying.
 Requires Python 3.10+, Caddy, the existing arbitrage data services, rsync, and
 passwordless sudo and `python3-venv` on the target. Deployment installs
 `requirements.txt` into `/opt/dotusd-info/.venv` for the Hub runtime decoder.

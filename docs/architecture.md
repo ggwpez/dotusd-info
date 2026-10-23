@@ -95,7 +95,7 @@ At startup the server snapshots those files and combines the recorded release
 number with their actual hash. This keeps browser reload detection working even
 while local edits have made the recorded hash stale. The footer shows this same
 version on both chart pages. Responses carry `X-App-Version`,
-and `/api/version` returns the version even while price history is warming up.
+and `/version` (also available at `/api/version`) returns the version even while price history is warming up.
 The client checks this header before decoding price responses and reloads the
 current URL on a mismatch, preserving the linked range/zoom. Live polling checks
 the version through its price responses; there are no separate version requests.

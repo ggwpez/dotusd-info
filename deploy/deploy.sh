@@ -2,7 +2,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 host=${1:-server}
-python3 release.py --check
+expected_version=$(python3 release.py --check)
+printf 'Deploying %s\n' "$expected_version"
 python3 -m unittest discover -s tests -v
 ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
 rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' VERSION release.py server.py gap_repair.py archive_reader.py hub_quotes.py requirements.txt backfill.py backfill_quotes.py publish_archive.py about-dotusd.html coingecko-details.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
@@ -46,3 +47,5 @@ fi
 systemctl is-active dotusd-info caddy arb-peg arb-prometheus
 systemctl is-enabled dotusd-info
 REMOTE
+
+python3 deploy/check_version.py "$expected_version" "${2:-https://dotusd.info/version}"

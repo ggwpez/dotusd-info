@@ -746,7 +746,7 @@ class CacheServer(HTTPServer):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
-        if url.path == '/api/version':
+        if url.path in ('/version', '/api/version'):
             self.respond(200, {'version': self.server.version})
             return
         if url.path in ('/api/prices', '/api/coingecko/prices'):

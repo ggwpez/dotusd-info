@@ -25,9 +25,9 @@ run *args:
 test:
     .venv/bin/python -m unittest discover -s tests -v
 
-# Check the release, run tests, and deploy the current checkout.
-deploy host='server':
-    ./deploy/deploy.sh "$1"
+# Deploy and wait up to 25 seconds for the public version to match.
+deploy host='server' version_url='https://dotusd.info/version':
+    ./deploy/deploy.sh "$1" "$2"
 
 # Show the deployed service's status.
 status host='server':
