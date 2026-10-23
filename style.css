@@ -36,3 +36,9 @@ footer a{color:#a7b8cf}footer p:first-child:not(.disclaimer){text-align:left}
 .summary>div{min-width:0}body[data-display-scale=dollars] .primary .value{font-size:36px}body[data-display-scale=percent] .primary .value{font-size:38px}@media(max-width:800px){body[data-display-scale=dollars] .primary .value{font-size:28px;letter-spacing:-1px}body[data-display-scale=percent] .primary .value{font-size:28px;letter-spacing:-1px}.primary .unit{margin-left:5px;font-size:17px}}
 
 .settings>summary{display:flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:8px}
+
+.site-footer{display:flex;flex-direction:column;gap:18px;margin-top:32px;padding:24px 0 8px;border-top:1px solid #252a33}
+.footer-meta,.footer-links{display:flex;align-items:center;gap:24px}.footer-meta{justify-content:space-between;flex-wrap:wrap}.footer-links{flex-wrap:wrap;gap:16px 24px}
+.site-footer p{text-align:left}.site-footer a{text-decoration:none}.site-footer a:hover{color:#f1c4d9;text-decoration:underline}.site-footer a:focus-visible{outline:2px solid #ec83b1;outline-offset:4px;border-radius:2px}
+.site-footer .footer-brand{font-size:13px;font-weight:600;color:#dce1e9}.app-version{color:#9ba5b5}.app-version code{font-size:11px}
+.site-footer .disclaimer{max-width:none;margin:0;text-align:left;font-size:11px;color:#9ba5b5}

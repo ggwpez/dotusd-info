@@ -59,7 +59,9 @@ def load_release():
                                            'Finalized swaps and reserves; no exchange or CoinGecko API. '
                                            'Checked every 6 seconds; samples use finalized block timestamps.'),
     }
-    template = assets['index.html']
+    template = assets['index.html'].replace(
+        b'__APP_VERSION__', version.encode()).replace(
+        b'__SHORT_VERSION__', version[:12].encode())
     for name, values in pages.items():
         details = (files['coingecko-details.html'] if name == 'coingecko.html' else
                    b'<section class="explain-grid" aria-label="About dotUSD">\n__ABOUT_DOTUSD__\n</section>')
