@@ -7,8 +7,8 @@ the existing dotusd.info installation; adapt the domain, service names, and data
 paths for your own host. In the examples, `server` is an SSH configuration alias;
 replace it with your own alias or `user@host`.
 
-Before releasing application changes, run `python3 release.py --bump patch`
-(or `--bump minor` for features), run the tests, and commit the updated `VERSION`
+Before releasing application changes, run `just release`
+(or `just release minor` for features), run the tests, and commit the updated `VERSION`
 with the changes. The deployment script checks the recorded hash and runs the
 suite before contacting the server; a stale release stops deployment.
 

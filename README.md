@@ -92,9 +92,13 @@ its SHA-256 code/asset hash, for example `1.0.0+abcdef123456`. After finishing
 application changes, bump the version and refresh the hash together:
 
 ```sh
-python3 release.py --bump patch  # fixes; use --bump minor for new features
-python3 release.py --check
+just release        # patch bump for fixes
+just release minor  # minor bump for new features
+just check-version
 ```
+
+These commands require `just`; without it, use `python3 release.py --bump patch`
+(or `--bump minor`) and `python3 release.py --check`.
 
 Minor bumps reset the patch number to zero. Commit `VERSION` with the changes.
 Tests and deployment reject stale release hashes. The hash covers the files in
