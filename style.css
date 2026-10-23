@@ -37,8 +37,10 @@ footer a{color:#a7b8cf}footer p:first-child:not(.disclaimer){text-align:left}
 
 .settings>summary{display:flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:8px}
 
-.site-footer{display:flex;flex-direction:column;gap:18px;margin-top:32px;padding:24px 0 8px;border-top:1px solid #252a33}
-.footer-links{display:flex;align-items:center;flex-wrap:wrap;gap:16px 24px}
+.site-footer{display:flex;flex-direction:row;align-items:flex-start;justify-content:space-between;gap:32px;margin-top:32px;padding:24px 0 8px;border-top:1px solid #252a33}
+.footer-copy{flex:1;min-width:0;max-width:960px;display:flex;flex-direction:column;gap:12px}
+.footer-links{display:flex;align-items:center;flex-shrink:0;gap:24px;line-height:1.8;white-space:nowrap}
 .site-footer p{text-align:left}.site-footer a{text-decoration:none}.site-footer a:hover{color:#f1c4d9;text-decoration:underline}.site-footer a:focus-visible{outline:2px solid #ec83b1;outline-offset:4px;border-radius:2px}
 .app-version{color:#9ba5b5}.app-version code{font-size:11px}
 .site-footer .disclaimer{max-width:none;margin:0;text-align:left;font-size:11px;color:#9ba5b5}
+@media(max-width:800px){.site-footer{flex-direction:column;gap:18px}.footer-links{flex-wrap:wrap;gap:16px 24px}}
