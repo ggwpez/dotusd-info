@@ -116,6 +116,31 @@ The tests run locally and do not need access to the live data collector. JavaScr
 checks use Node.js, or JavaScriptCore on macOS. If neither is available, those
 checks are skipped.
 
+## Agent instructions
+
+`AGENTS.md` is a relative symlink to this README. Keep contributor and agent
+instructions here so they stay in sync.
+
+- After completing application changes, run `just release` for fixes or
+  `just release minor` for features. Run the bump after the final code edit so
+  the recorded hash matches. Include the updated `VERSION` in the same commit.
+- Before committing application changes, run `just check-version` and
+  `python3 -m unittest discover -s tests -v`. Resolve failures before committing.
+- Add new runtime files to `RELEASE_FILES` in `release.py` and the copy list in
+  `deploy/deploy.sh` so hashing and deployment include them.
+- Documentation-only changes do not need a version bump or the full test suite.
+  Verify links and `just check-version` instead.
+- Never use `/` in Git branch names; use hyphens, such as
+  `fix-footer-version`.
+- Create a commit after each completed change. Commit only task-related changes
+  and preserve unrelated work. Disable signing with
+  `git -c commit.gpgsign=false commit --no-gpg-sign`.
+- Do not add `Signed-off-by` or `Co-authored-by` trailers. Verify the resulting
+  commit message because local hooks may append them, and remove any such
+  trailers from your new commit.
+- For printing tasks, use 97% scaling unless explicitly requested otherwise,
+  and ensure the print pipeline does not apply additional automatic fitting.
+
 ## More details
 
 - [How it works](docs/architecture.md): data loading, caching, and the price API.
