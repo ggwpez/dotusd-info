@@ -87,6 +87,21 @@ The backend lives in `server.py`. The chart is built from `index.html`, `app.js`
 `ranges.js`, and `style.css`. Restart the server after editing these files, since
 it loads them once at startup.
 
+The checked-in `VERSION` contains the release number and the first six bytes of
+its SHA-256 code/asset hash, for example `1.0.0+abcdef123456`. After finishing
+application changes, bump the version and refresh the hash together:
+
+```sh
+python3 release.py --bump patch  # fixes; use --bump minor for new features
+python3 release.py --check
+```
+
+Minor bumps reset the patch number to zero. Commit `VERSION` with the changes.
+Tests and deployment reject stale release hashes. The hash covers the files in
+`release.py`'s `RELEASE_FILES`, including runtime dependencies and the release
+script itself; it excludes `VERSION` to avoid a circular hash, and excludes tests
+and documentation. Add new runtime files to that list and the deployment copy list.
+
 Run the tests from the repo root:
 
 ```sh

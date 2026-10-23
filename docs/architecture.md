@@ -88,8 +88,13 @@ CSP hashes authorize exactly those embedded scripts and styles. Source files rem
 separate for development. The price request also checks the release version,
 avoiding a separate startup version request.
 
-At startup the server snapshots its assets and hashes the server, archive reader,
-HTML, JavaScript (including the range module), and CSS into a release version. Responses carry `X-App-Version`,
+`VERSION` records a release such as `1.0.0+abcdef123456`. The release script
+bumps the minor or patch number and records a 12-character SHA-256 prefix of
+`RELEASE_FILES`; tests require that prefix to match the current files.
+At startup the server snapshots those files and combines the recorded release
+number with their actual hash. This keeps browser reload detection working even
+while local edits have made the recorded hash stale. The footer shows this same
+version on both chart pages. Responses carry `X-App-Version`,
 and `/api/version` returns the version even while price history is warming up.
 The client checks this header before decoding price responses and reloads the
 current URL on a mismatch, preserving the linked range/zoom. Live polling checks

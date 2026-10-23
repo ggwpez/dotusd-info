@@ -2,9 +2,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 host=${1:-server}
+python3 release.py --check
 python3 -m unittest discover -s tests -v
 ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
-rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' server.py gap_repair.py archive_reader.py hub_quotes.py requirements.txt backfill.py backfill_quotes.py publish_archive.py about-dotusd.html coingecko-details.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
+rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' VERSION release.py server.py gap_repair.py archive_reader.py hub_quotes.py requirements.txt backfill.py backfill_quotes.py publish_archive.py about-dotusd.html coingecko-details.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
 rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' deploy/dotusd-info.service deploy/dotusd-info.caddy "$host:/opt/dotusd-info/deploy/"
 ssh "$host" 'sudo -n sh -s' <<'REMOTE'
 set -eu

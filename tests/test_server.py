@@ -67,7 +67,7 @@ class PageTests(unittest.TestCase):
             thread.join()
 
     def test_release_version_tracks_code_and_freezes_assets(self):
-        names = ('server.py', 'gap_repair.py', 'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py', 'about-dotusd.html', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')
+        names = (*page.read_sources().keys(), 'VERSION')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in names:
@@ -86,7 +86,8 @@ class PageTests(unittest.TestCase):
                 try:
                     for name in names:
                         original = (root / name).read_bytes()
-                        (root / name).write_bytes(original + b'\n')
+                        (root / name).write_bytes(
+                            b'999.0.0+' + original.split(b'+')[1] if name == 'VERSION' else original + b'\n')
                         self.assertNotEqual(page.load_release()[0], version, name)
                         self.assertEqual(server.version, version)
                         self.assertEqual(server.assets, assets)

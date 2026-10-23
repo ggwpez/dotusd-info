@@ -24,6 +24,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from release import read_sources, read_version, source_hash
+
 ROOT = Path(__file__).resolve().parent
 HISTORY_SECONDS = 7 * 86400
 MAX_SAMPLES = 350000
@@ -34,12 +36,8 @@ SUMMARY_SAMPLES = 256
 
 def load_release():
     """Freeze assets and their version together until the server restarts."""
-    files = {name: (ROOT / name).read_bytes() for name in
-             ('server.py', 'gap_repair.py', 'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py', 'about-dotusd.html', 'coingecko-details.html', 'index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
-    digest = hashlib.sha256()
-    for name, body in files.items():
-        digest.update(name.encode() + b'\0' + body + b'\0')
-    version = digest.hexdigest()
+    files = read_sources(ROOT)
+    version = read_version(ROOT).split('+')[0] + '+' + source_hash(files)
     assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(
@@ -61,7 +59,7 @@ def load_release():
     }
     template = assets['index.html'].replace(
         b'__APP_VERSION__', version.encode()).replace(
-        b'__SHORT_VERSION__', version[:12].encode())
+        b'__SHORT_VERSION__', version.encode())
     for name, values in pages.items():
         details = (files['coingecko-details.html'] if name == 'coingecko.html' else
                    b'<section class="explain-grid" aria-label="About dotUSD">\n__ABOUT_DOTUSD__\n</section>')
