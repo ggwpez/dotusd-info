@@ -25,7 +25,7 @@ run *args:
 test:
     .venv/bin/python -m unittest discover -s tests -v
 
-# Deploy and wait up to 25 seconds for the public version to match.
+# Require a newer version, deploy, and verify it publicly within 25 seconds.
 deploy host='server' version_url='https://dotusd.info/version':
     ./deploy/deploy.sh "$1" "$2"
 

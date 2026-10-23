@@ -2,7 +2,9 @@
 set -eu
 cd "$(dirname "$0")/.."
 host=${1:-server}
+version_url=${2:-https://dotusd.info/version}
 expected_version=$(python3 release.py --check)
+python3 deploy/check_version.py --before-deploy "$expected_version" "$version_url"
 printf 'Deploying %s\n' "$expected_version"
 python3 -m unittest discover -s tests -v
 ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
@@ -48,4 +50,4 @@ systemctl is-active dotusd-info caddy arb-peg arb-prometheus
 systemctl is-enabled dotusd-info
 REMOTE
 
-python3 deploy/check_version.py "$expected_version" "${2:-https://dotusd.info/version}"
+python3 deploy/check_version.py "$expected_version" "$version_url"

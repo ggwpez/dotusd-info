@@ -10,7 +10,15 @@ replace it with your own alias or `user@host`.
 Before releasing application changes, run `just release`
 (or `just release minor` for features), run `just test`, and commit the updated `VERSION`
 with the changes. The deployment script checks the recorded hash and runs the
-suite before contacting the server; a stale release stops deployment.
+suite before changing the server; a stale release stops deployment. Before
+transferring files or restarting services, it also checks the public version and
+requires the local MAJOR.MINOR.PATCH number to be strictly newer. The same number
+with a different hash is refused, as are older versions. If the deployed version
+cannot be read or parsed, deployment stops without changing the server.
+
+The preflight uses the existing `/api/version` alias when the verification URL
+is `/version`, so it also works before the new route has been deployed. Custom
+endpoint paths are used as supplied. The post-deployment check uses `/version`.
 
 Deploy the current checkout with:
 

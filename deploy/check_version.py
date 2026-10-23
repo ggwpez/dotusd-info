@@ -2,8 +2,48 @@
 """Wait up to 25 seconds for the public site to serve the expected release."""
 import argparse
 import json
+import re
 import subprocess
 import time
+from urllib.parse import urlsplit, urlunsplit
+
+
+
+def fetch_version(url, timeout=5):
+    # curl's total timeout also bounds DNS, TLS, and slow response bodies.
+    result = subprocess.run(
+        ['curl', '--fail', '--silent', '--show-error', '--max-time',
+         str(min(5, timeout)), '--header', 'Cache-Control: no-cache', url],
+        capture_output=True, text=True, timeout=timeout, check=True)
+    payload = json.loads(result.stdout)
+    actual = payload.get('version') if isinstance(payload, dict) else None
+    if not isinstance(actual, str):
+        raise ValueError('Response has no version string')
+    return actual
+
+
+def version_number(version):
+    match = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+[0-9a-f]{12}', version)
+    if not match:
+        raise ValueError(f'Invalid release version: {version!r}')
+    return tuple(map(int, match.groups()))
+
+
+def require_newer_version(expected, url):
+    # The existing alias also works on releases predating the /version route.
+    parts = urlsplit(url)
+    if parts.path == '/version':
+        url = urlunsplit(parts._replace(path='/api/version'))
+    try:
+        actual = fetch_version(url)
+        local_number, remote_number = version_number(expected), version_number(actual)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        raise ValueError(f'Cannot verify deployed version at {url}; refusing deployment: {error}') from error
+    if local_number <= remote_number:
+        raise ValueError(
+            f'Refusing deployment: local {expected} must be newer than deployed {actual}. '
+            'Run `just release` or `just release minor`, then commit VERSION with the changes.')
+    print(f'Version upgrade verified: {actual} -> {expected}', flush=True)
 
 
 def wait_for_version(expected, url):
@@ -15,15 +55,7 @@ def wait_for_version(expected, url):
         if remaining <= 0:
             break
         try:
-            # curl's total timeout also bounds DNS, TLS, and slow response bodies.
-            result = subprocess.run(
-                ['curl', '--fail', '--silent', '--show-error', '--max-time',
-                 str(min(5, remaining)), '--header', 'Cache-Control: no-cache', url],
-                capture_output=True, text=True, timeout=remaining, check=True)
-            payload = json.loads(result.stdout)
-            actual = payload.get('version') if isinstance(payload, dict) else None
-            if not isinstance(actual, str):
-                raise ValueError('Response has no version string')
+            actual = fetch_version(url, remaining)
             if actual == expected:
                 print(f'Deployed {expected}: verified at {url}', flush=True)
                 return
@@ -45,10 +77,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('expected', help='version recorded before deployment')
     parser.add_argument('url', nargs='?', default='https://dotusd.info/version')
+    parser.add_argument('--before-deploy', action='store_true', help='refuse unchanged or older version numbers')
     args = parser.parse_args()
     try:
-        wait_for_version(args.expected, args.url)
-    except TimeoutError as error:
+        if args.before_deploy:
+            require_newer_version(args.expected, args.url)
+        else:
+            wait_for_version(args.expected, args.url)
+    except (TimeoutError, ValueError) as error:
         parser.exit(1, f'{error}\n')
 
 

@@ -137,7 +137,8 @@ Run `just` to list the commands. Run `just setup` once before local development.
 | `just logs [host]` | Read its latest 50 log entries |
 
 Deployment, status, and logs default to the SSH alias `server`. Deployment
-restarts the remote service, then checks `/version` every 5 seconds for up to
+requires a version number newer than the deployed one (a changed hash alone is
+not enough), restarts the remote service, then checks `/version` every 5 seconds for up to
 25 seconds, returning success when it matches the expected release or an error
 on timeout. See the [deployment guide](docs/deployment.md)
 for prerequisites and specialized backfill and repair procedures.
@@ -150,6 +151,8 @@ instructions here so they stay in sync.
 - After completing application changes, run `just release` for fixes or
   `just release minor` for features. Run the bump after the final code edit so
   the recorded hash matches. Include the updated `VERSION` in the same commit.
+- Deployment refuses unchanged or older version numbers and stops if the public
+  version cannot be verified. Bump the version before redeploying.
 - Before committing application changes, run `just check-version` and
   `just test` (after `just setup`). Resolve failures before committing.
 - Add new runtime files to `RELEASE_FILES` in `release.py` and the copy list in
