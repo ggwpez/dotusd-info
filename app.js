@@ -99,7 +99,7 @@ function ratingBand(index) {
 }
 function applyScale() {
   $('display-scale').value = displayScale;
-  $('axis-scale').value = axisScale;
+  $('axis-scale').checked = axisScale === 'log';
   document.body.dataset.displayScale = displayScale;
   $('metric-label').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Price deviation';
   $('metric-unit').textContent = displayScale === 'bps' ? 'bps' : displayScale === 'percent' ? '%' : '';
@@ -725,7 +725,7 @@ $('display-scale').addEventListener('change', event => {
   applyScale();
 });
 $('axis-scale').addEventListener('change', event => {
-  axisScale = event.target.value;
+  axisScale = event.target.checked ? 'log' : 'linear';
   try { localStorage.setItem('dotusd-axis-scale', axisScale); } catch {}
   applyScale();
 });

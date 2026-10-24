@@ -60,8 +60,8 @@ price-path rendering, respects data gaps, and follows the current zoom and
 vertical scale. Clear portions, the center tick label, and the faint grid remain
 visible; an empty chart retains the full reference.
 
-Settings separates display units from the Y-axis mapping. Linear is the default;
-Logarithmic uses `sign(bps) * log1p(abs(bps))` (a one-basis-point soft knee)
+Settings provides a **Log scale** checkbox, off by default for a linear Y-axis.
+When checked, it uses `sign(bps) * log1p(abs(bps))` (a one-basis-point soft knee)
 symmetrically around the peg, including zero and negative deviations. This is
 log scaling of deviation, not log scaling of the absolute dollar price. Tick
 labels remain in the selected units; prices, ratings, and tooltip values are
