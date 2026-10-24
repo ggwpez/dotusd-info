@@ -393,15 +393,35 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   ctx.lineCap = 'round';
   ctx.beginPath();
   let previous;
-  let overlapsPeg = false, previousOffset;
-  const pegY = y(0);
+  const peg = new Path2D(), pegY = y(0);
+  let pegCursor = left, previousOffset, previousX;
+  function excludePeg(start, end) {
+    start = Math.max(left, start - 2);
+    end = Math.min(right, end + 2);
+    if (start > pegCursor) {
+      peg.moveTo(pegCursor, pegY);
+      peg.lineTo(start, pegY);
+    }
+    pegCursor = Math.max(pegCursor, end);
+  }
   // Draw range endpoints, preserving pixel extrema and every real block gap.
   for (const {row, move} of pixelRows(state.rows, x, connectSamples)) {
     const px = x(row[0]), py = y((row[1] - 1) * 10000);
     const offset = py - pegY;
-    // Screen-space clearance also works for zero variance and at every zoom.
-    if (Math.abs(offset) <= 2 || (!move && offset * previousOffset <= 0)) overlapsPeg = true;
+    // Cut only where the price stroke enters a two-pixel band around the peg.
+    // The shaded area never participates in this intersection calculation.
+    if (move) {
+      if (Math.abs(offset) <= 2) excludePeg(px, px);
+    } else if (offset === previousOffset) {
+      if (Math.abs(offset) <= 2) excludePeg(previousX, px);
+    } else {
+      const a = (-2 - previousOffset) / (offset - previousOffset);
+      const b = (2 - previousOffset) / (offset - previousOffset);
+      const start = Math.max(0, Math.min(a, b)), end = Math.min(1, Math.max(a, b));
+      if (start <= end) excludePeg(previousX + (px - previousX) * start, previousX + (px - previousX) * end);
+    }
     previousOffset = offset;
+    previousX = px;
     if (move) {
       if (previous) {
         area.lineTo(x(previous[0]), y(0));
@@ -439,7 +459,11 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
     }
   }
   ctx.restore();
-  return overlapsPeg;
+  if (pegCursor < right) {
+    peg.moveTo(pegCursor, pegY);
+    peg.lineTo(right, pegY);
+  }
+  return peg;
 }
 
 function drawOverlay({left, right, top, bottom, x, y}, width, height) {
@@ -523,16 +547,11 @@ function draw() {
     const y = value => bottom - (value + extent) / (2 * extent) * (bottom - top);
     geometry = {left, right, top, bottom, x, y};
     drawGrid(geometry, rect.width, ticks);
-    const overlapsPeg = drawPrices(geometry, extent, high, low);
-    if (!overlapsPeg) {
-      ctx.setLineDash([]);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 0.6;
-      ctx.beginPath();
-      ctx.moveTo(left, y(0));
-      ctx.lineTo(right, y(0));
-      ctx.stroke();
-    }
+    const peg = drawPrices(geometry, extent, high, low);
+    ctx.setLineDash([]);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 0.6;
+    ctx.stroke(peg);
 
     if (backing.width !== width || backing.height !== height) {
       backing.width = width;

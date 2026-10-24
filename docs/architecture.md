@@ -53,11 +53,12 @@ remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
 ## Browser loading
 
-The renderer hides the white center (peg) reference whenever a drawn price
-segment crosses it or a price point lies within two CSS pixels of it. Detection
-runs alongside price-path rendering, respects data gaps, and follows the current
-zoom and vertical scale. The center tick label and faint grid remain visible;
-the white reference returns when prices are clear of it, or the chart is empty.
+The white center (peg) reference is interrupted only where the price stroke
+enters a two-CSS-pixel band around it, with two pixels of horizontal clearance.
+The shaded fill never hides the reference. Intersection detection runs alongside
+price-path rendering, respects data gaps, and follows the current zoom and
+vertical scale. Clear portions, the center tick label, and the faint grid remain
+visible; an empty chart retains the full reference.
 
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a

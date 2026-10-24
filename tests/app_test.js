@@ -53,8 +53,9 @@ class URLSearchParams {
 }
 class ResizeObserver { observe() {} }
 class Path2D {
-  moveTo(...args) { drawing.push(['path', 'moveTo', ...args]); }
-  lineTo(...args) { drawing.push(['path', 'lineTo', ...args]); }
+  constructor() { this.segments = []; }
+  moveTo(...args) { this.segments.push(['moveTo', ...args]); drawing.push(['path', 'moveTo', ...args]); }
+  lineTo(...args) { this.segments.push(['lineTo', ...args]); drawing.push(['path', 'lineTo', ...args]); }
   closePath() { drawing.push(['path', 'closePath']); }
 }
 const requestAnimationFrame = () => 1;
@@ -113,22 +114,28 @@ function checkApp() {
   chartDirty = true;
   draw();
   assert(tip.hidden, 'empty chart hides the tooltip');
-  function checkPeg(ranges, visible, message) {
+  function checkPeg(ranges, checks, message) {
     state.rows = RangeSeries.fromWire(ranges);
     state.extremes = null;
     chartDirty = true;
     drawing.length = 0;
     draw();
-    assert(drawing.some(call => call[1] === 'strokeStyle' && call[2] === '#ffffff') === visible, message);
+    const peg = drawing.find(call => call[1] === 'stroke' && call[2] instanceof Path2D)[2];
+    for (const [time, visible] of checks) {
+      const px = geometry.x(time);
+      const drawn = peg.segments.some((segment, i) =>
+        segment[0] === 'lineTo' && peg.segments[i - 1][1] <= px && px <= segment[1]);
+      assert(drawn === visible, `${message} at ${time}`);
+    }
   }
-  checkPeg([[110, 1, 1], [1, 20, 1, 1]], false, 'flat peg prices hide the white line');
-  checkPeg([[110, 1, 1.000001]], false, 'subpixel proximity hides the white line');
-  checkPeg([[110, 1, .9999], [1, 20, 1, 1.0001]], false, 'connected crossing hides the white line');
-  checkPeg([[110, 1, 1.0001], [1, 20, 1, 1.0002]], true, 'separated prices retain the white line');
+  checkPeg([[110, 1, 1], [1, 20, 1, 1]], [[105, true], [120, false], [150, true]], 'flat stroke masks only its own span');
+  checkPeg([[110, 1, 1.000001]], [[105, true], [110, false], [150, true]], 'near-peg point masks locally');
+  checkPeg([[110, 1, .9999], [1, 20, 1, 1.0001]], [[112, true], [120, false], [128, true]], 'crossing leaves reference visible on both sides');
+  checkPeg([[110, 1, 1.0001], [1, 20, 1, 1.0002]], [[105, true], [120, true], [150, true]], 'fill does not mask reference');
   if (!coingecko) {
-    checkPeg([[110, 1, .9999], [0, 130, 5, 1.0001]], true, 'a block gap is not a crossing');
+    checkPeg([[110, 1, .9999], [0, 130, 5, 1.0001]], [[120, true]], 'a block gap is not a crossing');
   }
-  checkPeg([], true, 'empty chart retains the peg reference');
+  checkPeg([], [[105, true], [150, true], [195, true]], 'empty chart retains reference');
   // Returning traces also supports comparisons against the pre-refactor renderer.
   return {initialDraw, hoverDraw, zoom: state.zoom};
 }
