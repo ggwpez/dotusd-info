@@ -74,6 +74,9 @@ Changing units or the log checkbox writes `scale=bps|percent|dollars` and
 Valid URL values override browser preferences on load; missing or invalid
 values fall back to preferences. Back/Forward restores both scale settings;
 scale-only navigation redraws cached data without refetching history.
+In dollar-price mode, the redundant spot-price summary is hidden with
+`visibility: hidden`, preserving its space and the surrounding layout. It remains
+visible in basis-point and percent modes.
 
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a
