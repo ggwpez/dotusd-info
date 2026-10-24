@@ -101,6 +101,11 @@ both charts retry the displayed history once per minute only while it contains k
 (missing pool block numbers or quote timestamp gaps over 900 seconds). Complete history
 does not periodically reload; live polls continue fetching new samples.
 Switching views reuses already fetched data. No samples are downsampled.
+Live navigation reuses a completed cache endpoint only when it is within the
+source's fetch-freshness threshold. Older or absent coverage triggers an immediate
+request against the current live window and displays “Loading live prices…”
+until completion, rather than treating historical samples as delayed live data.
+Completed responses still report genuine stale prices or connection failures.
 Hover redraws are coalesced per animation frame and reuse canvas buffers.
 Caddy flushes upstream responses immediately.
 Caddy compresses even streamed JSON responses with unknown lengths. Static files

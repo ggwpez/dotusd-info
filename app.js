@@ -55,6 +55,7 @@ const state = {
   error: null,
   fetchedAt: null,
   historyLoading: false,
+  liveLoading: false,
   serverWarming: false,
   extremes: null,
 };
@@ -206,6 +207,7 @@ function updateFreshness() {
   if (!state.live || state.zoom) status('Historical view', 'paused');
   else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
   else if (state.error) status(`Connection error${sampleAge}`, 'error');
+  else if (state.liveLoading) status('Loading live prices…', 'loading');
   else if (!last) status(coingecko ? 'Waiting for finalized Hub prices' : 'Waiting for finalized prices', 'stale');
   else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
@@ -239,9 +241,12 @@ async function refresh(force = false, preferCache = false) {
   // Keep the completed snapshot intact during local navigation. Polls advance
   // both its endpoint and its retention boundary together.
   if (!preferCache) historyCache.expire(Date.now()/1000);
-  // View changes use the completed snapshot's endpoint. The next poll advances
-  // it to now, rather than fetching just because time passed since that snapshot.
-  const cachedEnd = preferCache && state.live ? historyCache.coverage.at(-1)?.[1] : null;
+  // Only recent snapshots can satisfy live navigation without a new request.
+  const latestCoverage = historyCache.coverage.at(-1)?.[1];
+  const recentSnapshot = Number.isFinite(latestCoverage) &&
+    Date.now()/1000 - latestCoverage <= source.staleFetch;
+  state.liveLoading = state.live && !state.zoom && !recentSnapshot;
+  const cachedEnd = preferCache && state.live && recentSnapshot ? latestCoverage : null;
   let end = state.zoom?.[1] ?? cachedEnd ?? (state.live || !state.end ? Date.now()/1000 : state.end);
   let start = state.zoom?.[0] ?? end - state.range;
   const sameWindow = Math.abs((state.end - state.start) - (end - start)) < .01;
@@ -330,6 +335,7 @@ async function refresh(force = false, preferCache = false) {
     clearTimeout(timeout);
     if (ticket === generation) {
       loading = false;
+      state.liveLoading = false;
       state.historyLoading = historyCache.missing(start, end).length > 0;
       // A complete response can contain live prices while older history is still
       // loading or unavailable. Archive readiness must not hide the live metric.

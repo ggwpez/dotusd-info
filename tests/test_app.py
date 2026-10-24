@@ -85,6 +85,73 @@ class AppTests(unittest.TestCase):
                 """
                 self.assertTrue(evaluate(source, asynchronous=True))
 
+    def test_return_to_live_waits_for_current_snapshot(self):
+        for price_source in ('pool', 'coingecko'):
+            with self.subTest(price_source=price_source):
+                source = (ROOT / 'tests/app_test.js').read_text()
+                source += f'\ndocument.body.dataset.priceSource = "{price_source}";'
+                source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+                source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+                source += r"""
+                function require(value, message) { if (!value) throw new Error(message); }
+                class AbortController { constructor() { this.signal = {}; } abort() {} }
+                const setTimeout = () => 1, clearTimeout = () => {};
+                const performance = {now: () => 100};
+                const now = Date.now()/1000;
+                Date.now = () => now * 1000;
+                let respond, pending;
+                const requests = [];
+                const fetch = url => {
+                    requests.push(url);
+                    return new Promise(resolve => { respond = resolve; });
+                };
+                readPriceStream = async function* (response) {
+                    for (const message of response.messages) yield message;
+                };
+                const originalRefresh = refresh;
+                refresh = (...args) => pending = originalRefresh(...args);
+                writeViewUrl = () => {};
+                (async () => {
+                    reloading = false;
+                    for (const outcome of ['fresh', 'stale', 'error']) {
+                        historyCache.coverage = [];
+                        historyCache.rows = new RangeSeries();
+                        const oldEnd = now - 13373;
+                        historyCache.merge(RangeSeries.fromWire([[oldEnd - 2, 10, 1]]),
+                            oldEnd - 86400, oldEnd, now, true);
+                        state.range = 86400;
+                        state.live = false;
+                        state.zoom = [oldEnd - 86400, oldEnd];
+                        state.rows = historyCache.rows;
+                        const previousRequests = requests.length;
+                        reset();
+                        require(requests.length === previousRequests + 1 && loading, 'return to live fetches immediately');
+                        require(state.end === now, 'live window does not use the historical endpoint');
+                        require(elements.get('status').textContent === 'Loading live prices…',
+                            'historical samples are not reported as delayed live data');
+                        if (outcome === 'error') {
+                            respond({ok: false, headers: {get: () => APP_VERSION},
+                                json: async () => ({error: 'RPC unavailable'})});
+                        } else {
+                            respond({ok: true, headers: {get: key =>
+                                key === 'X-History-End' ? String(now) : APP_VERSION}, messages: [
+                                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                                {ranges: [[outcome === 'fresh' ? now - 2 : oldEnd, 11, 1]]},
+                                {done: true},
+                            ]});
+                        }
+                        await pending;
+                        require(!state.liveLoading, 'completion clears live loading');
+                        const statusText = elements.get('status').textContent;
+                        require(outcome === 'fresh' ? statusText.startsWith('Live ~2s') :
+                            outcome === 'stale' ? statusText.startsWith('Data delayed') :
+                            statusText.startsWith('Connection error'), 'completed response reports its real freshness');
+                    }
+                    return true;
+                })();
+                """
+                self.assertTrue(evaluate(source, asynchronous=True))
+
     def test_cached_range_changes_wait_for_poll(self):
         for price_source in ('pool', 'coingecko'):
             with self.subTest(price_source=price_source):
