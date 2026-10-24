@@ -69,6 +69,11 @@ unchanged. Geometry and gradient stops share the transform. The axis preference
 is saved in `dotusd-axis-scale` in browser local storage and switching it redraws
 cached data without fetching history.
 The settings menu closes on clicks outside it; clicks on its controls keep it open.
+Changing units or the log checkbox writes `scale=bps|percent|dollars` and
+`axis=linear|log` into the chart URL, preserving the selected range and zoom.
+Valid URL values override browser preferences on load; missing or invalid
+values fall back to preferences. Back/Forward restores both scale settings;
+scale-only navigation redraws cached data without refetching history.
 
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a

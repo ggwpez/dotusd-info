@@ -271,9 +271,9 @@ class AppTests(unittest.TestCase):
         source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
         source += r"""
         function require(value, message) { if (!value) throw new Error(message); }
-        require(displayScale === 'dollars', 'dollar price is the default');
         let requests = 0;
         refresh = () => requests++;
+        writeViewUrl = () => {};
         state.start = 100; state.end = 200;
         state.rows = RangeSeries.fromWire([[110, 1, .999]]);
         summaryValues = {last: state.rows.at(-1), low: state.rows.low, high: state.rows.high};

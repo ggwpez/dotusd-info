@@ -36,7 +36,10 @@ function linkedView() {
     params.get('start').trim() !== '' && params.get('end').trim() !== '' &&
     Number.isFinite(start) && Number.isFinite(end) && start >= 0 &&
     end - start >= 1 && end - start <= 604800 && end <= Date.now()/1000 + 60;
-  return {range, zoom: valid ? [start, end] : null};
+  const scale = params.get('scale'), axis = params.get('axis');
+  return {range, zoom: valid ? [start, end] : null,
+    scale: ['bps', 'percent', 'dollars'].includes(scale) ? scale : null,
+    axis: ['linear', 'log'].includes(axis) ? axis : null};
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
@@ -73,6 +76,9 @@ let axisScale = 'linear';
 try {
   if (localStorage.getItem('dotusd-axis-scale') === 'log') axisScale = 'log';
 } catch {}
+const preferredScale = displayScale, preferredAxis = axisScale;
+displayScale = initialView.scale ?? preferredScale;
+axisScale = initialView.axis ?? preferredAxis;
 function axisPosition(value, extent) {
   // Signed log1p keeps the peg and negative deviations finite (1 bps soft knee).
   if (axisScale === 'log') {
@@ -642,6 +648,8 @@ function writeViewUrl() {
   const url = new URL(location.pathname, location.origin);
   const resolution = [...resolutions].find(([, seconds]) => seconds === state.range)[0];
   url.searchParams.set('resolution', resolution);
+  url.searchParams.set('scale', displayScale);
+  url.searchParams.set('axis', axisScale);
   if (state.zoom) {
     url.searchParams.set('start', String(state.zoom[0]));
     url.searchParams.set('end', String(state.zoom[1]));
@@ -710,6 +718,15 @@ document.querySelectorAll('[data-range]').forEach(button => button.onclick = () 
 });
 window.addEventListener('popstate', () => {
   const view = linkedView();
+  const rangeChanged = state.range !== view.range ||
+    state.zoom?.[0] !== view.zoom?.[0] || state.zoom?.[1] !== view.zoom?.[1];
+  displayScale = view.scale ?? preferredScale;
+  axisScale = view.axis ?? preferredAxis;
+  applyScale();
+  if (!rangeChanged) {
+    updateViewControls();
+    return;
+  }
   state.range = view.range;
   state.zoom = view.zoom;
   state.live = !view.zoom;
@@ -723,11 +740,15 @@ $('display-scale').addEventListener('change', event => {
   displayScale = event.target.value;
   try { localStorage.setItem('dotusd-display-scale', displayScale); } catch {}
   applyScale();
+  writeViewUrl();
+  updateViewControls();
 });
 $('axis-scale').addEventListener('change', event => {
   axisScale = event.target.checked ? 'log' : 'linear';
   try { localStorage.setItem('dotusd-axis-scale', axisScale); } catch {}
   applyScale();
+  writeViewUrl();
+  updateViewControls();
 });
 const settings = document.querySelector('.settings');
 document.addEventListener('click', event => {
