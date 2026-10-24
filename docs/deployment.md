@@ -48,9 +48,7 @@ requires `curl` locally. A verification failure does not roll back the deploymen
 inspect `just status` and `just logs` before retrying.
 Requires Python 3.10+, Caddy, the existing arbitrage data services, rsync, and
 passwordless sudo and `python3-venv` on the target. Deployment installs
-`requirements.txt` into `/opt/dotusd-info/.venv` for the Hub runtime decoder.
-The comparison worker uses the public Hub archive RPC by default; set
-`--hub-rpc URL` in the service command to use another Hub archive node.
+`requirements.txt` into `/opt/dotusd-info/.venv` for archive pool decoding.
 
 The app runs as a dedicated dynamic user at `/opt/dotusd-info`, listening only
 on `127.0.0.1:3001`. `dotusd-info.service` restarts automatically and is enabled
@@ -109,55 +107,12 @@ No background backfill or second permanent archive remains.
 
 Inspect progress with `ssh server journalctl -u dotusd-backfill -n 20 --no-pager`.
 
-## Comparison-page history (Python only)
+## Retired comparison
 
-This is separate from pool archive backfill. Run reconstruction on a workstation:
-
-```sh
-python3 -m venv /tmp/dotusd-quote-work
-/tmp/dotusd-quote-work/bin/pip install -r requirements.txt
-curl -fsS 'https://dotusd.info/api/prices?format=raw' -o /tmp/pool-history.json
-/tmp/dotusd-quote-work/bin/python backfill_quotes.py --targets /tmp/pool-history.json --output /tmp/quote-backfill --work /tmp/quote-blocks.jsonl
-```
-
-Keep the evidence artifact locally. Transfer it to a temporary server path, then
-install it as `/var/lib/dotusd-quotes/backfill.json` by atomic rename, readable by
-the web service. Never replace `history.json` while the quote worker is running.
-The worker validates and merges it within a minute without restarting the website;
-the temporary import is removed after its contents are saved to the final history.
-Confirm the comparison API has the expected timestamps and the normal page remains
-healthy. `substrate-interface` is required by both reconstruction and the live Hub RPC reader.
-
-
-The Hub runtime decoder and price caches share a 512 MiB service limit. For a
-bounded history import, use `import_quote_batches.py --max-memory-mib 384` to
-leave at least 128 MiB below that cap; the default remains 180 MiB for smaller
-installations. Reconstruction runs on the workstation. Existing import batches
-can be replayed from a fresh directory after validation, without restarting the
-web service or replacing its live history file.
-
-### Repair comparison-history gaps
-
-For gaps left by restarts or RPC outages, save a raw comparison API response with
-explicit `start` and `end` Unix seconds covering the affected period (at most seven
-days). Omitting those parameters returns only the last hour. Then run locally:
-
-```sh
-.venv/bin/python repair_quote_gaps.py --history /tmp/comparison-history.json --output /tmp/comparison-repair --work /tmp/comparison-repair-blocks.jsonl
-.venv/bin/python import_quote_batches.py --directory /tmp/comparison-repair --expected-samples N --max-memory-mib 384
-```
-
-Replace `N` with the completed sample count reported by reconstruction. Use a fresh
-output directory for each saved history snapshot. The repair finds intervals over
-120 seconds by default and scans every finalized block strictly inside them,
-using actual chain timestamps and independently reconstructed trade legs. Blocks
-sharing a timestamp produce one observation using the final block's state.
-It retains the existing boundary observations and produces the same evidence
-batches as the full backfill. Reconstruction is resumable through its block cache;
-imports use the existing health gates and require no site restart. After import,
-fetch the same API window again and verify the samples, remaining gaps, and live
-freshness. This repairs historical outages; it does not change live collection or
-prevent gaps during future restarts.
+The comparison implementation is preserved on `preserve-coingecko`.
+Production no longer serves `/coingecko` or `/api/coingecko/prices` and does
+not start a comparison worker. Existing comparison history files are left
+untouched; `/var/lib/dotusd-quotes` remains the state directory for pool repairs.
 
 ## Automatic pool gap recovery
 

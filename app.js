@@ -1,19 +1,10 @@
 import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.js?v=__APP_VERSION__';
 const $ = id => document.getElementById(id);
-const coingecko = document.body.dataset.priceSource === 'coingecko';
-const source = coingecko ? {
-  endpoint: '/api/coingecko/prices', currency: 'USDT', pollSeconds: 6,
-  staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized Hub sample',
-  empty: 'No finalized Hub samples available in this window.',
-} : {
+const source = {
   endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
   empty: 'No price samples in this window',
 };
-// Quotes are observations rather than one sample per block, so use their
-// timestamp spacing for line gaps even when they carry block-number cursors.
-const connectSamples = coingecko ? (a, b) => a && b && b[0] > a[0] &&
-  b[0] - a[0] <= 900 : undefined;
 $('title-logo').src = document.querySelector('link[rel="icon"]').href;
 // Replaced by the server from the same release snapshot as the served assets.
 const APP_VERSION = '__APP_VERSION__';
@@ -208,7 +199,7 @@ function updateFreshness() {
   else if (navigator.onLine === false) status(`Offline${sampleAge}`, 'error');
   else if (state.error) status(`Connection error${sampleAge}`, 'error');
   else if (state.liveLoading) status('Loading live prices…', 'loading');
-  else if (!last) status(coingecko ? 'Waiting for finalized Hub prices' : 'Waiting for finalized prices', 'stale');
+  else if (!last) status('Waiting for finalized prices', 'stale');
   else if (!Number.isFinite(state.fetchedAt) || now - state.fetchedAt > source.staleFetch)
     status(`Updates delayed${sampleAge}`, 'stale');
   else if (age > source.stalePrice) status(`Data delayed${sampleAge}`, 'stale');
@@ -220,13 +211,8 @@ let nextHistoryRefresh = 0;
 function hasHistoryGaps(rows) {
   let previous;
   for (const run of rows.runs) {
-    const first = [run.t, run.price, run.block];
-    if (coingecko) {
-      if ((previous && first[0] - previous[0] > 900) || (run.count > 1 && run.dt > 900)) return true;
-    } else {
-      if ((previous && previous[2] !== null && run.block !== null && run.block > previous[2] + 1) ||
-          (run.count > 1 && run.block !== null && run.db > 1)) return true;
-    }
+    if ((previous && previous[2] !== null && run.block !== null && run.block > previous[2] + 1) ||
+        (run.count > 1 && run.block !== null && run.db > 1)) return true;
     previous = rows.at(run.offset + run.count - 1);
   }
   return false;
@@ -261,7 +247,7 @@ async function refresh(force = false, preferCache = false) {
   // Advance only from a completed history snapshot; warming/backfills need the full window.
   const refreshHistory = Date.now() >= nextHistoryRefresh && hasHistoryGaps(cachedRows);
   const incremental = live && !force && !state.serverWarming && !refreshHistory &&
-    (coingecko ? !!last : Number.isSafeInteger(last?.[2])) &&
+    Number.isSafeInteger(last?.[2]) &&
     !missing.some(([a]) => a < last[0]);
   const left = incremental ? Math.max(start, last[0]) : start;
   const blockCursor = incremental && Number.isSafeInteger(last?.[2]) ? last[2] : null;
@@ -282,10 +268,7 @@ async function refresh(force = false, preferCache = false) {
     if (preferCache && !force && !missing.length) return;
     if (!force && !live && !missing.length && !refreshHistory) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
-    // The API requires at least a one-second query, but the merge boundary
-    // must remain at the last sample so an empty delta cannot delete it.
-    const requestStart = coingecko ? Math.max(start, Math.min(left, end - 1)) : start;
-    const lowerBound = blockCursor === null ? `start=${requestStart}` : `startpoint=${blockCursor}`;
+    const lowerBound = blockCursor === null ? `start=${start}` : `startpoint=${blockCursor}`;
     const upperBound = live ? '' : `&end=${end}`;
     // History streams need full-window extrema before all chunks arrive.
     // Incremental polls already have that history locally.
@@ -436,7 +419,7 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
     pegCursor = Math.max(pegCursor, end);
   }
   // Draw range endpoints, preserving pixel extrema and every real block gap.
-  for (const {row, move} of pixelRows(state.rows, x, connectSamples)) {
+  for (const {row, move} of pixelRows(state.rows, x)) {
     const px = x(row[0]), py = y((row[1] - 1) * 10000);
     const offset = py - pegY;
     // Cut only where the price stroke enters a two-pixel band around the peg.
@@ -473,14 +456,6 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   ctx.fillStyle = areaColor;
   ctx.fill(area);
   ctx.stroke();
-  // New observation histories start with one point; make it visible immediately.
-  const latest = coingecko ? state.rows.at(-1) : null;
-  if (latest) {
-    ctx.beginPath();
-    ctx.fillStyle = deviationColor((latest[1] - 1) * 10000);
-    ctx.arc(x(latest[0]), y((latest[1] - 1) * 10000), 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
   if (high && low) {
     const highBps = Number(((high[1] - 1) * 10000).toFixed(2));
     const lowBps = Number(((low[1] - 1) * 10000).toFixed(2));
@@ -663,8 +638,6 @@ function writeViewUrl() {
   if (url.href !== location.href) history.pushState(null, '', url);
 }
 function updateViewControls() {
-  const compareLink = $('compare-source');
-  if (compareLink) compareLink.href = (coingecko ? '/' : '/coingecko') + location.search;
   $('live').hidden = !state.live || !!state.zoom;
   $('live').dataset.live = String(state.live);
   $('live-label').textContent = state.live ? `${source.pollSeconds}s` : 'Refresh';

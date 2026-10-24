@@ -132,9 +132,7 @@ function checkApp() {
   checkPeg([[110, 1, 1.000001]], [[105, true], [110, false], [150, true]], 'near-peg point masks locally');
   checkPeg([[110, 1, .9999], [1, 20, 1, 1.0001]], [[112, true], [120, false], [128, true]], 'crossing leaves reference visible on both sides');
   checkPeg([[110, 1, 1.0001], [1, 20, 1, 1.0002]], [[105, true], [120, true], [150, true]], 'fill does not mask reference');
-  if (!coingecko) {
-    checkPeg([[110, 1, .9999], [0, 130, 5, 1.0001]], [[120, true]], 'a block gap is not a crossing');
-  }
+  checkPeg([[110, 1, .9999], [0, 130, 5, 1.0001]], [[120, true]], 'a block gap is not a crossing');
   checkPeg([], [[105, true], [150, true], [195, true]], 'empty chart retains reference');
   elements.get('axis-scale').events.change({target: {checked: true}});
   assert(axisPosition(0, 10000) === .5, 'log axis keeps the peg finite and centered');

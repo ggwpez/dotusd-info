@@ -161,75 +161,6 @@ parse/cache construction at 1.5 ms versus raw JSON parsing at 12.2 ms; drawing
 point preparation at 0.8 ms versus 1.4 ms. These are component timings over 20
 measured runs after five warmups, not end-to-end browser performance guarantees.
 
-## CoinGecko comparison
-
-`/` and `/coingecko` render one HTML template with source-specific labels. Both
-include identical CSS and JavaScript, including the same refresh, stream parsing,
-browser history, rating and chart code. Comparison links preserve query parameters.
-`/api/coingecko/prices` uses the same handler, bounded `HistoryCache`, response cache
-and wire formats as `/api/prices`, with a separate cache to keep the sources isolated.
-
-An independent worker reads Polkadot Hub RPC directly through `hub_quotes.py`.
-There are no exchange ticker or CoinGecko API requests. `--hub-rpc` selects the
-HTTP archive endpoint. The reader verifies the genesis, obtains the finalized
-head, and decodes `System.Events` using the runtime metadata for each block.
-Both legs use the shared `qualifying_trades` decoder from `backfill_quotes.py`.
-
-Startup scans backward until each leg's latest qualifying trade is found or the
-entire 24-hour chain-time window is exhausted. The reader then processes every
-intervening finalized block in order. Each poll reads at most 32 blocks; partial
-scans resume without publishing an incomplete price. A leg without a qualifying
-trade uses its pool reserves at the target finalized block. USDT per DOT divided
-by dotUSD per DOT gives USDT per dotUSD. Both assets' six-decimal metadata is
-validated. RPC failures retain successful state and retry the failed block.
-
-Samples retain finalized block timestamps and block numbers for exact live cursors.
-Existing saved samples with null block numbers remain readable; older backfill
-batches recover their block numbers from evidence when present. Repeated heads add
-no sample. A chain timestamp more
-than 120 seconds old or 30 seconds in the future is rejected. Browser polling
-remains every six seconds; failed fetches are marked delayed after 30 seconds,
-and chain samples after 180 seconds to allow normal finality lag. Storage
-is atomically checkpointed at most once per minute, separately from pool ingestion.
-The `hub-rpc-last-trade-usdt-v3` marker rejects older ticker observations. Visitor
-requests read memory only. This remains an on-chain USDT cross-price, not a
-reproduction of CoinGecko's external market selection and USD conversion.
-
-### Reconstructed estimate import
-
-`backfill_quotes.py` reads the normal chart's exact sample timestamps and finalized
-block numbers. Both the dotUSD and USDT ticker legs are reconstructed from
-`SwapExecuted` / `SwapCreditExecuted`, with the DEX's 10,000-base-unit dust rule,
-24-hour window and reserve fallback. Evidence records each leg independently.
-Chart timestamps retain the normal chart's estimated clock; trade expiry uses
-actual chain time. No CoinGecko price or reference is used.
-
-Reconstruction works newest-first in 1,024-sample batches, with at most 32 blocks
-per RPC batch and a 0.5-second minimum interval between HTTP requests. The local
-block cache is resumable and rejected if it contains the obsolete single-leg schema.
-`import_quote_batches.py` sends one batch at a time, waits for persistence, and
-waits at least 15 seconds between imports. It gates on the normal API responding
-within three seconds and service memory below 180 MiB. It stops if a staged import
-is not consumed within two minutes. Imported markers allow safe resumption.
-The live server rejects batches larger than 2,048 samples.
-
-Live browser polls fetch only newer blocks (timestamps for legacy samples without
-block numbers). Known gaps trigger history retries at most once per minute,
-including in a fixed historical view.
-
-Place the completed artifact atomically at `backfill.json` beside the configured
-quote history file. The independent quote worker checks between live polls, validates
-all samples and the conversion evidence before merging, preserves live observations
-on timestamp collisions, and leaves live freshness unchanged. It saves the merged
-history atomically and removes the temporary artifact only after persistence
-succeeds. Import errors do not prevent live quote polling or affect the pool cache.
-No production database or backfill service participates in this import.
-
-CoinGecko publishes [integration API standards](https://docs.google.com/document/d/1v27QFoQq1SKT3Priq3aqPgB70Xd_PnDzbOCiuoCyixw/edit),
-including the definition of `last_price` as the last transacted base/target price.
-Their [pricing methodology](https://www.coingecko.com/en/methodology) separately
-covers internal currency conversion, outlier filtering and market aggregation.
-
 ## Automatic pool-history gap repair
 
 With `--gap-repair-history PATH`, a separate background worker fills internal
@@ -251,5 +182,5 @@ is committed atomically before publication, resumes after restart, and expires
 after seven days. The published backfill archive and collector database are never
 modified. Repaired samples do not refresh the live freshness timestamp. Delayed
 collector samples supersede repairs by block number, even if their estimated
-timestamps differ. Both open charts retry their displayed history once per minute
+timestamps differ. Open charts retry their displayed history once per minute
 only while known gaps remain, including in fixed historical views.

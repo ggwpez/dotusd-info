@@ -19,7 +19,7 @@
 <meta name="twitter:image" content="https://dotusd.info/social-preview.png?v=2">
 <meta name="twitter:image:alt" content="Screenshot of the dotUSD / USDT peg monitor showing price deviation and historical chart.">
 <!-- INLINE_STYLE --></head>
-<body data-price-source="__SOURCE__">
+<body>
 <main>
 <header><div class="identity"><img id="title-logo" class="mark" width="32" height="32" alt=""><h1>dotUSD <span>/ __QUOTE__</span></h1><span class="tag">__SOURCE_LABEL__</span></div><div class="header-tools"><div id="status" role="status">Connecting…</div><details class="settings"><summary aria-label="Settings" title="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9.5 3-.5 2a7 7 0 0 0-2 1.2l-2-.6-2.5 4.3L4 11.3a7 7 0 0 0 0 2.4l-1.5 1.4 2.5 4.3 2-.6A7 7 0 0 0 9 20l.5 2h5l.5-2a7 7 0 0 0 2-1.2l2 .6 2.5-4.3-1.5-1.4a7 7 0 0 0 0-2.4l1.5-1.4L19 5.6l-2 .6A7 7 0 0 0 15 5l-.5-2z"/><circle cx="12" cy="12.5" r="3"/></svg></summary><div class="settings-menu"><label for="display-scale">Chart scale</label><select id="display-scale"><option value="bps">Basis points (bps)</option><option value="percent">Percent (%)</option><option value="dollars">Dollar price ($)</option></select><p>Dollar prices use USDT as the reference.</p><label><input id="axis-scale" type="checkbox" aria-describedby="axis-scale-help"> Log scale</label><p id="axis-scale-help">Log uses symmetric scaling around the peg, including negative deviations.</p></div></details></div></header>
 <section class="summary" aria-label="Market summary"><div class="peg-rating" aria-labelledby="rating-heading">
@@ -40,7 +40,7 @@
 __DETAILS__
 <footer class="site-footer">
 <div class="footer-copy">
-<p>__SOURCE_NOTE____COMPARE_LINK__</p>
+<p>__SOURCE_NOTE__</p>
 <p class="disclaimer">This site only monitors and displays publicly available data. We do not deploy dotUSD or facilitate its issuance, trading, or use.</p>
 </div>
 <div class="footer-links"><span class="app-version" title="Release __APP_VERSION__">Version <code>__SHORT_VERSION__</code></span><a href="https://github.com/ggwpez/dotusd-info">GitHub <span aria-hidden="true">↗</span></a></div>

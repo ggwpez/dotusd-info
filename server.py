@@ -7,7 +7,6 @@ from bisect import bisect_right
 from collections import deque, OrderedDict
 from concurrent.futures import Future
 from itertools import islice
-from decimal import Decimal, InvalidOperation
 import logging
 from contextlib import closing, contextmanager
 import json
@@ -44,34 +43,22 @@ def load_release():
         b'</head>', f'<meta name="app-version" content="{version}"></head>'.encode())
     # Keep source modules separate, but deliver one self-contained document.
     assets['inline.js'] = assets['ranges.js'] + b'\n' + assets['app.js'].split(b'\n', 1)[1]
-    pages = {
-        'index.html': dict(QUOTE='USDT', PAGE_PATH='/', SOURCE='pools', SOURCE_LABEL='PRICE MONITOR',
-                           DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
-                           PRICE_LABEL='Spot price', COMPARE_LINK='',
-                           SOURCE_NOTE=''),
-        'coingecko.html': dict(QUOTE='USDT', PAGE_PATH='/coingecko', SOURCE='coingecko', SOURCE_LABEL='DEX LAST-TRADE PRICE',
-                               DESCRIPTION='dotUSD / USDT from finalized Polkadot Hub swaps via RPC.',
-                               PRICE_LABEL='Last-trade price',
-                               COMPARE_LINK=' <a id="compare-source" href="/">Compare pool price →</a>',
-                               SOURCE_NOTE='Polkadot Hub RPC: USDT per DOT ÷ dotUSD per DOT. '
-                                           'Finalized swaps and reserves; no exchange or CoinGecko API. '
-                                           'Checked every 6 seconds; samples use finalized block timestamps.'),
-    }
-    template = assets['index.html'].replace(
+    values = dict(QUOTE='USDT', PAGE_PATH='/', SOURCE_LABEL='PRICE MONITOR',
+                  DESCRIPTION='Monitor dotUSD / USDT peg deviation on Polkadot Asset Hub using publicly available data.',
+                  PRICE_LABEL='Spot price', SOURCE_NOTE='')
+    html = assets['index.html'].replace(
         b'__APP_VERSION__', version.encode()).replace(
         b'__SHORT_VERSION__', version.encode())
-    for name, values in pages.items():
-        details = (files['coingecko-details.html'] if name == 'coingecko.html' else
-                   b'<section class="explain-grid" aria-label="About dotUSD">\n__ABOUT_DOTUSD__\n</section>')
-        details = details.replace(b'__ABOUT_DOTUSD__', files['about-dotusd.html'])
-        html = template.replace(b'__DETAILS__', details)
-        for key, value in values.items():
-            html = html.replace(f'__{key}__'.encode(), value.encode())
-        html = html.replace(b'<p></p>\n', b'')
-        assets[name] = html.replace(
-            b'__FAVICON__', b'data:image/svg+xml;base64,' + base64.b64encode(files['favicon.svg'])).replace(
-            b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
-            b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
+    details = (b'<section class="explain-grid" aria-label="About dotUSD">\n' +
+               files['about-dotusd.html'] + b'\n</section>')
+    html = html.replace(b'__DETAILS__', details)
+    for key, value in values.items():
+        html = html.replace(f'__{key}__'.encode(), value.encode())
+    html = html.replace(b'<p></p>\n', b'')
+    assets['index.html'] = html.replace(
+        b'__FAVICON__', b'data:image/svg+xml;base64,' + base64.b64encode(files['favicon.svg'])).replace(
+        b'<!-- INLINE_STYLE -->', b'<style>' + assets['style.css'] + b'</style>').replace(
+        b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
     return version, assets
 
 METRIC = '{__name__=~"arb_peg_dotusd_usdt|arb_peg_block_number",clock="estimated_2s"}'
@@ -494,170 +481,6 @@ class HistoryWorker:
             self.stop.wait(6 if ready or failed else 0.05)
 
 
-class CoinGeckoWorker:
-    """Cross finalized Hub swap prices read directly through RPC."""
-    POLL_SECONDS = 6
-    HISTORY_BYTES = 32 * 1024 * 1024
-
-    def __init__(self, cache, source=None, history_path=None):
-        from hub_quotes import HubQuotes
-        self.cache = cache
-        self.source = source or HubQuotes()
-        self.last_saved = None
-        self.history_path = history_path
-        self.stop = threading.Event()
-        self.thread = threading.Thread(target=self.run, name='coingecko-history', daemon=True)
-
-    @staticmethod
-    def positive(value):
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-            raise ValueError('Invalid quote value')
-        try:
-            number = Decimal(str(value))
-        except InvalidOperation as error:
-            raise ValueError('Invalid quote value') from error
-        if not number.is_finite() or number <= 0:
-            raise ValueError('Invalid quote value')
-        return number
-
-    def poll(self):
-        snapshot = self.source.read()
-        if snapshot is None:
-            return
-        stamp, legs, block = snapshot
-        now = time.time()
-        if not math.isfinite(stamp) or not now - 120 <= stamp <= now + 30:
-            raise ValueError('Stale or future finalized Hub timestamp')
-        price = float(self.positive(legs['1984']) / self.positive(legs['7873']))
-        if not math.isfinite(price) or price <= 0:
-            raise ValueError('Invalid converted USDT price')
-        if type(block) is not int or not 0 <= block <= 9007199254740991:
-            raise ValueError('Invalid finalized block number')
-        self.cache.merge([(stamp, price, block)], now)
-        with self.cache.lock:
-            self.cache.history_ready = True
-        # Persistence is isolated from both the pool archive and live ingestion.
-        # A storage failure must not prevent the current quote from being served.
-        try:
-            if self.last_saved is None or time.monotonic() - self.last_saved >= 60:
-                self.save_history()
-                self.last_saved = time.monotonic()
-        except (OSError, ValueError):
-            logging.exception('Unable to save estimated quote history')
-
-    def save_history(self):
-        if self.history_path is None:
-            return
-        self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.cache.lock:
-            rows, fetched = self.cache.rows, self.cache.fetched_at
-        body = json.dumps({'source': 'hub-rpc-last-trade-usdt-v3', 'fetchedAt': fetched, 'samples': rows}, allow_nan=False)
-        temporary = self.history_path.with_suffix('.tmp')
-        temporary.write_text(body)
-        temporary.replace(self.history_path)
-
-    def load_history(self):
-        if self.history_path is None or not self.history_path.exists():
-            return
-        with self.history_path.open('rb') as file:
-            body = file.read(self.HISTORY_BYTES + 1)
-        if len(body) > self.HISTORY_BYTES:
-            raise ValueError('Saved quote history exceeds size limit')
-        saved = json.loads(body)
-        if saved.get('source') != 'hub-rpc-last-trade-usdt-v3':
-            logging.warning('Ignoring history from a different price methodology')
-            return
-        rows = saved['samples']
-        for stamp, price, block in rows:
-            self.positive(stamp)
-            self.positive(price)
-            if ((block is not None and (type(block) is not int or not 0 <= block <= 9007199254740991)) or
-                    not isinstance(stamp, (int, float)) or not isinstance(price, (int, float))):
-                raise ValueError('Invalid saved quote sample')
-        fetched = float(self.positive(saved['fetchedAt']))
-        self.cache.merge(rows, time.time(), mark_fresh=False)
-        with self.cache.lock:
-            self.cache.fetched_at = fetched
-            self.cache.history_ready = True
-
-    def load_backfill(self):
-        """Consume a validated, atomically delivered reconstruction without a restart."""
-        if self.history_path is None:
-            return
-        pending = self.history_path.with_name('backfill.json')
-        if not pending.exists():
-            return
-        with pending.open('rb') as file:
-            body = file.read(self.HISTORY_BYTES + 1)
-        if len(body) > self.HISTORY_BYTES:
-            raise ValueError('Quote backfill exceeds size limit')
-        payload = json.loads(body)
-        if payload.get('source') != 'dex-last-trade-usdt-backfill-v2':
-            raise ValueError('Wrong quote backfill source')
-        rows, evidence = payload['samples'], payload['evidence']
-        if not rows or len(rows) > 2048 or len(evidence) != len(rows):
-            raise ValueError('Invalid quote backfill size')
-        by_time = {item['timestamp']: item for item in evidence}
-        now, previous = time.time(), -1
-        restored = []
-        for stamp, price, block in rows:
-            self.positive(stamp)
-            self.positive(price)
-            if (not isinstance(stamp, (int, float)) or not isinstance(price, (int, float)) or
-                    not previous < stamp <= now):
-                raise ValueError('Invalid quote backfill sample')
-            item = by_time[stamp]
-            number = item.get('block', block)
-            if ((number is not None and (type(number) is not int or not 0 <= number <= 9007199254740991)) or
-                    (block is not None and (type(block) is not int or block != number))):
-                raise ValueError('Invalid quote backfill block')
-            restored.append([stamp, price, number])
-            expected = float(self.positive(item['usdtPerDot']) / self.positive(item['dotusdPerDot']))
-            if not math.isclose(price, expected, rel_tol=1e-12):
-                raise ValueError('Backfill quote does not match its reference inputs')
-            # Chart timestamps use the normal feed's estimated two-second clock;
-            # the ticker's 24-hour trade window uses the actual chain timestamp.
-            chain_stamp = float(self.positive(item['chainTimestamp']))
-            if chain_stamp > now * 1000 + 60000:
-                raise ValueError('Backfill block timestamp is in the future')
-            for key in ('tradeTimestamp', 'usdtTradeTimestamp'):
-                when = item[key]
-                if when is not None and not chain_stamp - 86400000 <= when <= chain_stamp:
-                    raise ValueError('Backfill trade lies outside the ticker window')
-            previous = stamp
-        with self.cache.lock:
-            existing = {row[0] for row in self.cache.rows}
-        # Observations already collected by this server win timestamp collisions.
-        self.cache.merge([row for row in restored if row[0] not in existing], now, mark_fresh=False)
-        with self.cache.lock:
-            if self.cache.fetched_at is None:
-                self.cache.fetched_at = rows[-1][0]
-            self.cache.history_ready = True
-        self.save_history()
-        pending.unlink()
-        logging.info('Imported %s reconstructed USD estimates', len(rows))
-
-    def run(self):
-        try:
-            self.load_history()
-        except Exception:
-            logging.exception('Unable to load estimated quote history')
-        next_poll = 0
-        while not self.stop.is_set():
-            try:
-                self.load_backfill()
-            except Exception:
-                logging.exception('Unable to import reconstructed USD estimates')
-            if time.monotonic() >= next_poll:
-                started = time.monotonic()
-                try:
-                    self.poll()
-                except Exception:
-                    logging.exception('Estimated USD quote refresh failed')
-                next_poll = max(started + self.POLL_SECONDS, time.monotonic())
-            self.stop.wait(max(0, next_poll - time.monotonic()))
-
-
 class CacheServer(HTTPServer):
     """Four fixed workers and a bounded FIFO for short request bursts."""
     handler_count = 4
@@ -667,7 +490,6 @@ class CacheServer(HTTPServer):
 
     def __init__(self, address, handler):
         self.version, self.assets = load_release()
-        self.coingecko_cache = HistoryCache()
         script_hash = base64.b64encode(hashlib.sha256(self.assets['inline.js']).digest()).decode()
         style_hash = base64.b64encode(hashlib.sha256(self.assets['style.css']).digest()).decode()
         self.content_security_policy = (
@@ -749,13 +571,13 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in ('/version', '/api/version'):
             self.respond(200, {'version': self.server.version})
             return
-        if url.path in ('/api/prices', '/api/coingecko/prices'):
+        if url.path == '/api/prices':
             try:
                 params = urllib.parse.parse_qs(url.query, max_num_fields=8, keep_blank_values=True)
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
                 live = 'end' not in params
-                cache = self.server.coingecko_cache if url.path == '/api/coingecko/prices' else self.server.cache
+                cache = self.server.cache
                 with cache.lock:
                     latest = cache.rows[-1][0] if cache.rows else 0
                 time_params = {**params, 'end': params.get('end', [max(time.time(), latest)])}
@@ -807,7 +629,7 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, TimeoutError):
                 pass
             return
-        filename = {'/': 'index.html', '/coingecko': 'coingecko.html', '/coingecko/': 'coingecko.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css', '/social-preview.png': 'social-preview.png'}.get(url.path)
+        filename = {'/': 'index.html', '/app.js': 'app.js', '/ranges.js': 'ranges.js', '/style.css': 'style.css', '/social-preview.png': 'social-preview.png'}.get(url.path)
         if not filename:
             self.respond(404, {'error': 'Not found'})
             return
@@ -851,28 +673,24 @@ def main():
     parser.add_argument('--ssh-host', default='server', help='SSH config host or user@host (default: server)')
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
-    parser.add_argument('--coingecko-history', type=Path, help='Optional file for Hub RPC USDT price history')
     parser.add_argument('--gap-repair-history', type=Path,
                         help='Enable gradual Parity archive gap recovery, persisted in this SQLite file')
     parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
-                        help='Polkadot Hub HTTP archive RPC for finalized swaps and reserves')
+                        help='Polkadot Hub HTTP archive RPC for pool-history gap repair')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
     worker = None
     repair = None
-    from hub_quotes import HubChain, HubQuotes
-    coingecko = CoinGeckoWorker(server.coingecko_cache, source=HubQuotes(HubChain(args.hub_rpc)),
-                               history_path=args.coingecko_history)
-    coingecko.thread.start()
     try:
         with price_source(args.upstream, args.ssh_host) as upstream:
             worker = HistoryWorker(server.cache, upstream, archive=args.archive)
             worker.thread.start()
             if args.gap_repair_history:
                 from gap_repair import GapRepair
-                repair = GapRepair(server.cache, args.gap_repair_history)
+                from hub_quotes import HubChain
+                repair = GapRepair(server.cache, args.gap_repair_history, chain=HubChain(args.hub_rpc))
                 repair.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
             url = f'http://{browser_host}:{server.server_port}'
@@ -883,13 +701,11 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        coingecko.stop.set()
         if repair is not None:
             repair.stop.set()
         if worker is not None:
             worker.stop.set()
             worker.thread.join(timeout=25)
-        coingecko.thread.join(timeout=45)
         if repair is not None:
             repair.thread.join(timeout=15)
         server.server_close()

@@ -8,8 +8,8 @@ import re
 ROOT = Path(__file__).resolve().parent
 RELEASE_FILES = (
     'release.py', 'requirements.txt', 'server.py', 'gap_repair.py',
-    'archive_reader.py', 'hub_quotes.py', 'backfill_quotes.py',
-    'about-dotusd.html', 'coingecko-details.html', 'index.html', 'app.js',
+    'archive_reader.py', 'hub_quotes.py',
+    'about-dotusd.html', 'index.html', 'app.js',
     'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png',
 )
 VERSION_PATTERN = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+([0-9a-f]{12})')

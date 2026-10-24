@@ -9,190 +9,181 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class AppTests(unittest.TestCase):
     def test_stream_completion_and_cancelled_responses(self):
-        for price_source in ('pool', 'coingecko'):
-            with self.subTest(price_source=price_source):
-                source = (ROOT / 'tests/app_test.js').read_text()
-                source += f'\ndocument.body.dataset.priceSource = "{price_source}";'
-                source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
-                source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
-                source += r"""
-                function require(value, message) { if (!value) throw new Error(message); }
-                class AbortController { constructor() { this.signal = {}; } abort() {} }
-                const setTimeout = () => 1;
-                const clearTimeout = () => {};
-                const performance = {now: () => 100};
-                const now = Date.now()/1000;
-                Date.now = () => now * 1000;
-                const requests = [];
-                let respond;
-                const fetch = url => {
-                    requests.push(url);
-                    return new Promise(resolve => { respond = resolve; });
-                };
-                readPriceStream = async function* (response) {
-                    for (const message of response.messages) yield message;
-                };
-                (async () => {
-                    reloading = false;
-                    state.range = 3600; state.live = true; state.zoom = null;
-                    const stamp = now - .1;
-                    historyCache.merge(RangeSeries.fromWire([[stamp, 10, 1]]),
-                                       now - 3600, now - .05, now, true);
-                    const pending = refresh();
-                    require(requests[0].includes('startpoint=10') && !requests[0].includes('?start='), 'block cursor replaces timestamp start');
-                    require(!requests[0].includes('&end=') && !requests[0].includes('windowEnd='), 'live requests are open-ended');
-                    require(!requests[0].includes('windowStart='), 'incremental polls request no full-window statistics');
-                    respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 1) : APP_VERSION}, messages: [
-                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
-                        {ranges: []}, {done: true},
-                    ]});
-                    await pending;
-                    require(!state.error && !loading, 'stream completed');
-                    require(historyCache.rows.length === 1 && historyCache.rows.at(-1)[0] === stamp,
-                            'sub-second delta retains the last sample exactly once');
-                    require(!historyCache.missing(now - 3600, now + 1).length, 'delta advances coverage to the server boundary');
-                    require(state.end === now + 1, 'chart uses server boundary');
-                    const stale = refresh();
-                    const finishStale = respond;
-                    await refresh(false, true);
-                    finishStale({headers: {get: () => 'obsolete-release'}});
-                    await stale;
-                    require(!reloading, 'cancelled response cannot reload the page');
-                    require(historyCache.rows.length === 1, 'cancelled response cannot alter cache');
-                    historyCache.merge(RangeSeries.fromWire([[now - 3598.5, 8, .5], [0, now - 3598, 9, 1.5]]),
-                                       now - 3600, now - 3590, now, true);
-                    nextHistoryRefresh = Date.now() + 60000;
-                    const delta = refresh();
-                    require(!requests.at(-1).includes('windowStart='), 'delta still skips server extrema');
-                    respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 3) : APP_VERSION}, messages: [
-                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true, extremes: null},
-                        {ranges: [[now + 1, 11, .9], [0, now + 2, 12, 1.1]]}, {done: true},
-                    ]});
-                    await delta;
-                    require(summaryValues.low[1] === .9 && summaryValues.high[1] === 1.1,
-                            'local extrema include new samples and drop expired extrema');
-                    state.live = false; state.zoom = [now - 100, now - 50];
-                    const fixed = refresh(true);
-                    require(requests.at(-1).includes('&end=' + (now - 50)), 'fixed history retains explicit end');
-                    require(requests.at(-1).includes('windowStart=') && requests.at(-1).includes('windowEnd='),
-                            'history loads retain early extrema for streaming');
-                    respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
-                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true}, {done: true},
-                    ]});
-                    await fixed;
-                    return true;
-                })();
-                """
-                self.assertTrue(evaluate(source, asynchronous=True))
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        const setTimeout = () => 1;
+        const clearTimeout = () => {};
+        const performance = {now: () => 100};
+        const now = Date.now()/1000;
+        Date.now = () => now * 1000;
+        const requests = [];
+        let respond;
+        const fetch = url => {
+            requests.push(url);
+            return new Promise(resolve => { respond = resolve; });
+        };
+        readPriceStream = async function* (response) {
+            for (const message of response.messages) yield message;
+        };
+        (async () => {
+            reloading = false;
+            state.range = 3600; state.live = true; state.zoom = null;
+            const stamp = now - .1;
+            historyCache.merge(RangeSeries.fromWire([[stamp, 10, 1]]),
+                               now - 3600, now - .05, now, true);
+            const pending = refresh();
+            require(requests[0].includes('startpoint=10') && !requests[0].includes('?start='), 'block cursor replaces timestamp start');
+            require(!requests[0].includes('&end=') && !requests[0].includes('windowEnd='), 'live requests are open-ended');
+            require(!requests[0].includes('windowStart='), 'incremental polls request no full-window statistics');
+            respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 1) : APP_VERSION}, messages: [
+                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                {ranges: []}, {done: true},
+            ]});
+            await pending;
+            require(!state.error && !loading, 'stream completed');
+            require(historyCache.rows.length === 1 && historyCache.rows.at(-1)[0] === stamp,
+                    'sub-second delta retains the last sample exactly once');
+            require(!historyCache.missing(now - 3600, now + 1).length, 'delta advances coverage to the server boundary');
+            require(state.end === now + 1, 'chart uses server boundary');
+            const stale = refresh();
+            const finishStale = respond;
+            await refresh(false, true);
+            finishStale({headers: {get: () => 'obsolete-release'}});
+            await stale;
+            require(!reloading, 'cancelled response cannot reload the page');
+            require(historyCache.rows.length === 1, 'cancelled response cannot alter cache');
+            historyCache.merge(RangeSeries.fromWire([[now - 3598.5, 8, .5], [0, now - 3598, 9, 1.5]]),
+                               now - 3600, now - 3590, now, true);
+            nextHistoryRefresh = Date.now() + 60000;
+            const delta = refresh();
+            require(!requests.at(-1).includes('windowStart='), 'delta still skips server extrema');
+            respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 3) : APP_VERSION}, messages: [
+                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true, extremes: null},
+                {ranges: [[now + 1, 11, .9], [0, now + 2, 12, 1.1]]}, {done: true},
+            ]});
+            await delta;
+            require(summaryValues.low[1] === .9 && summaryValues.high[1] === 1.1,
+                    'local extrema include new samples and drop expired extrema');
+            state.live = false; state.zoom = [now - 100, now - 50];
+            const fixed = refresh(true);
+            require(requests.at(-1).includes('&end=' + (now - 50)), 'fixed history retains explicit end');
+            require(requests.at(-1).includes('windowStart=') && requests.at(-1).includes('windowEnd='),
+                    'history loads retain early extrema for streaming');
+            respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
+                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true}, {done: true},
+            ]});
+            await fixed;
+            return true;
+        })();
+        """
+        self.assertTrue(evaluate(source, asynchronous=True))
 
     def test_return_to_live_waits_for_current_snapshot(self):
-        for price_source in ('pool', 'coingecko'):
-            with self.subTest(price_source=price_source):
-                source = (ROOT / 'tests/app_test.js').read_text()
-                source += f'\ndocument.body.dataset.priceSource = "{price_source}";'
-                source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
-                source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
-                source += r"""
-                function require(value, message) { if (!value) throw new Error(message); }
-                class AbortController { constructor() { this.signal = {}; } abort() {} }
-                const setTimeout = () => 1, clearTimeout = () => {};
-                const performance = {now: () => 100};
-                const now = Date.now()/1000;
-                Date.now = () => now * 1000;
-                let respond, pending;
-                const requests = [];
-                const fetch = url => {
-                    requests.push(url);
-                    return new Promise(resolve => { respond = resolve; });
-                };
-                readPriceStream = async function* (response) {
-                    for (const message of response.messages) yield message;
-                };
-                const originalRefresh = refresh;
-                refresh = (...args) => pending = originalRefresh(...args);
-                writeViewUrl = () => {};
-                (async () => {
-                    reloading = false;
-                    for (const outcome of ['fresh', 'stale', 'error']) {
-                        historyCache.coverage = [];
-                        historyCache.rows = new RangeSeries();
-                        const oldEnd = now - 13373;
-                        historyCache.merge(RangeSeries.fromWire([[oldEnd - 2, 10, 1]]),
-                            oldEnd - 86400, oldEnd, now, true);
-                        state.range = 86400;
-                        state.live = false;
-                        state.zoom = [oldEnd - 86400, oldEnd];
-                        state.rows = historyCache.rows;
-                        const previousRequests = requests.length;
-                        reset();
-                        require(requests.length === previousRequests + 1 && loading, 'return to live fetches immediately');
-                        require(state.end === now, 'live window does not use the historical endpoint');
-                        require(elements.get('status').textContent === 'Loading live prices…',
-                            'historical samples are not reported as delayed live data');
-                        if (outcome === 'error') {
-                            respond({ok: false, headers: {get: () => APP_VERSION},
-                                json: async () => ({error: 'RPC unavailable'})});
-                        } else {
-                            respond({ok: true, headers: {get: key =>
-                                key === 'X-History-End' ? String(now) : APP_VERSION}, messages: [
-                                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
-                                {ranges: [[outcome === 'fresh' ? now - 2 : oldEnd, 11, 1]]},
-                                {done: true},
-                            ]});
-                        }
-                        await pending;
-                        require(!state.liveLoading, 'completion clears live loading');
-                        const statusText = elements.get('status').textContent;
-                        require(outcome === 'fresh' ? statusText.startsWith('Live ~2s') :
-                            outcome === 'stale' ? statusText.startsWith('Data delayed') :
-                            statusText.startsWith('Connection error'), 'completed response reports its real freshness');
-                    }
-                    return true;
-                })();
-                """
-                self.assertTrue(evaluate(source, asynchronous=True))
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        const setTimeout = () => 1, clearTimeout = () => {};
+        const performance = {now: () => 100};
+        const now = Date.now()/1000;
+        Date.now = () => now * 1000;
+        let respond, pending;
+        const requests = [];
+        const fetch = url => {
+            requests.push(url);
+            return new Promise(resolve => { respond = resolve; });
+        };
+        readPriceStream = async function* (response) {
+            for (const message of response.messages) yield message;
+        };
+        const originalRefresh = refresh;
+        refresh = (...args) => pending = originalRefresh(...args);
+        writeViewUrl = () => {};
+        (async () => {
+            reloading = false;
+            for (const outcome of ['fresh', 'stale', 'error']) {
+                historyCache.coverage = [];
+                historyCache.rows = new RangeSeries();
+                const oldEnd = now - 13373;
+                historyCache.merge(RangeSeries.fromWire([[oldEnd - 2, 10, 1]]),
+                    oldEnd - 86400, oldEnd, now, true);
+                state.range = 86400;
+                state.live = false;
+                state.zoom = [oldEnd - 86400, oldEnd];
+                state.rows = historyCache.rows;
+                const previousRequests = requests.length;
+                reset();
+                require(requests.length === previousRequests + 1 && loading, 'return to live fetches immediately');
+                require(state.end === now, 'live window does not use the historical endpoint');
+                require(elements.get('status').textContent === 'Loading live prices…',
+                    'historical samples are not reported as delayed live data');
+                if (outcome === 'error') {
+                    respond({ok: false, headers: {get: () => APP_VERSION},
+                        json: async () => ({error: 'RPC unavailable'})});
+                } else {
+                    respond({ok: true, headers: {get: key =>
+                        key === 'X-History-End' ? String(now) : APP_VERSION}, messages: [
+                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                        {ranges: [[outcome === 'fresh' ? now - 2 : oldEnd, 11, 1]]},
+                        {done: true},
+                    ]});
+                }
+                await pending;
+                require(!state.liveLoading, 'completion clears live loading');
+                const statusText = elements.get('status').textContent;
+                require(outcome === 'fresh' ? statusText.startsWith('Live ~2s') :
+                    outcome === 'stale' ? statusText.startsWith('Data delayed') :
+                    statusText.startsWith('Connection error'), 'completed response reports its real freshness');
+            }
+            return true;
+        })();
+        """
+        self.assertTrue(evaluate(source, asynchronous=True))
 
     def test_cached_range_changes_wait_for_poll(self):
-        for price_source in ('pool', 'coingecko'):
-            with self.subTest(price_source=price_source):
-                source = (ROOT / 'tests/app_test.js').read_text()
-                source += f'\ndocument.body.dataset.priceSource = "{price_source}";'
-                source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
-                source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
-                source += r"""
-                function require(value, message) { if (!value) throw new Error(message); }
-                class AbortController { constructor() { this.signal = {}; } abort() {} }
-                const setTimeout = () => 1;
-                const clearTimeout = () => {};
-                const requests = [];
-                const fetch = url => { requests.push(url); return new Promise(() => {}); };
-                writeViewUrl = () => {};
-                reloading = false;
-                const end = Date.now()/1000 - 3;
-                historyCache.merge(RangeSeries.fromWire([[end - 90000, 10, .99],
-                    [0, end - 10, 15, 1]]), end - 604800, end, end, true);
-                // Even an overdue repair refresh can wait for the scheduled poll.
-                nextHistoryRefresh = 0;
-                for (const range of [86400, 3600, 21600, 604800]) {
-                    state.range = range;
-                    reset();
-                    require(requests.length === 0, 'covered range never fetches');
-                    require(state.end === end && state.start === end - range, 'snapshot bounds');
-                    require(state.rows.length === (range === 604800 ? 2 : 1), 'local rows');
-                    require(summaryValues.low[1] === (range === 604800 ? .99 : 1), 'local extrema');
-                    require(!loading && !state.historyLoading && needsRefresh(), 'ready for next poll');
-                }
-                refresh();
-                require(requests.length === 1, 'next poll still fetches');
-                refresh(true, true);
-                require(requests.length === 2, 'manual refresh still fetches');
-                historyCache.coverage = [[end - 3600, end]];
-                state.range = 86400;
-                reset();
-                require(requests.length === 3, 'uncached history fetches immediately');
-                JSON.stringify(true);
-                """
-                self.assertTrue(evaluate(source))
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        const setTimeout = () => 1;
+        const clearTimeout = () => {};
+        const requests = [];
+        const fetch = url => { requests.push(url); return new Promise(() => {}); };
+        writeViewUrl = () => {};
+        reloading = false;
+        const end = Date.now()/1000 - 3;
+        historyCache.merge(RangeSeries.fromWire([[end - 90000, 10, .99],
+            [0, end - 10, 15, 1]]), end - 604800, end, end, true);
+        // Even an overdue repair refresh can wait for the scheduled poll.
+        nextHistoryRefresh = 0;
+        for (const range of [86400, 3600, 21600, 604800]) {
+            state.range = range;
+            reset();
+            require(requests.length === 0, 'covered range never fetches');
+            require(state.end === end && state.start === end - range, 'snapshot bounds');
+            require(state.rows.length === (range === 604800 ? 2 : 1), 'local rows');
+            require(summaryValues.low[1] === (range === 604800 ? .99 : 1), 'local extrema');
+            require(!loading && !state.historyLoading && needsRefresh(), 'ready for next poll');
+        }
+        refresh();
+        require(requests.length === 1, 'next poll still fetches');
+        refresh(true, true);
+        require(requests.length === 2, 'manual refresh still fetches');
+        historyCache.coverage = [[end - 3600, end]];
+        state.range = 86400;
+        reset();
+        require(requests.length === 3, 'uncached history fetches immediately');
+        JSON.stringify(true);
+        """
+        self.assertTrue(evaluate(source))
 
     def test_pool_history_refresh_bypasses_live_cursor_for_repairs(self):
         source = (ROOT / 'tests/app_test.js').read_text()
@@ -250,58 +241,6 @@ class AppTests(unittest.TestCase):
         # The server also combines the range module with the app, removing its import.
         source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
         source += '\ncheckApp(); JSON.stringify(true);'
-        self.assertTrue(evaluate(source))
-
-    def test_coingecko_uses_hub_timestamps_and_shared_rendering(self):
-        source = (ROOT / 'tests/app_test.js').read_text()
-        source += "\ndocument.body.dataset.priceSource = 'coingecko'; location.search = '?resolution=7d';"
-        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
-        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
-        source += r"""
-        checkApp();
-        function require(value, message) { if (!value) throw new Error(message); }
-        require(source.endpoint === '/api/coingecko/prices', 'isolated API');
-        require(source.pollSeconds === 6, 'six second refresh');
-        require(!hasHistoryGaps(RangeSeries.fromWire([[100, null, 1], [0, 200, null, 1]])),
-                'normal quote intervals need no history refresh');
-        require(hasHistoryGaps(RangeSeries.fromWire([[100, null, 1], [0, 1100, null, 1]])),
-                'missing quote intervals allow history retries');
-        state.live = false; state.zoom = null; state.historyLoading = false;
-        state.rows = RangeSeries.fromWire([[100, null, 1], [0, 200, null, 1]]);
-        nextHistoryRefresh = 0;
-        require(!needsRefresh(), 'complete quote history rests after the deadline');
-        state.rows = RangeSeries.fromWire([[100, null, 1], [0, 1100, null, 1]]);
-        require(needsRefresh(), 'gapped quote history retries after the deadline');
-        require(elements.get('compare-source').href === '/?resolution=7d', 'comparison preserves range');
-        reloading = false;
-        const now = Date.now()/1000;
-        state.start = now - 3600; state.end = now; state.live = true; state.zoom = null;
-        state.rows = RangeSeries.fromWire([[now - 4, null, .999], [0, now - 2, null, 1.001]]);
-        state.extremes = null; state.hover = 1; state.fetchedAt = now;
-        chartDirty = true; drawing.length = 0; draw();
-        require(elements.get('tooltip').children.some(child => child.textContent === '1.00100000 USDT'), 'USDT tooltip');
-        const points = [...pixelRows(state.rows, t => t, connectSamples)];
-        require(points.length === 2 && points[0].move && !points[1].move, 'connect timestamp samples');
-        require(!connectSamples([now - 2000, 1, null], [now, 1, null]), 'break missing recent data');
-        require(!connectSamples([now - 100000, 1, null], [now - 96400, 1, null]), 'older history also preserves observation gaps');
-        require(!connectSamples([now - 100000, 1, null], [now - 92800, 1, null]), 'break missing hourly data');
-        const observed = RangeSeries.fromWire([[now - 20, 100, 1], [3, 6, 3]]);
-        const observedPoints = [...observed.points(connectSamples)];
-        require(observedPoints.length <= 3 && observedPoints.slice(1).every(point => !point.move), 'quote blocks do not create false gaps between observations');
-        updateFreshness();
-        require(elements.get('status').dataset.state === 'live', '2 second sample is fresh');
-        state.rows = RangeSeries.fromWire([[now - 60, null, 1.001]]); updateFreshness();
-        require(elements.get('status').dataset.state === 'live', 'normal finality lag is fresh');
-        state.rows = RangeSeries.fromWire([[now - 181, null, 1.001]]); updateFreshness();
-        require(elements.get('status').textContent.startsWith('Data delayed'), 'stalled chain is delayed');
-        state.fetchedAt = now - 1000; updateFreshness();
-        require(elements.get('status').textContent.startsWith('Updates delayed'), 'failed source refresh becomes stale');
-        state.rows = new RangeSeries(); state.error = null; state.historyLoading = false;
-        summaryValues = null; summary();
-        require(elements.get('message').textContent.includes('No finalized Hub samples available'), 'honest empty state');
-        require(elements.get('price').textContent === '-', 'empty state has no fabricated price');
-        JSON.stringify(true);
-        """
         self.assertTrue(evaluate(source))
 
     def test_graph_colors_blend_symmetrically_without_zoom_dependent_cutoffs(self):
