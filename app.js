@@ -729,6 +729,10 @@ $('axis-scale').addEventListener('change', event => {
   try { localStorage.setItem('dotusd-axis-scale', axisScale); } catch {}
   applyScale();
 });
+const settings = document.querySelector('.settings');
+document.addEventListener('click', event => {
+  if (settings.open && !settings.contains(event.target)) settings.open = false;
+});
 applyScale();
 updateRangeButtons();
 updateViewControls();
