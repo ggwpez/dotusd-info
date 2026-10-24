@@ -136,6 +136,21 @@ function checkApp() {
     checkPeg([[110, 1, .9999], [0, 130, 5, 1.0001]], [[120, true]], 'a block gap is not a crossing');
   }
   checkPeg([], [[105, true], [150, true], [195, true]], 'empty chart retains reference');
+  elements.get('axis-scale').events.change({target: {value: 'log'}});
+  assert(axisPosition(0, 10000) === .5, 'log axis keeps the peg finite and centered');
+  assert(axisPosition(10, 10000) < .4, 'log axis exposes small deviations beside outliers');
+  assert(Math.abs(axisPosition(-10, 10000) + axisPosition(10, 10000) - 1) < 1e-12, 'log axis treats both sides symmetrically');
+  for (const peak of [0, .1, 5, 100, 10000]) {
+    const {extent, ticks} = chartScale(peak);
+    assert(ticks.includes(0), 'log ticks retain the peg');
+    assert(ticks.every((tick, i) => Number.isFinite(axisPosition(tick, extent)) &&
+      (i === 0 || tick > ticks[i - 1])), 'log ticks stay finite and ordered');
+  }
+  checkPeg([[110, 1, .99], [1, 20, 1, 1.01]], [[112, true], [120, false], [128, true]], 'log stroke intersections preserve reference');
+  const prices = state.rows;
+  const beforeScaleRefreshes = refreshes;
+  elements.get('axis-scale').events.change({target: {value: 'linear'}});
+  assert(state.rows === prices && refreshes === beforeScaleRefreshes, 'axis changes preserve prices without fetching');
   // Returning traces also supports comparisons against the pre-refactor renderer.
   return {initialDraw, hoverDraw, zoom: state.zoom};
 }

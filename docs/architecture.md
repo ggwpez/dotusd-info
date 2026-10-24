@@ -60,6 +60,15 @@ price-path rendering, respects data gaps, and follows the current zoom and
 vertical scale. Clear portions, the center tick label, and the faint grid remain
 visible; an empty chart retains the full reference.
 
+Settings separates display units from the Y-axis mapping. Linear is the default;
+Logarithmic uses `sign(bps) * log1p(abs(bps))` (a one-basis-point soft knee)
+symmetrically around the peg, including zero and negative deviations. This is
+log scaling of deviation, not log scaling of the absolute dollar price. Tick
+labels remain in the selected units; prices, ratings, and tooltip values are
+unchanged. Geometry and gradient stops share the transform. The axis preference
+is saved in `dotusd-axis-scale` in browser local storage and switching it redraws
+cached data without fetching history.
+
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a
 `ranges-stream-v1` metadata line (including full-window extrema), independently

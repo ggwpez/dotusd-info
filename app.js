@@ -69,6 +69,17 @@ try {
   const saved = localStorage.getItem('dotusd-display-scale');
   if (['bps', 'percent', 'dollars'].includes(saved)) displayScale = saved;
 } catch {}
+let axisScale = 'linear';
+try {
+  if (localStorage.getItem('dotusd-axis-scale') === 'log') axisScale = 'log';
+} catch {}
+function axisPosition(value, extent) {
+  // Signed log1p keeps the peg and negative deviations finite (1 bps soft knee).
+  if (axisScale === 'log') {
+    return (1 - Math.sign(value) * Math.log1p(Math.abs(value)) / Math.log1p(extent)) / 2;
+  }
+  return (1 - value / extent) / 2;
+}
 function formatScale(bps, unit = false, axis = false) {
   if (displayScale === 'dollars') return '$' + (1 + bps / 10000).toFixed(axis ? 4 : 6);
   if (displayScale === 'percent') {
@@ -88,11 +99,13 @@ function ratingBand(index) {
 }
 function applyScale() {
   $('display-scale').value = displayScale;
+  $('axis-scale').value = axisScale;
   document.body.dataset.displayScale = displayScale;
   $('metric-label').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Price deviation';
   $('metric-unit').textContent = displayScale === 'bps' ? 'bps' : displayScale === 'percent' ? '%' : '';
   $('range-unit').textContent = displayScale === 'bps' ? 'Basis points' : displayScale === 'percent' ? 'Percent' : 'Dollar price (USDT)';
-  $('chart-unit').textContent = $('range-unit').textContent.toLowerCase();
+  $('chart-unit').textContent = $('range-unit').textContent.toLowerCase() +
+    (axisScale === 'log' ? ' · symmetric log axis' : '');
   $('chart-title').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Peg deviation';
   canvas.setAttribute('aria-label', 'dotUSD chart in ' + $('chart-unit').textContent +
     '. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples.');
@@ -145,7 +158,7 @@ function ratingGradient(context, top, bottom, extent, alpha = '') {
   const levels = [extent, ...[...colorLevels].reverse(), 0, ...colorLevels.map(v => -v), -extent]
     .filter((v, i, levels) => i === 0 || i === levels.length - 1 || Math.abs(v) < extent);
   for (const level of levels) {
-    gradient.addColorStop((extent - level) / (2 * extent), deviationColor(level) + alpha);
+    gradient.addColorStop(axisPosition(level, extent), deviationColor(level) + alpha);
   }
   return gradient;
 }
@@ -327,6 +340,11 @@ function chartScale(peak) {
   const padded = Math.max(5, peak + Math.max(peak * .12, .5));
   const magnitude = 10 ** Math.floor(Math.log10(padded));
   const extent = [1, 2, 5, 10].map(n => n * magnitude).find(n => n >= padded);
+  if (axisScale === 'log') {
+    const positive = [];
+    for (let tick = 1; tick <= extent; tick *= 10) positive.push(tick);
+    return {extent, ticks: [...positive.map(v => -v).reverse(), 0, ...positive]};
+  }
   const step = extent / (extent / magnitude === 2 ? 4 : 5);
   const divisions = Math.round(extent / step);
   return {extent, ticks: Array.from({length: divisions * 2 + 1}, (_, i) => (i - divisions) * step)};
@@ -336,6 +354,7 @@ function drawGrid({left, right, top, bottom, x, y}, width, yTicks) {
   ctx.lineWidth = 1;
   for (const value of yTicks) {
     const py = y(value);
+    if (axisScale === 'log' && value !== 0 && Math.abs(py - y(0)) < 20) continue;
     const boundaryColor = ratingLimits.includes(Math.abs(value)) ? deviationColor(value) : null;
     ctx.strokeStyle = boundaryColor ? boundaryColor + '50' : '#272d37';
     ctx.beginPath();
@@ -544,7 +563,7 @@ function draw() {
     const {extent, ticks} = chartScale(peak);
     const left = displayScale === 'dollars' ? 82 : 65, right = rect.width - 20, top = 18, bottom = rect.height - 35;
     const x = time => left + (time - state.start) / (state.end - state.start || 1) * (right - left);
-    const y = value => bottom - (value + extent) / (2 * extent) * (bottom - top);
+    const y = value => top + axisPosition(value, extent) * (bottom - top);
     geometry = {left, right, top, bottom, x, y};
     drawGrid(geometry, rect.width, ticks);
     const peg = drawPrices(geometry, extent, high, low);
@@ -703,6 +722,11 @@ window.addEventListener('popstate', () => {
 $('display-scale').addEventListener('change', event => {
   displayScale = event.target.value;
   try { localStorage.setItem('dotusd-display-scale', displayScale); } catch {}
+  applyScale();
+});
+$('axis-scale').addEventListener('change', event => {
+  axisScale = event.target.value;
+  try { localStorage.setItem('dotusd-axis-scale', axisScale); } catch {}
   applyScale();
 });
 applyScale();
