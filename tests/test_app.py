@@ -8,6 +8,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AppTests(unittest.TestCase):
+    def test_current_metrics_only_in_live_view(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        state.rows = RangeSeries.fromWire([[100, 1, 1.0001]]);
+        summaryValues = {last: state.rows.at(-1), low: state.rows.low, high: state.rows.high};
+        displayScale = 'dollars';
+        for (const [live, zoom] of [[true, null], [false, [90, 110]], [true, [90, 110]], [true, null]]) {
+            state.live = live; state.zoom = zoom;
+            hoveredRating = 4;
+            summary();
+            const historical = !live || !!zoom;
+            require($('latest').textContent === (historical ? '-' : '$1.000100'), 'price follows view mode');
+            require($('price').textContent === (historical ? '-' : '1.000100'), 'spot follows view mode');
+            require($('rating-value').textContent === (historical ? '-' : 'Horrible'), 'history suppresses rating previews');
+            require($('extremes').textContent === '$1.000100 / $1.000100', 'historical extrema remain visible');
+        }
+        true;
+        """
+        self.assertTrue(evaluate(source))
+
     def test_stream_completion_and_cancelled_responses(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')

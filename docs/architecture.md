@@ -77,6 +77,10 @@ scale-only navigation redraws cached data without refetching history.
 In dollar-price mode, the redundant spot-price summary is hidden with
 `visibility: hidden`, preserving its space and the surrounding layout. It remains
 visible in basis-point and percent modes.
+Peg tightness, the current price/deviation, and spot price show `-` in historical
+views, including zoomed and shared fixed ranges. Rating hover/focus previews are
+also suppressed there. These metrics resume in live view; range low/high remains
+available in either view.
 
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a

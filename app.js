@@ -161,7 +161,7 @@ function ratingGradient(context, top, bottom, extent, alpha = '') {
   return gradient;
 }
 function updateRating() {
-  const last = summaryValues?.last;
+  const last = state.live && !state.zoom ? summaryValues?.last : null;
   const bps = last ? (last[1] - 1) * 10000 : NaN;
   const current = ratingForBps(bps);
   const preview = last ? hoveredRating ?? focusedRating : null;
@@ -174,13 +174,14 @@ function updateRating() {
     else segment.removeAttribute('aria-current');
   });
   $('rating-value').textContent = displayed < 0 ? '-' : ratingNames[displayed];
-  $('rating-caption').textContent = displayed < 0 ? 'Waiting for prices' : ratingBand(displayed);
+  $('rating-caption').textContent = displayed < 0 ? (state.live && !state.zoom ? 'Waiting for prices' : '-') : ratingBand(displayed);
 }
 function summary() {
   const rows = state.rows, last = rows.at(-1);
   const ready = summaryValues?.last;
-  $('latest').textContent = ready ? formatScale((ready[1] - 1) * 10000) : '-';
-  $('price').textContent = ready ? ready[1].toFixed(6) : '-';
+  const livePrice = state.live && !state.zoom ? ready : null;
+  $('latest').textContent = livePrice ? formatScale((livePrice[1] - 1) * 10000) : '-';
+  $('price').textContent = livePrice ? livePrice[1].toFixed(6) : '-';
   const low = ready ? (summaryValues.low[1]-1)*10000 : 0;
   const high = ready ? (summaryValues.high[1]-1)*10000 : 0;
   $('extremes').textContent = ready ? `${formatScale(low)} / ${formatScale(high)}` : '-';
