@@ -362,13 +362,6 @@ function drawGrid({left, right, top, bottom, x, y}, width, yTicks) {
     ctx.fillText(label, px, bottom + 23);
   }
 
-  ctx.setLineDash([]);
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 0.6;
-  ctx.beginPath();
-  ctx.moveTo(left, y(0));
-  ctx.lineTo(right, y(0));
-  ctx.stroke();
 }
 
 function markExtreme(row, {x, y}) {
@@ -400,9 +393,15 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   ctx.lineCap = 'round';
   ctx.beginPath();
   let previous;
+  let overlapsPeg = false, previousOffset;
+  const pegY = y(0);
   // Draw range endpoints, preserving pixel extrema and every real block gap.
   for (const {row, move} of pixelRows(state.rows, x, connectSamples)) {
     const px = x(row[0]), py = y((row[1] - 1) * 10000);
+    const offset = py - pegY;
+    // Screen-space clearance also works for zero variance and at every zoom.
+    if (Math.abs(offset) <= 2 || (!move && offset * previousOffset <= 0)) overlapsPeg = true;
+    previousOffset = offset;
     if (move) {
       if (previous) {
         area.lineTo(x(previous[0]), y(0));
@@ -440,6 +439,7 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
     }
   }
   ctx.restore();
+  return overlapsPeg;
 }
 
 function drawOverlay({left, right, top, bottom, x, y}, width, height) {
@@ -523,7 +523,16 @@ function draw() {
     const y = value => bottom - (value + extent) / (2 * extent) * (bottom - top);
     geometry = {left, right, top, bottom, x, y};
     drawGrid(geometry, rect.width, ticks);
-    drawPrices(geometry, extent, high, low);
+    const overlapsPeg = drawPrices(geometry, extent, high, low);
+    if (!overlapsPeg) {
+      ctx.setLineDash([]);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(left, y(0));
+      ctx.lineTo(right, y(0));
+      ctx.stroke();
+    }
 
     if (backing.width !== width || backing.height !== height) {
       backing.width = width;

@@ -113,6 +113,22 @@ function checkApp() {
   chartDirty = true;
   draw();
   assert(tip.hidden, 'empty chart hides the tooltip');
+  function checkPeg(ranges, visible, message) {
+    state.rows = RangeSeries.fromWire(ranges);
+    state.extremes = null;
+    chartDirty = true;
+    drawing.length = 0;
+    draw();
+    assert(drawing.some(call => call[1] === 'strokeStyle' && call[2] === '#ffffff') === visible, message);
+  }
+  checkPeg([[110, 1, 1], [1, 20, 1, 1]], false, 'flat peg prices hide the white line');
+  checkPeg([[110, 1, 1.000001]], false, 'subpixel proximity hides the white line');
+  checkPeg([[110, 1, .9999], [1, 20, 1, 1.0001]], false, 'connected crossing hides the white line');
+  checkPeg([[110, 1, 1.0001], [1, 20, 1, 1.0002]], true, 'separated prices retain the white line');
+  if (!coingecko) {
+    checkPeg([[110, 1, .9999], [0, 130, 5, 1.0001]], true, 'a block gap is not a crossing');
+  }
+  checkPeg([], true, 'empty chart retains the peg reference');
   // Returning traces also supports comparisons against the pre-refactor renderer.
   return {initialDraw, hoverDraw, zoom: state.zoom};
 }
