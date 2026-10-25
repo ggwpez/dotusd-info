@@ -15,6 +15,7 @@ ASSET = 7873
 BLOCKS = 15
 RETENTION = 7 * 86400
 MAX_CHANGES = 4096
+MAX_SAMPLES = 350000
 
 
 def asset_key(asset):
@@ -128,29 +129,54 @@ class IssuanceCache:
         self.rows = rows
 
     def selection(self, start, end, cursor=None):
-        """Return a bounded revision delta, or a full window after cursor loss."""
+        """Return recent revision deltas or bounded persisted historical snapshots."""
+        historical = self.history_path is not None and start < time.time() - RETENTION
+        limit_error = f'Issuance window exceeds {MAX_SAMPLES} samples; request a smaller window'
         with self.lock:
-            revision = None
-            if isinstance(cursor, str):
-                instance, separator, value = cursor.partition(':')
-                if separator and instance == self.instance and value.isascii() and value.isdigit():
-                    # Cursors are opaque to callers; reject oversized or future revisions.
-                    if len(value) <= 20:
-                        revision = int(value)
-            oldest = self.changes[0][0] - 1 if self.changes else self.revision
-            reset = revision is None or not oldest <= revision <= self.revision
-            if reset:
-                rows = self.rows
-            else:
-                changed = {row[2]: row for version, row in self.changes if version > revision}
-                rows = (changed[number] for number in sorted(changed))
-            cutoff = max(start, time.time() - RETENTION) if self.history_path is not None else start
-            return {
-                'rows': tuple(row for row in rows if cutoff < row[0] <= end),
-                'cursor': f'{self.instance}:{self.revision}',
-                'reset': reset,
-                'error': self.error,
-            }
+            next_cursor, error = f'{self.instance}:{self.revision}', self.error
+            if not historical:
+                count = 0
+                for row in self.rows:
+                    if start < row[0] <= end:
+                        count += 1
+                        if count > MAX_SAMPLES:
+                            raise ValueError(limit_error)
+                revision = None
+                if isinstance(cursor, str):
+                    instance, separator, value = cursor.partition(':')
+                    if separator and instance == self.instance and value.isascii() and value.isdigit():
+                        # Cursors are opaque to callers; reject oversized or future revisions.
+                        if len(value) <= 20:
+                            revision = int(value)
+                oldest = self.changes[0][0] - 1 if self.changes else self.revision
+                reset = revision is None or not oldest <= revision <= self.revision
+                if reset:
+                    rows = self.rows
+                else:
+                    changed = {row[2]: row for version, row in self.changes if version > revision}
+                    rows = (changed[number] for number in sorted(changed))
+                rows = tuple(row for row in rows if start < row[0] <= end)
+        if historical:
+            # Historical corrections do not enter the live revision journal.
+            # Always reset so callers replace their entire selected window.
+            # Disk reads must not hold up live publication.
+            with closing(self.database()) as db:
+                rows = db.execute(
+                    'SELECT timestamp,supply,number FROM issuance '
+                    'WHERE timestamp>? AND timestamp<=? '
+                    'ORDER BY timestamp,number LIMIT ?',
+                    (start, end, MAX_SAMPLES + 1)).fetchall()
+            if len(rows) > MAX_SAMPLES:
+                raise ValueError(limit_error)
+            rows.sort(key=lambda row: row[2])
+            rows = tuple(rows)
+            reset = True
+        return {
+            'rows': rows,
+            'cursor': next_cursor,
+            'reset': reset,
+            'error': error,
+        }
 
     def snapshot(self):
         with self.lock:

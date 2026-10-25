@@ -312,7 +312,7 @@ def historic_response(chunks, ti, streaming):
 
 class HistoryCache:
     """One writer fetches history; HTTP readers never access the upstream."""
-    def __init__(self):
+    def __init__(self, archive=None, history_path=None):
         self.lock = threading.Lock()
         self.writer_lock = threading.Lock()
         self.rows = ()
@@ -322,6 +322,52 @@ class HistoryCache:
         self.generation = 0
         self.responses = ResponseCache()
         self.repaired = {}
+        self.archive = archive
+        self.history_path = history_path
+
+    def _stored_rows(self, start, end):
+        rows = {}
+        if self.history_path is not None and self.history_path.exists():
+            with closing(sqlite3.connect(
+                    self.history_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='repairs'").fetchone():
+                    saved = db.execute(
+                        'SELECT sample_time,price,number FROM repairs '
+                        'WHERE sample_time>? AND sample_time<=? ORDER BY sample_time LIMIT ?',
+                        (start, end, MAX_SAMPLES + 1)).fetchall()
+                    if len(saved) > MAX_SAMPLES:
+                        raise ValueError('Too many price samples; request a smaller window.')
+                    rows.update((row[2], row) for row in saved)
+        if self.archive is not None and self.archive.exists():
+            with closing(sqlite3.connect(
+                    self.archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
+                first = db.execute('SELECT number FROM samples ORDER BY number LIMIT 1').fetchone()
+                last = db.execute('SELECT number FROM samples ORDER BY number DESC LIMIT 1').fetchone()
+                if first:
+                    # Published archives validate contiguous blocks and strictly
+                    # increasing sample times. Seek their existing number index,
+                    # without scanning or modifying the read-only archive.
+                    def boundary(stamp):
+                        low, high = first[0], last[0] + 1
+                        while low < high:
+                            middle = (low + high) // 2
+                            value = db.execute('SELECT sample_time FROM samples WHERE number=?',
+                                               (middle,)).fetchone()[0]
+                            if value <= stamp * 1000:
+                                low = middle + 1
+                            else:
+                                high = middle
+                        return low
+                    lower, upper = boundary(start), boundary(end)
+                    saved = db.execute(
+                        'SELECT sample_time,price,number FROM samples '
+                        'WHERE number>=? AND number<? AND price IS NOT NULL ORDER BY number LIMIT ?',
+                        (lower, upper, MAX_SAMPLES + 1)).fetchall()
+                    if len(saved) > MAX_SAMPLES:
+                        raise ValueError('Too many price samples; request a smaller window.')
+                    rows.update((number, (stamp / 1000, price, number))
+                                for stamp, price, number in saved)
+        return rows
 
     def merge(self, rows, now, mark_fresh=True, replace=False, missing_only=False):
         # Serialize writers, but let readers use the previous immutable snapshot
@@ -368,9 +414,26 @@ class HistoryCache:
             history, fetched_at, history_ready = self.rows, self.fetched_at, self.history_ready
             summaries = self.summaries
             generation = self.generation
-        if fetched_at is None:
-            raise RuntimeError('History is warming up')
-        start = max(start, time.time() - HISTORY_SECONDS)
+        cutoff = time.time() - HISTORY_SECONDS
+        query_start, query_end = window if window is not None else (start, end)
+        if query_start < cutoff and (self.archive is not None or self.history_path is not None):
+            saved = self._stored_rows(query_start, query_end)
+            # Collector samples supersede persisted prices by block, even when
+            # a correction moves the timestamp outside the selected window.
+            saved.update((row[2], row) for row in history if row[2] is not None and
+                         (row[2] in saved or query_start < row[0] <= query_end))
+            by_time = {row[0]: row for row in saved.values() if query_start < row[0] <= query_end}
+            by_time.update((row[0], row) for row in history if query_start < row[0] <= query_end)
+            if len(by_time) > MAX_SAMPLES:
+                raise ValueError('Too many price samples; request a smaller window.')
+            history = tuple(by_time[stamp] for stamp in sorted(by_time))
+            summaries = HistorySummaries(history)
+            generation = None
+            history_ready = query_end <= cutoff or history_ready
+        else:
+            if fetched_at is None:
+                raise RuntimeError('History is warming up')
+            start = max(start, cutoff)
         left = bisect_right(history, start, key=lambda row: row[0])
         right = bisect_right(history, end, key=lambda row: row[0])
         bounds = None
@@ -413,7 +476,7 @@ class HistoryCache:
         )
         def build():
             return encode_response(*self.read_selection(selection, after_block), raw=raw, streaming=streaming)
-        if not raw:
+        if not raw and selection['generation'] is not None:
             cached = self.responses.get(key, build)
             if cached is not None:
                 return cached
@@ -652,12 +715,23 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OverflowError) as error:
                 self.respond(400, {'error': str(error)})
                 return
+            except (sqlite3.Error, OSError):
+                logging.exception('Historical issuance read failed')
+                self.respond(503, {'error': 'Stored history is temporarily unavailable.'})
+                return
             chunks = None
             if 'price' in series:
                 try:
                     # Do not clip a block cursor by a floating-point start time.
-                    selection_start = time.time() - HISTORY_SECONDS if 'startpoint' in params else start
+                    selection_start = end - HISTORY_SECONDS if 'startpoint' in params else start
                     chunks = cache.response(selection_start, end, window, after_block, raw, streaming)
+                except ValueError as error:
+                    self.respond(400, {'error': str(error)})
+                    return
+                except (sqlite3.Error, OSError):
+                    logging.exception('Historical price read failed')
+                    self.respond(503, {'error': 'Stored history is temporarily unavailable.'})
+                    return
                 except RuntimeError:
                     if ti is None:
                         self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
@@ -724,7 +798,7 @@ def main():
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
-    server.cache = HistoryCache()
+    server.cache = HistoryCache(archive=args.archive, history_path=args.gap_repair_history)
     server.issuance = IssuanceCache(history_path=args.gap_repair_history)
     worker = None
     repair = None

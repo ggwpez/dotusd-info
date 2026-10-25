@@ -17,8 +17,8 @@ The API flags incomplete startup history; browsers retry incomplete ranges, incl
 fixed shared ranges, until history is complete.
 Visitor requests never query Prometheus. The cache retains at most seven days and
 350,000 samples, preserves raw timestamps and gaps, and remains readable during
-upstream outages. Restarts rebuild the cache; the API returns 503 until the first
-successful fetch. Readers capture an immutable snapshot under a brief lock, then
+upstream outages. Restarts rebuild the cache; recent price requests return 503
+until the first successful fetch. Readers capture an immutable snapshot under a brief lock, then
 scan it without holding the lock. Writers build replacements separately and
 publish rows and freshness together, so ongoing reads retain a consistent view.
 Each snapshot caches min/max prices and the highest block number for groups of
@@ -28,6 +28,22 @@ The cache holds at most 1,368 summaries (about 107 KiB per snapshot on the serve
 references existing samples, and never grows with the number of requested windows.
 Summaries are rebuilt on merges, including corrections and eviction, and are
 released with their snapshot when its readers finish.
+
+Historic API requests may select any past `(start, end]` window, not just the
+latest seven days. Each price/TI window must span one second to seven days,
+with at most 350,000 samples per series; oversized windows return HTTP 400
+rather than a truncated result. Explicit `end` (or `tiEnd`) anchors an old
+window; omitted ends retain the rolling live-window behavior.
+Windows crossing the live cache boundary also read persisted SQLite data.
+Price repairs use an indexed time-range query; the read-only published archive
+uses bounded seeks on its block-number index and validated monotonic clock.
+Collector cache rows override saved prices by block, and published archive
+prices override repair evidence. Historical reads do not query Prometheus or
+the chain, expand the live cache, or recover data that was never saved.
+Absent samples remain gaps. Disk read failures return HTTP 503.
+Historical price responses bypass the live response cache so saved corrections
+are visible; historical TI returns full reset snapshots rather than live deltas.
+
 Packed JSON and NDJSON responses share a six-second LRU across the four workers.
 It retains at most 32 entries and 8 MiB of encoded bytes, with a 4 MiB per-response
 limit; allocation follows actual responses, not seven days of hypothetical data.
@@ -66,8 +82,9 @@ A bounded 4,096-change journal tracks revisions without per-client server state.
 Missing, expired, or previous-server cursors return `reset: true` with a fresh
 selected-window snapshot. Unchanged polls return no TI rows. Rows are ordered
 by finalized block number, with nondecreasing timestamps.
-With `--gap-repair-history PATH`, the retained seven-day history includes
-restored, live and backfilled samples; missing blocks are omitted, so this is
+With `--gap-repair-history PATH`, the seven-day in-memory history includes
+restored, live and backfilled samples, with older saved samples available through
+explicit historical windows; missing blocks are omitted, so this is
 not a promise of complete coverage. Without that flag, the server retains at
 most the latest 15 finalized Polkadot Hub blocks. This is total issued dotUSD
 (asset ID 7873), not circulating supply or a pool reserve.
@@ -110,11 +127,12 @@ The separate repair worker fills missing historical issuance within the retained
 price block bounds, even when no price gaps remain; it does not enlarge the live
 worker's 15-block fetch window.
 
-Requests read only cached rows and never trigger RPC work. Without restored
-history, TI starts with an empty `ti.rows` array and a loading `ti.error`.
+Requests read cached rows or bounded SQLite windows and never trigger RPC work.
+Without saved history, TI starts with an empty `ti.rows` array and a loading `ti.error`.
 TI-only and combined requests return HTTP 200 even while price history warms;
 combined responses then include empty prices with `historyReady: false`.
-Price-only requests return HTTP 503 until prices are ready. On live RPC or
+Recent price-only requests return HTTP 503 until prices are ready; older saved
+windows remain readable during startup. On live RPC or
 decoding failure, retained TI remains available with a non-null `ti.error`;
 a successful live refresh clears it. No synthetic values, zero replacements
 for missing state, or extrapolated timestamps are generated.

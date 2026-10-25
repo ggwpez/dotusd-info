@@ -239,6 +239,97 @@ class IssuanceTests(unittest.TestCase):
         with closing(cache.database()) as db:
             self.assertEqual(db.execute('SELECT timestamp,supply,number FROM issuance').fetchall(), [old])
 
+    def test_historical_selection_reads_saved_rows_without_expanding_live_cache(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        old = (now - 20 * RETENTION, 1., 1)
+        recent = (now - 10, 2., 2)
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([old, recent], live=True)
+            live_rows, revision, changes = cache.rows, cache.revision, tuple(cache.changes)
+            selected = cache.selection(old[0] - 1, old[0])
+            self.assertEqual(selected['rows'], (old,))
+            self.assertTrue(selected['reset'])
+            self.assertIsNone(selected['error'])
+            self.assertEqual(cache.rows, live_rows)
+            self.assertEqual(cache.revision, revision)
+            self.assertEqual(tuple(cache.changes), changes)
+            restarted = IssuanceCache(cache.history_path)
+            self.assertEqual(restarted.selection(old[0] - 1, old[0])['rows'], (old,))
+            self.assertEqual(restarted.rows, ())
+
+    def test_historical_windows_exclude_start_include_end_and_cross_retention(self):
+        now = 1_700_001_000
+        cutoff = now - RETENTION
+        cache = self.persistent_cache()
+        rows = ((cutoff - 20, 1., 1), (cutoff - 10, 2., 2),
+                (cutoff - 10, 3., 3), (cutoff, 4., 4), (cutoff + 10, 5., 5))
+        with patch('issuance.time.time', return_value=now):
+            cache.merge(rows)
+            self.assertEqual(cache.selection(cutoff - 20, cutoff - 10)['rows'], rows[1:3])
+            self.assertEqual(cache.selection(cutoff - 20, cutoff + 10)['rows'], rows[1:])
+            self.assertEqual(cache.selection(cutoff - 10, cutoff - 10)['rows'], ())
+            self.assertEqual(cache.selection(cutoff - 9, cutoff - 1)['rows'], ())
+            self.assertEqual(cache.selection(cutoff, cutoff + 10)['rows'], rows[4:])
+            self.assertEqual(cache.rows, rows[4:])
+
+    def test_historical_cursors_reset_to_saved_corrections_even_without_new_revision(self):
+        now = 1_700_001_000
+        start = now - 10 * RETENTION
+        cache = self.persistent_cache()
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([(start + 10, 1., 1), (start + 20, 2., 2)], live=True)
+            first = cache.selection(start, start + 20)
+            unchanged = cache.selection(start, start + 20, first['cursor'])
+            self.assertEqual(unchanged['rows'], first['rows'])
+            self.assertTrue(unchanged['reset'])
+            cache.merge([(start + 10, 11., 1), (start + 30, 22., 2)])
+            corrected = cache.selection(start, start + 20, first['cursor'])
+            self.assertEqual(corrected['rows'], ((start + 10, 11., 1),))
+            self.assertEqual(corrected['cursor'], first['cursor'])
+            self.assertTrue(corrected['reset'])
+            self.assertEqual(cache.rows, ())
+            self.assertEqual(tuple(cache.changes), ())
+
+    def test_historical_selection_rejects_overflow_with_bounded_query_without_live_lock(self):
+        now = 1_700_001_000
+        start = now - 10 * RETENTION
+        cache = self.persistent_cache()
+        rows = tuple((start + number, float(number), number) for number in range(1, 9))
+        statements = []
+        database = cache.database
+        def traced_database():
+            self.assertFalse(cache.lock.locked())
+            db = database()
+            db.set_trace_callback(statements.append)
+            return db
+        with patch('issuance.time.time', return_value=now), patch('issuance.MAX_SAMPLES', 2):
+            cache.merge(rows)
+            with patch.object(cache, 'database', side_effect=traced_database):
+                self.assertEqual(cache.selection(start, start + 2)['rows'], rows[:2])
+                with self.assertRaisesRegex(ValueError, 'exceeds 2 samples; request a smaller window'):
+                    cache.selection(start, start + 8)
+            queries = [statement for statement in statements if statement.startswith('SELECT')]
+            self.assertEqual(len(queries), 2)
+            self.assertTrue(all(query.endswith('LIMIT 3') for query in queries))
+            self.assertEqual(cache.rows, ())
+
+    def test_recent_selection_rejects_oversized_windows_even_with_current_cursor(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        rows = ((now - 30, 1., 1), (now - 20, 2., 2), (now - 10, 3., 3))
+        with patch('issuance.time.time', return_value=now), patch('issuance.MAX_SAMPLES', 2):
+            cache.merge(rows[:2], live=True)
+            first = cache.selection(now - 40, now)
+            self.assertEqual(first['rows'], rows[:2])
+            self.assertEqual(cache.selection(now - 40, now, first['cursor'])['rows'], ())
+            cache.merge(rows[2:])
+            for cursor in (None, first['cursor'], f'{cache.instance}:{cache.revision}'):
+                with self.subTest(cursor=cursor), self.assertRaisesRegex(
+                        ValueError, 'exceeds 2 samples; request a smaller window'):
+                    cache.selection(now - 40, now, cursor)
+            self.assertEqual(cache.selection(now - 30, now)['rows'], rows[1:])
+
     def test_revision_deltas_include_repairs_and_coalesce_corrections(self):
         now = 1_700_001_000
         cache = self.persistent_cache()
@@ -281,10 +372,13 @@ class IssuanceTests(unittest.TestCase):
             delta = cache.selection(now - 50, now - 30, initial['cursor'])
             self.assertEqual(delta['rows'], ((now - 40, 12., 2), (now - 30, 13., 3)))
             self.assertFalse(delta['reset'])
-            # Retention clips even a caller's wider selected window.
+            # Aging out of the live cache must not clip persisted selections.
             with patch('issuance.time.time', return_value=now + RETENTION - 35):
-                retained = cache.selection(now - 100, now)
-            self.assertEqual(retained['rows'], ((now - 30, 13., 3), (now - 20, 14., 4)))
+                retained = cache.selection(now - 100, now, delta['cursor'])
+            self.assertTrue(retained['reset'])
+            self.assertEqual(retained['rows'], (
+                (now - 50, 11., 1), (now - 40, 12., 2),
+                (now - 30, 13., 3), (now - 20, 14., 4)))
 
     def test_bounded_revision_journal_resets_expired_and_restart_cursors(self):
         now = 1_700_001_000

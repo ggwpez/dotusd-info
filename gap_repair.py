@@ -35,6 +35,7 @@ class GapRepair:
             number INTEGER PRIMARY KEY, hash TEXT NOT NULL,
             timestamp INTEGER NOT NULL, sample_time REAL NOT NULL,
             price REAL NOT NULL, reserves TEXT NOT NULL)''')
+        db.execute('CREATE INDEX IF NOT EXISTS repairs_time ON repairs(sample_time)')
         return db
 
     def restore(self, db):

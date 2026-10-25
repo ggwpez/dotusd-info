@@ -70,6 +70,12 @@ range; it is gradual, not a guarantee of complete seven-day coverage.
 Without that flag, issuance remains a recent-only, in-memory preview.
 The server never automatically prunes saved price repairs, evidence, or issuance.
 The SQLite file can grow indefinitely; the chart still shows at most seven days.
+Historical API requests can read saved data older than seven days. Supply explicit
+`start` and `end` Unix timestamps to `/api/historic?series=price,ti`; each requested
+window may span at most seven days and return at most 350,000 samples per series.
+Larger requests return HTTP 400; split them into smaller windows. Older prices
+come from the published archive and saved repairs, not an on-demand Prometheus
+query. Missing history remains missing. This does not extend the chart's controls.
 
 Issuance uses actual chain timestamps and renders as a thicker, solid blue line
 without sample dots;
