@@ -40,9 +40,9 @@ class GapRepair:
     def restore(self, db):
         if self.issuance is not None:
             self.issuance.restore()
-        with db:
-            db.execute('DELETE FROM repairs WHERE sample_time<=?', (time.time() - RETENTION,))
-        cursor = db.execute('SELECT sample_time,price,number FROM repairs ORDER BY number')
+        cursor = db.execute(
+            'SELECT sample_time,price,number FROM repairs WHERE sample_time>? ORDER BY number',
+            (time.time() - RETENTION,))
         while not self.stop.is_set():
             rows = cursor.fetchmany(2000)
             if not rows:
@@ -53,10 +53,8 @@ class GapRepair:
 
     def poll(self, db):
         now = time.time()
-        with db:
-            db.execute('DELETE FROM repairs WHERE sample_time<=?', (now - RETENTION,))
         if self.issuance is not None:
-            # Also prune during an RPC outage or while price history warms up.
+            # Expire only in-memory rows, including during RPC outages.
             self.issuance.merge((), now=now)
         with self.cache.lock:
             if not self.cache.history_ready:

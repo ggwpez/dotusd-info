@@ -1,4 +1,4 @@
-"""Finalized dotUSD issuance, with optional persistent seven-day history."""
+"""Finalized dotUSD issuance, with permanent storage and a seven-day cache."""
 import hashlib
 from collections import deque
 from contextlib import closing
@@ -101,13 +101,14 @@ class IssuanceCache:
         cutoff = now - RETENTION
         with closing(self.database()) as db:
             with db:
-                db.execute('DELETE FROM issuance WHERE timestamp<=?', (cutoff,))
                 retained = {row[2]: row for row in self.rows if row[0] > cutoff}
                 if not self.restored:
-                    for row in db.execute('SELECT timestamp,supply,number FROM issuance ORDER BY number'):
+                    for row in db.execute(
+                            'SELECT timestamp,supply,number FROM issuance WHERE timestamp>? ORDER BY number',
+                            (cutoff,)):
                         retained.setdefault(row[2], row)
-                incoming = [tuple(row) for row in rows if row[0] > cutoff]
-                retained.update((row[2], row) for row in incoming)
+                incoming = [tuple(row) for row in rows]
+                retained.update((row[2], row) for row in incoming if row[0] > cutoff)
                 merged = tuple(retained[number] for number in sorted(retained))
                 if any(a[0] > b[0] for a, b in zip(merged, merged[1:])):
                     raise ValueError('Issuance timestamps moved backwards')

@@ -198,7 +198,7 @@ class IssuanceTests(unittest.TestCase):
             restarted.restore()
             self.assertEqual(restarted.snapshot()['rows'], worker.cache.snapshot()['rows'])
             with closing(restarted.database()) as db:
-                self.assertEqual(db.execute('SELECT count(*) FROM issuance WHERE number=1').fetchone()[0], 0)
+                self.assertEqual(db.execute('SELECT count(*) FROM issuance WHERE number=1').fetchone()[0], 1)
 
     def test_persistence_failure_preserves_good_history_and_retries(self):
         now = 1_700_001_000
@@ -217,7 +217,7 @@ class IssuanceTests(unittest.TestCase):
             self.assertIsNone(worker.cache.snapshot()['error'])
             self.assertEqual([row[2] for row in worker.cache.snapshot()['rows']], list(range(86, 102)))
 
-    def test_restart_prunes_expired_disk_rows_without_price_history(self):
+    def test_restart_preserves_expired_disk_rows_without_price_history(self):
         now = 1_700_001_000
         cache = self.persistent_cache()
         old = (now - RETENTION, 1., 1)
@@ -228,7 +228,16 @@ class IssuanceTests(unittest.TestCase):
             restarted.restore()
             self.assertEqual(restarted.snapshot()['rows'], (kept,))
             with closing(restarted.database()) as db:
-                self.assertEqual(db.execute('SELECT number FROM issuance').fetchall(), [(2,)])
+                self.assertEqual(db.execute('SELECT number FROM issuance ORDER BY number').fetchall(), [(1,), (2,)])
+
+    def test_old_incoming_issuance_is_saved_without_expanding_cache(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        old = (now - RETENTION - 1, 1., 1)
+        cache.merge([old], now=now)
+        self.assertEqual(cache.rows, ())
+        with closing(cache.database()) as db:
+            self.assertEqual(db.execute('SELECT timestamp,supply,number FROM issuance').fetchall(), [old])
 
     def test_revision_deltas_include_repairs_and_coalesce_corrections(self):
         now = 1_700_001_000

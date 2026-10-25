@@ -129,9 +129,9 @@ and total issuance history.
 The supplied service enables `--gap-repair-history
 /var/lib/dotusd-quotes/pool-repairs.sqlite3`. This uses the existing writable
 state directory and needs no additional service or timer. The same SQLite file
-stores price-repair evidence and seven days of total issuance, including
+stores price-repair evidence and total issuance indefinitely, including
 successful samples from the independent recent 15-block live issuance poll.
-Startup restores retained issuance before new RPC samples arrive.
+Startup restores the latest seven days of saved history before new RPC samples arrive.
 
 The repair worker queries the Parity archive independently of the live collector.
 Price repair and issuance backfill share a limit of eight archive blocks per pass,
@@ -144,6 +144,9 @@ or the independent issuance poll. Inspect `Archive gap repair` messages in
 `journalctl -u dotusd-info`.
 
 Omit the option to disable automatic repair and disk-backed issuance history;
-issuance then remains a recent-only, in-memory preview. Seven-day retention bounds
-repaired history, saved evidence and persisted issuance. The original chain
-timestamps are used for issuance rather than the estimated pool-price clock.
+issuance then remains a recent-only, in-memory preview. The server never
+automatically prunes repaired history, saved evidence, or persisted issuance;
+allow for ongoing SQLite disk growth. Only in-memory caches and chart windows
+are bounded to seven days. Previously deleted history is not recovered by this
+policy. The original chain timestamps are used for issuance rather than the
+estimated pool-price clock.

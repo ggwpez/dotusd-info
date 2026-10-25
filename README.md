@@ -64,10 +64,12 @@ digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is s
 An independent server-side live poll reads the latest 15 finalized blocks from the public
 Asset Hub RPC and refreshes every six seconds after each fetch. With
 `--gap-repair-history PATH` (enabled in production), successful live samples and
-historical issuance share the price-repair SQLite database, retain seven days,
-and restore at startup. Historical filling follows the retained price block
+historical issuance share the price-repair SQLite database and are kept indefinitely.
+Startup restores the latest seven days into memory. Historical filling follows the retained price block
 range; it is gradual, not a guarantee of complete seven-day coverage.
 Without that flag, issuance remains a recent-only, in-memory preview.
+The server never automatically prunes saved price repairs, evidence, or issuance.
+The SQLite file can grow indefinitely; the chart still shows at most seven days.
 
 Issuance uses actual chain timestamps and renders as a thicker, solid blue line
 without sample dots;

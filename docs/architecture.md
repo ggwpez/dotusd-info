@@ -104,7 +104,8 @@ skips older blocks rather than backfilling. Its recent window is published only
 when the entire refresh succeeds. Without gap repair, this is the whole in-memory
 issuance history. With gap repair, successful live samples also merge into the
 retained issuance cache and persist in the same SQLite database as archive
-repairs. Retained issuance restores at startup and expires after seven days.
+repairs. SQLite history is kept indefinitely; startup restores only the latest
+seven days, and only the in-memory issuance cache expires old samples.
 The separate repair worker fills missing historical issuance within the retained
 price block bounds, even when no price gaps remain; it does not enlarge the live
 worker's 15-block fetch window.
@@ -304,8 +305,9 @@ issuance samples or change the endpoint's live-refresh `error`.
 Price repairs preserve existing boundary samples and fit the chart's estimated
 two-second clock between them. Original chain timestamps, block hashes, prices
 and reserves are saved in a separate SQLite evidence database. Each small batch
-is committed atomically before publication, resumes after restart, and expires
-after seven days. The published backfill archive and collector database are never
+is committed atomically before publication and kept indefinitely. Restart loads
+only the latest seven days into the chart cache without deleting older evidence.
+The published backfill archive and collector database are never
 modified. Repaired samples do not refresh the live freshness timestamp. Delayed
 collector samples supersede repairs by block number, even if their estimated
 timestamps differ. Open charts retry their displayed history once per minute

@@ -66,6 +66,17 @@ class GapRepairTests(unittest.TestCase):
             restarted.poll(self.db)
         self.assertEqual(read.call_args_list[0].args[1], 109)
 
+    def test_restore_and_poll_preserve_expired_disk_repairs(self):
+        old = self.now - gap_repair.RETENTION - 1
+        evidence = (1, 'old-hash', int(old * 1000), old, 1.01, '[]')
+        with self.db:
+            self.db.execute('INSERT INTO repairs VALUES(?,?,?,?,?,?)', evidence)
+        self.worker.restore(self.db)
+        self.cache.history_ready = False
+        self.worker.poll(self.db)
+        self.assertEqual(self.db.execute('SELECT * FROM repairs').fetchall(), [evidence])
+        self.assertNotIn(1, [row[2] for row in self.cache.rows])
+
     def test_late_collector_replaces_repair_by_block(self):
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample):
             self.worker.poll(self.db)

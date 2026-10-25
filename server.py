@@ -718,7 +718,7 @@ def main():
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--gap-repair-history', type=Path,
-                        help='Persist seven-day issuance history and gradually repair missing issuance and pool prices')
+                        help='Persist issuance and price repairs indefinitely; gradually repair recent missing history')
     parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
                         help='Polkadot Hub HTTP archive RPC for recent issuance and pool-history gap repair')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
