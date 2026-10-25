@@ -170,10 +170,11 @@ layouts. Asset metadata decimals use the existing shared decoder.
 
 ## Treasury holdings
 
-`treasury.py` tracks asset 7873 in the Polkadot Treasury account
-`13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB`. The
-[Treasury runtime configuration](https://github.com/polkadot-fellows/runtimes/blob/main/system-parachains/asset-hubs/asset-hub-polkadot/src/treasury.rs)
-uses `PalletId(*b"py/trsry")`, yielding `b"modlpy/trsry"` padded to AccountId32.
+`treasury.py` tracks asset 7873 in the Treasury dotUSD holding account
+[`166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr`](https://assethub-polkadot.subscan.io/account/166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr).
+Its checksum-verified SS58 address decodes to AccountId32
+`e11d29483dc5b8673cbac3ada8e76a8fb747cf4a78107845db621adfd32709fb`,
+not the generic Treasury pallet account.
 [`Assets.Account`](https://paritytech.github.io/polkadot-sdk/master/pallet_assets/pallet/type.Account.html)
 uses `Blake2_128Concat` for both the SCALE u32 asset ID and AccountId32.
 The [account layout](https://github.com/paritytech/polkadot-sdk/blob/master/substrate/frame/assets/src/types.rs)
@@ -196,6 +197,13 @@ There is no Treasury live RPC worker; without archive repair its API is empty.
 The existing issuance setting shows both series on a shared right linear axis:
 TI blue, Treasury purple. Exact-block hover values distinguish measured data
 from coarse-line interpolation.
+
+`treasury_identity` records the asset ID and AccountId32 associated with saved
+holdings. On first database access, missing or mismatched identity atomically
+invalidates only Treasury rows before any restore or historical read. This
+corrects the earlier generic-pallet-account samples; TI and price history are
+untouched. Correct-account rows survive subsequent restarts, while the normal
+progressive grid refills invalidated history.
 
 
 ## Browser loading

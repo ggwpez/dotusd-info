@@ -5,10 +5,10 @@ from pathlib import Path
 from archive_reader import TIMESTAMP, decimals, metadata_key
 from issuance import ASSET, IssuanceCache, asset_key, total_supply
 
-# Polkadot Treasury PalletId(*b"py/trsry"), converted to AccountId32.
-# SS58: 13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB
-# https://github.com/polkadot-fellows/runtimes/blob/main/system-parachains/asset-hubs/asset-hub-polkadot/src/treasury.rs
-TREASURY_ACCOUNT = b'modlpy/trsry'.ljust(32, b'\0')
+# Treasury dotUSD holding account, not the generic Treasury pallet account.
+# https://assethub-polkadot.subscan.io/account/166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr
+TREASURY_ACCOUNT = bytes.fromhex(
+    'e11d29483dc5b8673cbac3ada8e76a8fb747cf4a78107845db621adfd32709fb')
 
 
 def account_key(asset=ASSET):
@@ -95,6 +95,30 @@ class TreasuryHistory(IssuanceCache):
 
     def __init__(self, path=None):
         super().__init__(Path(path) if path is not None else None)
+        self._identity_checked = False
         if path is None:
             # Treasury is archive-backed only; no separate live RPC worker.
             self.error = None
+
+    def database(self):
+        db = super().database()
+        if self._identity_checked:
+            return db
+        try:
+            # Serialize initialization across HTTP and archive connections.
+            # Untagged rows predate the correction and belong to the wrong account.
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                db.execute('''CREATE TABLE IF NOT EXISTS treasury_identity (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    asset INTEGER NOT NULL, account BLOB NOT NULL)''')
+                saved = db.execute('SELECT asset,account FROM treasury_identity WHERE id=1').fetchone()
+                identity = (ASSET, TREASURY_ACCOUNT)
+                if saved != identity:
+                    db.execute('DELETE FROM treasury')
+                    db.execute('INSERT OR REPLACE INTO treasury_identity VALUES(1,?,?)', identity)
+            self._identity_checked = True
+            return db
+        except Exception:
+            db.close()
+            raise

@@ -1,6 +1,7 @@
 from contextlib import closing
 from pathlib import Path
 import tempfile
+import sqlite3
 import unittest
 from unittest.mock import Mock, patch
 
@@ -21,17 +22,14 @@ def metadata(precision=6):
 
 
 class TreasuryDecodingTests(unittest.TestCase):
-    def test_canonical_account_and_double_map_key(self):
-        # SS58 address documented by the Polkadot Hub runtime's treasury.rs.
-        self.assertEqual(TREASURY_ACCOUNT.hex(),
-                         '6d6f646c70792f74727372790000000000000000000000000000000000000000')
-        # Independently queried through Parity WSS at finalized block 22281818.
+    def test_holding_account_double_map_key(self):
+        # Supplied SS58 166ASLGT...AB7RBQr, verified through Parity at #22282222.
         self.assertEqual(account_key(),
                          '0x682a59d51ab9e48a8c8cc418ff9708d2b'
                          '99d880ec681799c0cf30e8886371da99'
                          '74267ef3a34a5b57b06f26556087d7dc11e0000'
-                         '5ecffd7b6c0f78751baa9d281e0bfa3a'
-                         '6d6f646c70792f74727372790000000000000000000000000000000000000000')
+                         '70efc9d2cec9ba782dbf98ae4d2831ed'
+                         'e11d29483dc5b8673cbac3ada8e76a8fb747cf4a78107845db621adfd32709fb')
 
     def test_full_u128_and_every_status_and_existence_reason(self):
         for amount in (0, 123456789, 2 ** 128 - 1):
@@ -225,6 +223,38 @@ class TreasuryHistoryTests(unittest.TestCase):
         with closing(history.database()) as db:
             self.assertEqual(db.execute('SELECT timestamp,balance,number FROM treasury').fetchall(),
                              [old])
+
+    def test_wrong_account_history_is_invalidated_without_touching_other_series(self):
+        for tagged in (False, True):
+            with self.subTest(tagged=tagged):
+                path = self.path.with_name(f'legacy-{tagged}.db')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with sqlite3.connect(path) as db:
+                    db.execute('CREATE TABLE treasury (number INTEGER PRIMARY KEY, timestamp REAL, balance REAL)')
+                    db.execute('INSERT INTO treasury VALUES(1,?,0.01)', (self.now - 10,))
+                    db.execute('CREATE TABLE issuance (number INTEGER PRIMARY KEY, timestamp REAL, supply REAL)')
+                    db.execute('INSERT INTO issuance VALUES(1,?,123)', (self.now - 10,))
+                    db.execute('CREATE TABLE repairs (number INTEGER PRIMARY KEY, evidence TEXT)')
+                    db.execute("INSERT INTO repairs VALUES(1,'preserved')")
+                    if tagged:
+                        db.execute('CREATE TABLE treasury_identity (id INTEGER PRIMARY KEY, asset INTEGER, account BLOB)')
+                        db.execute('INSERT INTO treasury_identity VALUES(1,?,?)',
+                                   (ASSET, b'modlpy/trsry'.ljust(32, b'\0')))
+                history = TreasuryHistory(path)
+                history.restore()
+                self.assertEqual(history.snapshot()['rows'], ())
+                replacement = (self.now - 10, 3695136.738676, 1)
+                history.merge([replacement])
+                restarted = TreasuryHistory(path)
+                restarted.restore()
+                self.assertEqual(restarted.snapshot()['rows'], (replacement,))
+                with closing(restarted.database()) as db:
+                    self.assertEqual(db.execute('SELECT * FROM issuance').fetchall(),
+                                     [(1, self.now - 10, 123)])
+                    self.assertEqual(db.execute('SELECT * FROM repairs').fetchall(),
+                                     [(1, 'preserved')])
+                    self.assertEqual(db.execute('SELECT asset,account FROM treasury_identity').fetchall(),
+                                     [(ASSET, TREASURY_ACCOUNT)])
 
     def test_no_history_configuration_returns_usable_empty_selection(self):
         history = TreasuryHistory()

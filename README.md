@@ -22,8 +22,9 @@ reused on restart. TI and Treasury balances missing at the same block use one
 storage query; already saved series are omitted. Open charts pick up all three
 series' repairs automatically. Treasury holdings are saved in the `treasury`
 table of the same repair database and exposed through the shared history API.
-The account is the Polkadot Treasury
-`13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB`; balances are in dotUSD units.
+The Treasury dotUSD holding account is
+[`166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr`](https://assethub-polkadot.subscan.io/account/166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr);
+balances are in dotUSD units. This is not the generic Treasury pallet account.
 
 The retired CoinGecko comparison implementation is preserved on the
 `preserve-coingecko` branch. Production serves only the pool-price chart;
@@ -98,7 +99,7 @@ coarse history; larger gaps stay disconnected. Lines between samples are visual
 interpolation, not additional measured values.
 Use the normal range buttons and drag-to-zoom controls for all three series.
 With issuance enabled, hovering a price point shows TI and Treasury for the same
-block (for example, `TI: 1.31M dotUSD` and `Treasury: 0.01 dotUSD`). Missing samples
+block (for example, `TI: 1.31M dotUSD` and `Treasury: 3.70M dotUSD`). Missing samples
 show `unavailable` for that series, never a nearby block's value. There is no
 separate value label outside the graph. Failed refreshes retain successful data.
 The browser uses one history subscription:
