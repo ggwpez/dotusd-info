@@ -781,7 +781,7 @@ const browserFullscreenSupported = !!(document.fullscreenEnabled && chartPanel.r
 $('browser-fullscreen').checked = browserFullscreen;
 $('browser-fullscreen').disabled = !browserFullscreenSupported;
 if (!browserFullscreenSupported) {
-  $('browser-fullscreen-help').textContent = 'Browser fullscreen is unavailable here. Fullscreen still expands the chart within the page.';
+  $('browser-fullscreen-help').textContent = 'Not supported by this browser. The chart can still fill the page.';
 }
 $('browser-fullscreen').addEventListener('change', event => {
   browserFullscreen = event.target.checked;
