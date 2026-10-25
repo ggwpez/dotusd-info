@@ -571,8 +571,23 @@ function drawOverlay({left, right, top, bottom, x, y}, width, height) {
     const price = document.createElement('div');
     price.textContent = `${row[1].toFixed(8)} ${source.currency}`;
     tip.append(stamp, value, price);
+    if (showIssuance) {
+      // Price timestamps are estimated; match actual chain samples by block.
+      let low = 0, high = issuanceRows.length;
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (issuanceRows[mid][2] < row[2]) low = mid + 1;
+        else high = mid;
+      }
+      const sample = issuanceRows[low];
+      const issuance = document.createElement('div');
+      issuance.textContent = sample && row[2] !== null && sample[2] === row[2]
+        ? `TI: ${issuanceNumber(sample[1])} dotUSD` : 'TI: unavailable';
+      issuance.style.color = issuanceColor;
+      tip.append(issuance);
+    }
     tip.style.left = `${Math.max(0, Math.min(px + 16, width - 230))}px`;
-    tip.style.top = `${Math.max(0, Math.min(py + 16, height - 100))}px`;
+    tip.style.top = `${Math.max(0, Math.min(py + 16, height - (showIssuance ? 125 : 100)))}px`;
   }
   ctx.restore();
 }

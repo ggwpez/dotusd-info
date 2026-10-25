@@ -73,8 +73,10 @@ Issuance uses actual chain timestamps and renders as a thicker, solid blue line
 without sample dots;
 missing blocks stay disconnected, so isolated samples are not drawn.
 Use the normal range buttons and drag-to-zoom controls for both series.
-Issuance appears only in the graph and on its right-hand axis, with no separate
-value label. Failed refreshes retain the last successful data.
+With issuance enabled, hovering a price point also shows TI for the same block
+(for example, `TI: 1.31M dotUSD`). Missing samples show `TI: unavailable`, never
+a nearby block's value. There is no separate issuance value label outside the
+graph. Failed refreshes retain the last successful data.
 `--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
 command above even without local Prometheus; only price history remains unavailable.
 

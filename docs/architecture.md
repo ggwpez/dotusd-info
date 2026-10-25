@@ -109,8 +109,11 @@ the issuance worker alongside the price and repair workers.
 
 The chart uses an independent linear right axis. It connects only consecutive
 issuance blocks and does not interpolate across missing blocks. Both series use
-the normal range buttons and drag-to-zoom controls. Issuance appears only in the
-graph and on its right-hand axis, without a separate legend or status readout.
+the normal range buttons and drag-to-zoom controls. With issuance enabled, the
+price tooltip binary-searches issuance by block number, not estimated price
+timestamp. It shows the matching supply in compact dotUSD units, or
+`TI: unavailable` for missing blocks. Disabling issuance removes this tooltip
+row. There is no separate issuance legend or status readout.
 
 ### Storage decoding evidence
 

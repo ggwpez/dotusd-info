@@ -92,6 +92,21 @@ function checkApp() {
   assert(!tip.hidden && tip.children[1].textContent === '+10.00 bps', 'hover shows sample deviation');
   const hoverDraw = drawing.slice();
 
+  showIssuance = true;
+  issuanceRows = [[110, 1000000, 1], [110, 1307938.731358, 2], [180, 2000000, 5]];
+  draw();
+  assert(tip.children[3].textContent === 'TI: 1.31M dotUSD',
+    'hover matches issuance by block despite estimated or duplicate timestamps');
+  issuanceRows = [[110, 1000000, 1], [180, 2000000, 5]];
+  draw();
+  assert(tip.children[3].textContent === 'TI: unavailable', 'hover does not bridge issuance gaps');
+  issuanceRows = [];
+  draw();
+  assert(tip.children[3].textContent === 'TI: unavailable', 'hover handles unloaded issuance');
+  showIssuance = false;
+  draw();
+  assert(tip.children.length === 3, 'disabled issuance leaves the price-only tooltip');
+
   canvas.events.keydown({key: 'ArrowRight', preventDefault() {}});
   assert(state.hover === 2, 'keyboard moves to next sample');
   canvas.events.keydown({key: 'ArrowRight', preventDefault() {}});
