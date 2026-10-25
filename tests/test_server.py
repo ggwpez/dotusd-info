@@ -6,6 +6,7 @@ import math
 from itertools import permutations
 import random
 import queue
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -715,6 +716,45 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(extremes['high'][2], 2)
         self.assertIsNone(cache.read(now-20, now, (now-300, now-200))[3])
         self.assertEqual(cache.read(now-20, now, (now-80, now))[3]['high'][2], 3)
+
+    def test_archive_only_loads_later_upload_in_batches_without_upstream(self):
+        now = int(time.time())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'archive.sqlite3'
+            cache = page.HistoryCache(archive=path)
+            worker = page.HistoryWorker(cache, None, archive=path)
+            worker.poll = Mock(side_effect=AssertionError('Archive-only must not poll Prometheus'))
+            waits, readiness = [], []
+
+            def wait(delay):
+                waits.append(delay)
+                readiness.append(cache.history_ready)
+                if len(waits) == 1:
+                    # No archive is a legitimate empty result, not a live fetch.
+                    self.assertEqual(cache.read(now - 5000, now), ([], None, True, None))
+                    staged = path.with_suffix('.upload')
+                    with sqlite3.connect(staged) as db:
+                        db.execute('CREATE TABLE samples (seq INTEGER PRIMARY KEY, '
+                                   'number INTEGER UNIQUE, sample_time INTEGER, price REAL)')
+                        db.executemany('INSERT INTO samples VALUES (?, ?, ?, ?)',
+                                       [(i, i, (now - 4004 + i * 2) * 1000, 1.01)
+                                        for i in range(1, 2002)])
+                    staged.replace(path)
+                elif len(waits) == 2:
+                    self.assertEqual(worker.archive_seq, 2000)
+                    with self.assertRaisesRegex(RuntimeError, 'warming up'):
+                        cache.read(now - 5000, now)
+                else:
+                    worker.stop.set()
+
+            with patch.object(worker.stop, 'wait', side_effect=wait):
+                worker.run()
+            self.assertEqual(waits, [6, 0.05, 6])
+            self.assertEqual(readiness, [True, False, True])
+            self.assertEqual([row[2] for row in cache.read(now - 5000, now)[0]],
+                             list(range(1, 2002)))
+            self.assertIsNone(cache.fetched_at)
+            worker.poll.assert_not_called()
 
     def test_worker_seeds_then_only_refreshes_incrementally(self):
         cache = page.HistoryCache()

@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: docker.gitea.com/runner-images:ubuntu-24.04
     steps:
       - uses: https://github.com/actions/checkout@v4
@@ -18,3 +18,39 @@ jobs:
           .venv/bin/python -m pip install -r requirements.txt
       - name: Run tests
         run: .venv/bin/python -m unittest discover -s tests -v
+
+  deploy:
+    needs: checks
+    if: ${{ gitea.event_name == 'push' && gitea.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-24.04
+    container: docker.gitea.com/runner-images:ubuntu-24.04
+    concurrency:
+      group: dotusd-info-production
+      cancel-in-progress: false
+    env:
+      REGISTRY: gitea.vpn.selenio-software.ltd
+      IMAGE: gitea.vpn.selenio-software.ltd/selenio-software-ltd/dotusd-info
+      DEPLOY_COMMIT: ${{ gitea.sha }}
+    steps:
+      - uses: https://github.com/actions/checkout@v4
+      - name: Build and publish image
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -eu
+          trap 'docker logout "$REGISTRY" >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" --username "$REGISTRY_USERNAME" --password-stdin
+          docker build --build-arg "DEPLOY_COMMIT=$DEPLOY_COMMIT" \
+            --tag "$IMAGE:$DEPLOY_COMMIT" --tag "$IMAGE:master" .
+          docker push "$IMAGE:$DEPLOY_COMMIT"
+          docker push "$IMAGE:master"
+      - name: Deploy to Coolify
+        env:
+          COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_DEPLOY_WEBHOOK }}
+          COOLIFY_DEPLOY_TOKEN: ${{ secrets.COOLIFY_DEPLOY_TOKEN }}
+        run: |
+          curl --request POST --fail-with-body --silent --show-error --output /dev/null \
+            --header "Authorization: Bearer $COOLIFY_DEPLOY_TOKEN" \
+            "$COOLIFY_DEPLOY_WEBHOOK"

@@ -8,7 +8,7 @@ from collections import deque, OrderedDict
 from concurrent.futures import Future
 from itertools import islice
 import logging
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 import json
 import math
 import os
@@ -446,7 +446,7 @@ class HistoryCache:
             generation = None
             history_ready = query_end <= cutoff or history_ready
         else:
-            if fetched_at is None:
+            if fetched_at is None and not history_ready:
                 raise RuntimeError('History is warming up')
             start = max(start, cutoff)
         left = bisect_right(history, start, key=lambda row: row[0])
@@ -562,18 +562,20 @@ class HistoryWorker:
     def run(self):
         while not self.stop.is_set():
             failed = False
-            try:
-                self.poll()
-            except Exception:
-                failed = True
-                logging.exception('Background price history refresh failed')
+            if self.upstream is not None:
+                try:
+                    self.poll()
+                except Exception:
+                    failed = True
+                    logging.exception('Background price history refresh failed')
             try:
                 self.archive_ready = self.load_archive()
             except (sqlite3.Error, OSError):
                 failed = True
                 logging.exception('Archive history load failed')
-            ready = (self.archive_ready and self.backfill_end is not None and
-                     self.backfill_end <= time.time() - HISTORY_SECONDS)
+            ready = (self.archive_ready and
+                     (self.upstream is None or (self.backfill_end is not None and
+                                               self.backfill_end <= time.time() - HISTORY_SECONDS)))
             with self.cache.lock:
                 self.cache.history_ready = ready
             # Stored history needs no six-second live polling delay during startup.
@@ -810,7 +812,10 @@ def main():
     parser.add_argument('--bind', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=3001)
     parser.add_argument('--ssh-host', default='server', help='SSH config host or user@host (default: server)')
-    parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
+    source.add_argument('--archive-only', action='store_true',
+                        help='Read saved price history without SSH or Prometheus; RPC workers remain enabled')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--gap-repair-history', type=Path,
                         help='Persist issuance, Treasury and price repairs indefinitely; gradually repair recent missing history')
@@ -826,7 +831,8 @@ def main():
     repair = None
     issuance = None
     try:
-        with price_source(args.upstream, args.ssh_host) as upstream:
+        with (nullcontext(None) if args.archive_only else
+              price_source(args.upstream, args.ssh_host)) as upstream:
             worker = HistoryWorker(server.cache, upstream, archive=args.archive)
             worker.thread.start()
             from hub_quotes import HubChain
