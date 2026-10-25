@@ -45,6 +45,17 @@ just run --upstream http://127.0.0.1:9090/api/v1 --no-browser
 Then open <http://127.0.0.1:3001>. Give the server a moment to load the price
 history. Price history requires a working Prometheus data source.
 
+For a local UI preview on <http://127.0.0.1:5137>, run:
+
+```sh
+just preview
+```
+
+This uses local Prometheus without an SSH tunnel and does not open a browser.
+Issuance loads from the public Asset Hub RPC even if Prometheus is unavailable.
+Additional server flags are forwarded, for example `just preview --port 5138`.
+The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environment.
+
 In **Settings**, enable **Total dotUSD issuance** to show a blue series on a
 separate right-hand, linear axis in dotUSD units. Values use three significant
 digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
@@ -116,6 +127,7 @@ Run `just` to list the commands. Run `just setup` once before local development.
 | `just setup` | Create `.venv` and install dependencies |
 | `just run [options]` | Start the app locally with optional server arguments |
 | `just test` | Run the test suite |
+| `just preview [options]` | Preview locally on port 5137 without SSH or automatic browser launch |
 | `just release [patch\|minor]` | Bump the version and refresh its hash; defaults to patch |
 | `just check-version` | Verify the recorded release hash |
 | `just deploy [host] [version-url]` | Check, test, deploy, and verify the public version |

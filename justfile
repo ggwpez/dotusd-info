@@ -21,6 +21,10 @@ setup:
 run *args:
     .venv/bin/python server.py "$@"
 
+# Preview on port 5137 without SSH; PYTHON can select an existing environment.
+preview *args:
+    "{{env_var_or_default('PYTHON', '.venv/bin/python')}}" server.py --port 5137 --upstream http://127.0.0.1:9090/api/v1 --no-browser "$@"
+
 # Run the local test suite.
 test:
     .venv/bin/python -m unittest discover -s tests -v
