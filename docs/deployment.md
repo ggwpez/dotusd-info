@@ -135,7 +135,7 @@ Startup restores the latest seven days of saved history before new RPC samples a
 
 The repair worker queries the Parity archive independently of the live collector.
 Price repair and issuance backfill share a limit of eight archive blocks per pass,
-at most two sequential RPC requests per second and a six-second pause after each successful
+at most ten sequential RPC requests per second and a one-second pause after each successful
 pass. Missing issuance is filled recent-first throughout the retained price block
 range, even where prices are already complete; seven-day coverage grows gradually
 and may remain incomplete. Restarting the website resumes saved progress.

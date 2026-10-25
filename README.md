@@ -12,7 +12,7 @@ Prices come from the dotUSD → DOT → USDT pools. They are quoted against USDT
 do not include trading fees or slippage. Timestamps are estimated, and missing
 blocks appear as gaps in the chart. Production gradually repairs internal price
 gaps and backfills total issuance from the Parity archive: both share a limit of
-eight archive blocks per pass, with a six-second pause between passes. Missing
+eight archive blocks per pass, with a one-second pause between passes. Missing
 issuance is filled recent-first, even where price history is already complete.
 Open charts pick up repairs automatically.
 

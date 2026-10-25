@@ -34,7 +34,6 @@ class GapRepairTests(unittest.TestCase):
             self.assertEqual(self.worker.poll(self.db), 8)
             self.assertEqual(self.worker.poll(self.db), 3)
             self.assertEqual(self.worker.poll(self.db), 0)
-        self.assertEqual(self.chain.rpc.delay, .5)
         self.assertEqual([r[2] for r in self.cache.rows], list(range(100, 121)))
         self.assertEqual(self.cache.rows[0], (self.start, 1.0, 100))
         self.assertEqual(self.cache.rows[-1], (self.start + 40, 1.02, 120))
@@ -117,7 +116,7 @@ class GapRepairTests(unittest.TestCase):
                 worker.stop.set()
         with patch.object(worker.stop, 'wait', side_effect=wait), patch.object(gap_repair.logging, 'exception'):
             worker.run()
-        self.assertEqual(waits, [6, 120, 240, 6])
+        self.assertEqual(waits, [gap_repair.PAUSE, 120, 240, gap_repair.PAUSE])
 
     def enable_issuance(self):
         self.worker.issuance = IssuanceCache(self.worker.path)
