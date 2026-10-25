@@ -127,13 +127,25 @@ a feature release. Minor bumps reset the patch number to zero. Running tests
 again without application changes leaves the version unchanged. Fix any test
 failures before committing, and include `VERSION` in the same commit.
 
-The checked-in `VERSION` contains the release number and the first six bytes of
-its SHA-256 code/asset hash, for example `1.0.0+abcdef123456`. Deployment validates
-this hash internally and refuses stale versions; no separate release or
-check-version command is needed. The hash covers `release.py`'s `RELEASE_FILES`,
-including runtime dependencies and the release script itself. It excludes
-`VERSION`, tests, and documentation. Add new runtime files to that list and the
-deployment copy list.
+Production exposes `MAJOR.MINOR.PATCH+<short Git commit SHA>`: the suffix is the
+first seven hexadecimal characters of the deployed `master` commit. Use
+`git show <short-SHA>` to inspect that release commit.
+Deployment requires a clean `master` checkout: `git status --porcelain` must
+be empty, including untracked files. Make the final commit before deploying,
+and do not amend it afterward.
+
+The checked-in `VERSION` remains internal integrity metadata: it contains the
+release number and the first six bytes of its SHA-256 code/asset hash, for
+example `1.0.0+abcdef123456`, not a Git SHA. Deployment validates this checksum
+and refuses stale versions, then writes the full HEAD SHA and a newline to
+`DEPLOY_COMMIT` beside `server.py` before restarting. The server verifies the
+source checksum against `VERSION` before exposing the commit-based version.
+Keeping the commit SHA out of `VERSION` avoids a self-referential commit hash.
+Without `DEPLOY_COMMIT`, local development retains the content-hash version.
+The checksum covers `release.py`'s `RELEASE_FILES`, including runtime dependencies
+and the release script itself. It excludes `VERSION`, tests, and documentation.
+Add new runtime files to that list and the deployment copy list; no separate
+release or check-version command is needed.
 
 `just test` uses the environment created by `just setup`. Without `just`, run
 `.venv/bin/python release.py --prepare patch` followed by
@@ -157,7 +169,7 @@ Run `just` to list the commands. Run `just setup` once before local development.
 | `just logs [host]` | Read its latest 50 log entries |
 
 Deployment, status, and logs default to the SSH alias `server`. Deployment
-requires a version number newer than the deployed one (a changed hash alone is
+requires a version number newer than the deployed one (a changed commit alone is
 not enough), restarts the remote service, then checks `/version` every 5 seconds for up to
 60 seconds, returning success when it matches the expected release or an error
 on timeout. See the [deployment guide](docs/deployment.md)
@@ -170,8 +182,10 @@ instructions here so they stay in sync.
 
 - After application changes, use this order: `just test`, commit, `just deploy`.
   `just test` prepares the version automatically; use `just test minor` for
-  features. Include the updated `VERSION` in the commit. Resolve failures before
-  committing. Do not run separate release/check commands or rerun tests in deploy.
+  features. Include the updated `VERSION` in the final commit on `master` and
+  deploy from a clean checkout; never amend that commit after deployment.
+  Resolve failures before committing. Do not run separate release/check commands
+  or rerun tests in deploy.
 - Deployment validates the release internally, refuses unchanged or older
   version numbers, and fails if the expected public version is not observed
   within 60 seconds.

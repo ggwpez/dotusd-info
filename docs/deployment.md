@@ -11,18 +11,24 @@ The release workflow is `just test`, commit, then `just deploy`. `just test`
 prepares the release version automatically; use `just test minor` for features.
 Commit the updated `VERSION` with the changes after the tests pass. Repeating
 `just test` without application changes does not bump the version again.
-The deployment script checks the recorded hash but does not rerun the suite;
-a stale release stops deployment. Before transferring files or restarting
-services, it also checks the public version and
-requires the local MAJOR.MINOR.PATCH number to be strictly newer. The same number
-with a different hash is refused, as are older versions. If the deployed version
-cannot be read or parsed, deployment stops without changing the server.
+Deployment requires a clean checkout on `master`: `git status --porcelain` must
+be empty, including untracked files. Commit all release changes before deploying,
+and do not amend that commit afterward.
+
+The checked-in `VERSION` contains the release number plus a 12-hex SHA-256 source
+checksum, not a Git commit SHA. It remains internal integrity metadata, avoiding
+a self-referential commit hash. The deployment script checks this checksum but
+does not rerun the suite; a stale release stops deployment. Before transferring
+files or restarting services, it also checks the public version and requires
+the local MAJOR.MINOR.PATCH number to be strictly newer. The same number with a
+different commit or checksum is refused, as are older versions. If the deployed
+version cannot be read or parsed, deployment stops without changing the server.
 
 The preflight uses the existing `/api/version` alias when the verification URL
 is `/version`, so it also works before the new route has been deployed. Custom
 endpoint paths are used as supplied. The post-deployment check uses `/version`.
 
-Test, commit the release, then deploy the current checkout:
+Test, make the final release commit on `master`, then deploy the clean checkout:
 
 ```sh
 just test               # or just test minor for features
@@ -33,14 +39,27 @@ just deploy             # use the SSH alias server
 just deploy user@host
 ```
 
-Run only the command for your intended host. This copies the local files and
-restarts the remote service. It does not commit changes or bump the version.
+Run only the command for your intended host. This copies an immutable Git snapshot and
+generates `DEPLOY_COMMIT` beside the remote `server.py`, containing the full
+40-character HEAD SHA followed by a newline, before restarting the service.
+Do not check this generated deployment file into Git. Deployment does not commit
+changes or bump the version. The server verifies the source checksum against
+`VERSION` before exposing `MAJOR.MINOR.PATCH+<7-hex Git commit SHA>` in the
+footer, `X-App-Version`, and `/version` (also available at `/api/version`).
+Without `DEPLOY_COMMIT`, local development retains the content-hash version.
+
+To match a public release to its `master` commit, take the entire suffix after
+`+` from `/version`; it is the first seven characters of the full Git hash.
+Use `git show <short-SHA>` to inspect that exact commit. Do not compare the public
+suffix to the checksum in the checked-in `VERSION`; they have different roles.
+
 After the remote setup and health checks, deployment polls the public `/version`
 endpoint immediately, then every 5 seconds for up to 60 seconds. Each request
 is limited to 5 seconds or the remaining deadline, whichever is shorter, for
 both curl's total request timeout and the local subprocess timeout. It returns
-success as soon as the JSON `version` matches the local `VERSION` captured before
-deployment. If the deadline expires, it exits with an error showing the last
+success as soon as the JSON `version` matches the release number plus the first
+seven characters of HEAD captured before deployment, not the contents of `VERSION`.
+If the deadline expires, it exits with an error showing the last
 version mismatch or request failure. This 60-second limit applies to the final
 verification, not file transfer, dependency installation, or service startup.
 

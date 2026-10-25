@@ -12,6 +12,7 @@ from contextlib import closing, contextmanager
 import json
 import math
 import os
+import re
 import socket
 import sqlite3
 import subprocess
@@ -37,7 +38,20 @@ SUMMARY_SAMPLES = 256
 def load_release():
     """Freeze assets and their version together until the server restarts."""
     files = read_sources(ROOT)
-    version = read_version(ROOT).split('+')[0] + '+' + source_hash(files)
+    recorded = read_version(ROOT)
+    checksum = source_hash(files)
+    commit_path = ROOT / 'DEPLOY_COMMIT'
+    if commit_path.exists():
+        identity = commit_path.read_text().strip()
+        if not re.fullmatch(r'[0-9a-f]{40}', identity):
+            raise ValueError('DEPLOY_COMMIT must contain a full Git commit hash')
+        if recorded.split('+')[1] != checksum:
+            raise ValueError('Deployed source checksum does not match VERSION')
+        identity = identity[:7]
+    else:
+        # Uncommitted local previews must still invalidate browser caches.
+        identity = checksum
+    version = recorded.split('+')[0] + '+' + identity
     assets = {name: files[name] for name in ('index.html', 'app.js', 'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png')}
     assets['app.js'] = assets['app.js'].replace(b'__APP_VERSION__', version.encode())
     assets['index.html'] = assets['index.html'].replace(

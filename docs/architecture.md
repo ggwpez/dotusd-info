@@ -246,18 +246,31 @@ CSP hashes authorize exactly those embedded scripts and styles. Source files rem
 separate for development. The history request also checks the release version,
 avoiding a separate startup version request.
 
-`VERSION` records a release such as `1.0.0+abcdef123456`. Before running the suite,
-`just test` prepares the release: if `RELEASE_FILES` changed, it bumps the patch
-number (or minor with `just test minor`) and records their 12-character SHA-256
-prefix. Unchanged sources keep the same version. Tests and deployment reject
-stale hashes. The workflow is test, commit the changes including `VERSION`, then
-deploy; deployment does not rerun tests and requires the expected public version
+`VERSION` is internal integrity metadata, recording a release such as
+`1.0.0+abcdef123456`. Before running the suite, `just test` prepares the release:
+if `RELEASE_FILES` changed, it bumps the patch number (or minor with
+`just test minor`) and records their 12-character SHA-256 prefix. Unchanged
+sources keep the same version. Tests and deployment reject stale checksums.
+The workflow is test, make the final commit including `VERSION` on `master`,
+then deploy from a clean checkout. Do not amend the commit after deployment.
+Deployment does not rerun tests and requires the expected public version
 within 60 seconds.
-At startup the server snapshots those files and combines the recorded release
-number with their actual hash. This keeps browser reload detection working even
-while local edits have made the recorded hash stale. The footer shows this same
-version on both chart pages. Responses carry `X-App-Version`,
-and `/version` (also available at `/api/version`) returns the version even while price history is warming up.
+
+Production identity is `MAJOR.MINOR.PATCH+<7-hex Git commit SHA>`, not the
+content checksum. Deployment generates `DEPLOY_COMMIT` beside `server.py`,
+containing the full HEAD SHA followed by a newline, before restarting the
+service. At startup the server snapshots the source files and verifies their
+checksum against `VERSION` before combining its release number with the
+deployment commit's first seven characters. The suffix can be inspected with
+`git show <short-SHA>`. Keeping `VERSION` checksum-based avoids
+embedding a commit's own hash in that commit.
+
+Without `DEPLOY_COMMIT`, local development combines the recorded release number
+with the actual source checksum. This keeps browser reload detection working
+even while local edits have made the recorded checksum stale. The footer shows
+the resulting version on both chart pages. Responses carry `X-App-Version`,
+and `/version` (also available at `/api/version`) returns the same version even
+while price history is warming up.
 The client checks this header before decoding price responses and reloads the
 current URL on a mismatch, preserving the linked range/zoom. Live polling checks
 the version through its price responses; there are no separate version requests.

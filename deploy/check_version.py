@@ -24,7 +24,7 @@ def fetch_version(url, timeout=5):
 
 
 def version_number(version):
-    match = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+[0-9a-f]{12}', version)
+    match = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+(?:[0-9a-f]{7}|[0-9a-f]{12})', version)
     if not match:
         raise ValueError(f'Invalid release version: {version!r}')
     return tuple(map(int, match.groups()))

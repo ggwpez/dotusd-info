@@ -271,6 +271,40 @@ class PageTests(unittest.TestCase):
                 finally:
                     server.server_close()
 
+    def test_deployed_commit_identity_requires_intact_release(self):
+        commit = '1afc186cfb49452d233917e5d87373b6e1a15b6e'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in (*page.read_sources().keys(), 'VERSION'):
+                (root / name).write_bytes((page.ROOT / name).read_bytes())
+            marker = root / 'DEPLOY_COMMIT'
+            marker.write_text(commit + '\n')
+            expected = page.read_version(root).split('+')[0] + '+' + commit[:7]
+            with patch.object(page, 'ROOT', root):
+                server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                base = f'http://127.0.0.1:{server.server_port}'
+                try:
+                    with urlopen(base + '/version') as response:
+                        self.assertEqual(json.load(response), {'version': expected})
+                        self.assertEqual(response.headers['X-App-Version'], expected)
+                    with urlopen(base) as response:
+                        self.assertIn(expected.encode(), response.read())
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join()
+                for invalid in ('', commit[:12], 'g' * 40):
+                    marker.write_text(invalid)
+                    with self.assertRaisesRegex(ValueError, 'full Git commit'):
+                        page.load_release()
+                marker.write_text(commit)
+                with (root / 'app.js').open('ab') as source:
+                    source.write(b'\n')
+                with self.assertRaisesRegex(ValueError, 'checksum'):
+                    page.load_release()
+
     def test_progressive_stream_batches_and_completion(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()

@@ -4,12 +4,39 @@ cd "$(dirname "$0")/.."
 host=${1:-server}
 version_url=${2:-https://dotusd.info/version}
 python=${PYTHON:-.venv/bin/python}
-expected_version=$("$python" release.py --check)
-"$python" deploy/check_version.py --before-deploy "$expected_version" "$version_url"
+if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+    printf '%s\n' 'Refusing deployment: commit or remove all working-tree and index changes first.' >&2
+    exit 1
+fi
+if [ "$(git symbolic-ref --quiet --short HEAD)" != master ]; then
+    printf '%s\n' 'Refusing deployment: check out master before deploying.' >&2
+    exit 1
+fi
+deploy_commit=$(git rev-parse --verify 'HEAD^{commit}')
+case "$deploy_commit" in
+    ''|*[!0-9a-f]*) printf '%s\n' 'Invalid deployment commit hash.' >&2; exit 1 ;;
+esac
+if [ "${#deploy_commit}" -ne 40 ]; then
+    printf '%s\n' 'Deployment requires a full 40-character Git commit hash.' >&2
+    exit 1
+fi
+snapshot=$(mktemp -d /tmp/dotusd-deploy.XXXXXX)
+trap 'rm -rf "$snapshot"' 0
+trap 'exit 1' HUP INT TERM
+mkdir "$snapshot/source"
+git archive --format=tar --output="$snapshot/source.tar" "$deploy_commit"
+tar -xf "$snapshot/source.tar" -C "$snapshot/source"
+release_version=$("$python" "$snapshot/source/release.py" --check)
+expected_version="${release_version%%+*}+$(printf '%.7s' "$deploy_commit")"
+printf '%s\n' "$deploy_commit" > "$snapshot/source/DEPLOY_COMMIT"
+"$python" "$snapshot/source/deploy/check_version.py" --before-deploy "$expected_version" "$version_url"
 printf 'Deploying %s\n' "$expected_version"
 ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
-rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' VERSION release.py server.py gap_repair.py archive_reader.py hub_quotes.py issuance.py requirements.txt backfill.py publish_archive.py about-dotusd.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
-rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' deploy/dotusd-info.service deploy/dotusd-info.caddy "$host:/opt/dotusd-info/deploy/"
+(
+    cd "$snapshot/source"
+    rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' DEPLOY_COMMIT VERSION release.py server.py gap_repair.py archive_reader.py hub_quotes.py issuance.py requirements.txt backfill.py publish_archive.py about-dotusd.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
+    rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' deploy/dotusd-info.service deploy/dotusd-info.caddy "$host:/opt/dotusd-info/deploy/"
+)
 ssh "$host" 'sudo -n sh -s' <<'REMOTE'
 set -eu
 systemctl is-active --quiet arb-prometheus arb-peg
@@ -51,4 +78,4 @@ systemctl is-active dotusd-info caddy arb-peg arb-prometheus
 systemctl is-enabled dotusd-info
 REMOTE
 
-"$python" deploy/check_version.py "$expected_version" "$version_url"
+"$python" "$snapshot/source/deploy/check_version.py" "$expected_version" "$version_url"
