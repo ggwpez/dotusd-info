@@ -5,8 +5,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from archive_reader import TIMESTAMP, metadata_key
-from issuance import asset_key
-from treasury import (ASSET, RETENTION, TREASURY_ACCOUNT, TreasuryHistory,
+from issuance import ASSET, RETENTION, asset_key
+from treasury import (TREASURY_ACCOUNT, TreasuryHistory,
                       account_balance, account_key, read_history)
 
 
@@ -155,7 +155,7 @@ class TreasuryHistoryTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / 'nested' / 'repairs.db'
         self.now = 1_700_001_000
-        clock = patch('treasury.time.time', return_value=self.now)
+        clock = patch('issuance.time.time', return_value=self.now)
         clock.start()
         self.addCleanup(clock.stop)
 
@@ -172,7 +172,7 @@ class TreasuryHistoryTests(unittest.TestCase):
         with closing(restored.database()) as db:
             self.assertEqual(db.execute(
                 'SELECT timestamp,balance,number FROM treasury ORDER BY number').fetchall(), rows)
-        with patch('treasury.time.time', return_value=self.now + RETENTION):
+        with patch('issuance.time.time', return_value=self.now + RETENTION):
             self.assertEqual(restored.snapshot()['rows'], ())
             expired = TreasuryHistory(self.path)
             expired.restore()
@@ -225,3 +225,121 @@ class TreasuryHistoryTests(unittest.TestCase):
         with closing(history.database()) as db:
             self.assertEqual(db.execute('SELECT timestamp,balance,number FROM treasury').fetchall(),
                              [old])
+
+    def test_no_history_configuration_returns_usable_empty_selection(self):
+        history = TreasuryHistory()
+        first = history.selection(self.now - 60, self.now)
+        self.assertEqual(first['rows'], ())
+        self.assertIsNone(first['error'])
+        self.assertTrue(first['reset'])
+        unchanged = history.selection(self.now - 60, self.now, first['cursor'])
+        self.assertFalse(unchanged['reset'])
+        self.assertEqual(unchanged['rows'], ())
+
+    def test_revision_deltas_include_repairs_corrections_and_zero_balances(self):
+        history = TreasuryHistory(self.path)
+        first = (self.now - 30, 1., 20)
+        last = (self.now - 10, 3., 40)
+        history.merge([first, last])
+        initial = history.selection(self.now - 60, self.now)
+        self.assertIsNone(initial['error'])
+        self.assertTrue(initial['reset'])
+        history.merge([first, last])
+        unchanged = history.selection(self.now - 60, self.now, initial['cursor'])
+        self.assertEqual(unchanged['rows'], ())
+        self.assertEqual(unchanged['cursor'], initial['cursor'])
+        repair = (self.now - 40, 0., 10)
+        correction = (self.now - 30, 2., 20)
+        history.merge([repair, correction])
+        correction = (self.now - 30, 4., 20)
+        history.merge([correction])
+        changed = history.selection(self.now - 60, self.now, initial['cursor'])
+        self.assertFalse(changed['reset'])
+        self.assertEqual(changed['rows'], (repair, correction))
+        self.assertNotEqual(changed['cursor'], initial['cursor'])
+        bounded = history.selection(self.now - 40, self.now - 30, initial['cursor'])
+        self.assertEqual(bounded['rows'], (correction,))
+        with history.lock:
+            history.error = 'Treasury history temporarily unavailable.'
+        failed = history.selection(self.now - 60, self.now, changed['cursor'])
+        self.assertEqual(failed['rows'], ())
+        self.assertEqual(failed['error'], history.error)
+
+    def test_cursor_expiry_and_restoration_reset_only_this_series(self):
+        with patch('issuance.MAX_CHANGES', 2):
+            history = TreasuryHistory(self.path)
+        empty = history.selection(self.now - 60, self.now)
+        self.assertIn('Loading', empty['error'])
+        rows = [(self.now - 30, 1., 1), (self.now - 20, 2., 2), (self.now - 10, 3., 3)]
+        history.merge(rows[:1])
+        first = history.selection(self.now - 60, self.now)
+        history.merge(rows[1:])
+        self.assertFalse(history.selection(self.now - 60, self.now, first['cursor'])['reset'])
+        expired = history.selection(self.now - 60, self.now, empty['cursor'])
+        self.assertTrue(expired['reset'])
+        self.assertEqual(expired['rows'], tuple(rows))
+        restored = TreasuryHistory(self.path)
+        restored.restore()
+        for cursor in (None, '', 'invalid', first['cursor'],
+                       f'{restored.instance}:999999', f'{restored.instance}:-1',
+                       f'{restored.instance}:' + '9' * 100):
+            with self.subTest(cursor=cursor):
+                result = restored.selection(self.now - 30, self.now - 10, cursor)
+                self.assertTrue(result['reset'])
+                self.assertEqual(result['rows'], tuple(rows[1:]))
+                self.assertIsNone(result['error'])
+
+    def test_historical_corrections_reset_without_mutating_live_journal(self):
+        history = TreasuryHistory(self.path)
+        old = self.now - 10 * RETENTION
+        rows = [(old + 10, 1., 1), (old + 20, 0., 2), (old + 20, 3., 3),
+                (self.now - 10, 4., 4)]
+        history.merge(rows)
+        recent, revision, changes = history.rows, history.revision, tuple(history.changes)
+        first = history.selection(old + 10, old + 20)
+        self.assertEqual(first['rows'], tuple(rows[1:3]))
+        self.assertTrue(first['reset'])
+        history.merge([(old + 20, 2., 2), (old + 30, 3., 3)])
+        corrected = history.selection(old + 10, old + 20, first['cursor'])
+        self.assertEqual(corrected['rows'], ((old + 20, 2., 2),))
+        self.assertTrue(corrected['reset'])
+        self.assertEqual(corrected['cursor'], first['cursor'])
+        self.assertEqual((history.rows, history.revision, tuple(history.changes)),
+                         (recent, revision, changes))
+        restored = TreasuryHistory(self.path)
+        self.assertEqual(restored.selection(old + 10, old + 20)['rows'], corrected['rows'])
+        self.assertEqual(restored.rows, ())
+
+    def test_historical_window_crosses_retention_without_expanding_memory(self):
+        history = TreasuryHistory(self.path)
+        cutoff = self.now - RETENTION
+        rows = [(cutoff - 10, 1., 1), (cutoff, 2., 2), (cutoff + 10, 3., 3)]
+        history.merge(rows)
+        self.assertEqual(history.selection(cutoff - 10, cutoff + 10)['rows'], tuple(rows[1:]))
+        self.assertEqual(history.rows, (rows[2],))
+
+    def test_recent_and_historical_caps_reject_instead_of_truncating(self):
+        history = TreasuryHistory(self.path)
+        old = self.now - 10 * RETENTION
+        historical = [(old + number, float(number), number) for number in range(1, 5)]
+        recent = [(self.now - 10 + number, float(number), number + 10) for number in range(1, 5)]
+        history.merge(historical + recent)
+        cursor = history.selection(self.now - 10, self.now)['cursor']
+        statements = []
+        database = history.database
+        def traced_database():
+            self.assertFalse(history.lock.locked())
+            db = database()
+            db.set_trace_callback(statements.append)
+            return db
+        with patch('issuance.MAX_SAMPLES', 2):
+            for value in (None, cursor):
+                with self.subTest(cursor=value), self.assertRaisesRegex(ValueError, 'Treasury window exceeds 2'):
+                    history.selection(self.now - 10, self.now, value)
+            with patch.object(history, 'database', side_effect=traced_database):
+                self.assertEqual(history.selection(old, old + 2)['rows'], tuple(historical[:2]))
+                with self.assertRaisesRegex(ValueError, 'Treasury window exceeds 2'):
+                    history.selection(old, old + 4)
+        queries = [statement for statement in statements if statement.startswith('SELECT')]
+        self.assertEqual(len(queries), 2)
+        self.assertTrue(all(query.endswith('LIMIT 3') for query in queries))

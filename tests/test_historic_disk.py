@@ -13,6 +13,7 @@ from urllib.request import urlopen
 import backfill
 from gap_repair import GapRepair
 from issuance import IssuanceCache
+from treasury import TreasuryHistory
 import server
 
 
@@ -40,6 +41,8 @@ class HistoricDiskTests(unittest.TestCase):
         self.http.cache = self.cache
         self.http.issuance = IssuanceCache(self.path)
         self.http.issuance.merge([(self.old + n * 2, float(n * 100), n) for n in (9, 10, 11, 12)])
+        self.http.treasury = TreasuryHistory(self.path)
+        self.http.treasury.merge([(self.old + n * 2, float(n * 10), n) for n in (9, 10, 11, 12)])
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.stop)
@@ -55,13 +58,15 @@ class HistoricDiskTests(unittest.TestCase):
             return json.load(response)
 
     def test_old_combined_window_boundaries_precedence_and_cursor(self):
-        query = f'series=price,ti&format=raw&start={self.old+18}&end={self.old+24}'
+        query = f'series=price,ti,treasury&format=raw&start={self.old+18}&end={self.old+24}'
         with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
             body = self.get(query)
             self.assertEqual(body['samples'], [[self.old+20, 1.01, 10],
                                                [self.old+22, 1.011, 11],
                                                [self.old+24, 1.12, 12]])
             self.assertEqual(body['ti']['rows'], [[self.old+n*2, n*100., n] for n in (10, 11, 12)])
+            self.assertEqual(body['treasury']['rows'], [[self.old+n*2, n*10., n] for n in (10, 11, 12)])
+            self.assertTrue(body['treasury']['reset'])
             self.assertTrue(body['historyReady'])
             self.assertEqual(self.cache.rows, ())
             delta = self.get(query + '&startpoint=10')
@@ -84,7 +89,7 @@ class HistoricDiskTests(unittest.TestCase):
         self.assertEqual(changed['samples'][-1], [self.old+24, 1.2, 12])
 
     def test_duration_and_sample_caps_reject_instead_of_truncating(self):
-        for series in ('price', 'ti', 'price,ti'):
+        for series in ('price', 'ti', 'treasury', 'price,ti', 'price,treasury', 'ti,treasury', 'price,ti,treasury'):
             with self.subTest(series=series), self.assertRaises(HTTPError) as error:
                 self.get(f'series={series}&start={self.old}&end={self.old+604801}')
             self.assertEqual(error.exception.code, 400)
@@ -107,3 +112,32 @@ class HistoricDiskTests(unittest.TestCase):
         body = self.get(f'series=price&format=raw&start={start}&end={self.now-5}')
         self.assertEqual(body['samples'], [[recent+1, 1.02, 100]])
         self.assertEqual(self.cache.rows, ((recent+1, 1.02, 100),))
+
+    def test_treasury_historical_formats_independent_bounds_and_corrections(self):
+        bounds = (f'&start={self.old+18}&end={self.old+24}'
+                  f'&tiStart={self.old+18}&tiEnd={self.old+20}'
+                  f'&treasuryStart={self.old+20}&treasuryEnd={self.old+24}')
+        for series in ('treasury', 'ti,treasury', 'price,treasury', 'price,ti,treasury'):
+            for encoding in ('raw', 'ranges-v1', 'stream'):
+                with self.subTest(series=series, encoding=encoding):
+                    query = f'series={series}&format={encoding}' + bounds
+                    with urlopen(self.base + query) as response:
+                        if encoding == 'stream':
+                            messages = [json.loads(line) for line in response]
+                            body = messages[0]
+                            self.assertEqual(messages[-1], {'done': True})
+                        else:
+                            body = json.load(response)
+                    self.assertEqual(body['treasury']['rows'],
+                                     [[self.old+n*2, n*10., n] for n in (11, 12)])
+                    self.assertTrue(body['treasury']['reset'])
+                    if 'ti' in series:
+                        self.assertEqual(body['ti']['rows'], [[self.old+20, 1000., 10]])
+        first = self.get('series=treasury' + bounds)['treasury']
+        self.http.treasury.merge([(self.old + 22, 0., 11), (self.old + 26, 120., 12)])
+        corrected = self.get('series=treasury' + bounds +
+                             '&treasuryCursor=' + first['cursor'])['treasury']
+        self.assertEqual(corrected['rows'], [[self.old+22, 0., 11]])
+        self.assertTrue(corrected['reset'])
+        self.assertEqual(corrected['cursor'], first['cursor'])
+        self.assertEqual(self.http.treasury.rows, ())

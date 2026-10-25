@@ -19,9 +19,9 @@ then 450, 225, and progressively halves each interval down to individual blocks.
 Each level is newest-first; odd intervals split into floor/ceiling halves.
 This also fills state where price history is already complete. Saved samples are
 reused on restart. TI and Treasury balances missing at the same block use one
-storage query; already saved series are omitted. Open charts pick up TI and price
-repairs automatically. Treasury holdings are collected in the `treasury` table
-of the same repair database, not yet exposed through the chart or history API.
+storage query; already saved series are omitted. Open charts pick up all three
+series' repairs automatically. Treasury holdings are saved in the `treasury`
+table of the same repair database and exposed through the shared history API.
 The account is the Polkadot Treasury
 `13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB`; balances are in dotUSD units.
 
@@ -67,9 +67,9 @@ Issuance loads from the public Asset Hub RPC even if Prometheus is unavailable.
 Additional server flags are forwarded, for example `just preview --port 5138`.
 The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environment.
 
-In **Settings**, enable **Total dotUSD issuance** to show a blue series on a
-separate right-hand, linear axis in dotUSD units. Values use three significant
-digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
+In **Settings**, enable **Total dotUSD issuance** to show TI in blue and Treasury
+holdings in purple on a shared right-hand, linear axis in dotUSD units. Values
+use three significant digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
 Chart links encode this setting as `ti=1` (shown) or `ti=0` (hidden), alongside
 the range and scale. Explicit URL values override the local preference without
 changing it; links without a valid `ti` value use the saved preference.
@@ -78,33 +78,35 @@ The chart toolbar shows only the title and controls, without a duplicate legend.
 An independent server-side live poll reads the latest 15 finalized blocks from the public
 Asset Hub RPC and refreshes every six seconds after each fetch. With
 `--gap-repair-history PATH` (enabled in production), successful live samples and
-historical issuance share the price-repair SQLite database and are kept indefinitely.
+historical issuance and Treasury holdings share the price-repair SQLite database and are kept indefinitely.
 Startup restores the latest seven days into memory. Historical filling follows the retained price block
 range; it is gradual, not a guarantee of complete seven-day coverage.
-Without that flag, issuance remains a recent-only, in-memory preview.
-The server never automatically prunes saved price repairs, evidence, or issuance.
+Without that flag, issuance remains a recent-only, in-memory preview and Treasury
+is unavailable. Treasury has no separate live poll.
+The server never automatically prunes saved price repairs, evidence, issuance or Treasury.
 The SQLite file can grow indefinitely; the chart still shows at most seven days.
 Historical API requests can read saved data older than seven days. Supply explicit
-`start` and `end` Unix timestamps to `/api/historic?series=price,ti`; each requested
+`start` and `end` Unix timestamps to `/api/historic?series=price,ti,treasury`; each requested
 window may span at most seven days and return at most 350,000 samples per series.
 Larger requests return HTTP 400; split them into smaller windows. Older prices
 come from the published archive and saved repairs, not an on-demand Prometheus
 query. Missing history remains missing. This does not extend the chart's controls.
 
-Issuance uses actual chain timestamps and renders as a thicker, solid blue line
-without sample dots. Samples up to 1,800 blocks apart are connected to show the
+Issuance and Treasury use actual chain timestamps and render as thicker, solid
+blue and purple lines without sample dots. Samples up to 1,800 blocks apart are connected to show the
 coarse history; larger gaps stay disconnected. Lines between samples are visual
 interpolation, not additional measured values.
-Use the normal range buttons and drag-to-zoom controls for both series.
-With issuance enabled, hovering a price point also shows TI for the same block
-(for example, `TI: 1.31M dotUSD`). Missing samples show `TI: unavailable`, never
-a nearby block's value. There is no separate issuance value label outside the
-graph. Failed refreshes retain the last successful data.
-The browser uses one history subscription for both series:
-`/api/historic?series=price` or `?series=price,ti`. It requests the selected
-window, then merges incremental TI updates, including historical repairs,
-through the same six-second refresh as prices. Enabling TI does not start
-a second request loop. The API also supports `?series=ti` for TI-only clients.
+Use the normal range buttons and drag-to-zoom controls for all three series.
+With issuance enabled, hovering a price point shows TI and Treasury for the same
+block (for example, `TI: 1.31M dotUSD` and `Treasury: 0.01 dotUSD`). Missing samples
+show `unavailable` for that series, never a nearby block's value. There is no
+separate value label outside the graph. Failed refreshes retain successful data.
+The browser uses one history subscription:
+`/api/historic?series=price` or `?series=price,ti,treasury`. It requests the selected
+window, then merges incremental TI and Treasury updates, including historical
+repairs, through the same six-second refresh as prices. Each state series has an
+independent cursor; enabling the setting does not start another request loop.
+The API also supports `?series=ti`, `?series=treasury`, or any unique subset.
 `--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
 command above even without local Prometheus; only price history remains unavailable.
 

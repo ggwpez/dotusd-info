@@ -64,10 +64,16 @@ def read_issuance(rpc, number, at=None, timestamp=None):
 
 
 class IssuanceCache:
+    """Bounded state history; subclasses supply their persisted series identity."""
+    table = 'issuance'
+    value_column = 'supply'
+    label = 'Issuance'
+    loading_error = 'Loading recent finalized dotUSD issuance.'
+
     def __init__(self, history_path=None):
         self.lock = threading.Lock()
         self.rows = ()
-        self.error = 'Loading recent finalized dotUSD issuance.'
+        self.error = self.loading_error
         self.history_path = history_path
         self.restored = history_path is None
         self.instance = secrets.token_hex(16)
@@ -79,9 +85,9 @@ class IssuanceCache:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.history_path)
         db.execute('PRAGMA journal_mode=WAL')
-        db.execute('''CREATE TABLE IF NOT EXISTS issuance (
-            number INTEGER PRIMARY KEY, timestamp REAL NOT NULL, supply REAL NOT NULL)''')
-        db.execute('CREATE INDEX IF NOT EXISTS issuance_time ON issuance(timestamp)')
+        db.execute(f'''CREATE TABLE IF NOT EXISTS {self.table} (
+            number INTEGER PRIMARY KEY, timestamp REAL NOT NULL, {self.value_column} REAL NOT NULL)''')
+        db.execute(f'CREATE INDEX IF NOT EXISTS {self.table}_time ON {self.table}(timestamp)')
         return db
 
     def restore(self):
@@ -105,15 +111,18 @@ class IssuanceCache:
                 retained = {row[2]: row for row in self.rows if row[0] > cutoff}
                 if not self.restored:
                     for row in db.execute(
-                            'SELECT timestamp,supply,number FROM issuance WHERE timestamp>? ORDER BY number',
+                            f'SELECT timestamp,{self.value_column},number FROM {self.table} WHERE timestamp>? ORDER BY number',
                             (cutoff,)):
                         retained.setdefault(row[2], row)
                 incoming = [tuple(row) for row in rows]
-                retained.update((row[2], row) for row in incoming if row[0] > cutoff)
+                for row in incoming:
+                    retained.pop(row[2], None)
+                    if row[0] > cutoff:
+                        retained[row[2]] = row
                 merged = tuple(retained[number] for number in sorted(retained))
                 if any(a[0] > b[0] for a, b in zip(merged, merged[1:])):
-                    raise ValueError('Issuance timestamps moved backwards')
-                db.executemany('INSERT OR REPLACE INTO issuance VALUES(?,?,?)',
+                    raise ValueError(f'{self.label} timestamps moved backwards')
+                db.executemany(f'INSERT OR REPLACE INTO {self.table} VALUES(?,?,?)',
                                [(row[2], row[0], row[1]) for row in incoming])
             self._publish(merged)
             self.restored = True
@@ -131,7 +140,7 @@ class IssuanceCache:
     def selection(self, start, end, cursor=None):
         """Return recent revision deltas or bounded persisted historical snapshots."""
         historical = self.history_path is not None and start < time.time() - RETENTION
-        limit_error = f'Issuance window exceeds {MAX_SAMPLES} samples; request a smaller window'
+        limit_error = f'{self.label} window exceeds {MAX_SAMPLES} samples; request a smaller window'
         with self.lock:
             next_cursor, error = f'{self.instance}:{self.revision}', self.error
             if not historical:
@@ -162,7 +171,7 @@ class IssuanceCache:
             # Disk reads must not hold up live publication.
             with closing(self.database()) as db:
                 rows = db.execute(
-                    'SELECT timestamp,supply,number FROM issuance '
+                    f'SELECT timestamp,{self.value_column},number FROM {self.table} '
                     'WHERE timestamp>? AND timestamp<=? '
                     'ORDER BY timestamp,number LIMIT ?',
                     (start, end, MAX_SAMPLES + 1)).fetchall()

@@ -26,6 +26,7 @@ from pathlib import Path
 
 from issuance import IssuanceCache, IssuanceWorker
 from release import read_sources, read_version, source_hash
+from treasury import TreasuryHistory
 
 ROOT = Path(__file__).resolve().parent
 HISTORY_SECONDS = 7 * 86400
@@ -304,23 +305,23 @@ def encode_response(rows, fetched_at, history_ready, extremes, raw=False, stream
                b',"extremes":' + encode(extremes) + b'}')
 
 
-def historic_response(chunks, ti, streaming):
-    """Attach fresh issuance without caching it with the reusable price chunks."""
-    if ti is None:
+def historic_response(chunks, histories, streaming):
+    """Attach fresh state histories without caching them with price chunks."""
+    if not histories:
         yield from chunks
         return
-    encoded = json.dumps(ti, allow_nan=False, separators=(',', ':')).encode()
+    encoded = json.dumps(histories, allow_nan=False, separators=(',', ':')).encode()
     if chunks is None:
         if streaming:
-            yield b'{"encoding":"ranges-stream-v1","ti":' + encoded + b'}\n'
+            yield b'{"encoding":"ranges-stream-v1",' + encoded[1:] + b'\n'
             yield b'{"done":true}\n'
         else:
-            yield b'{"ti":' + encoded + b'}'
+            yield encoded
         return
     chunks = iter(chunks)
     first = next(chunks)
     # Both price formats begin with one object; only its first chunk changes.
-    yield b'{"ti":' + encoded + b',' + first[1:]
+    yield encoded[:-1] + b',' + first[1:]
     yield from chunks
 
 
@@ -599,6 +600,7 @@ class CacheServer(HTTPServer):
         self.closing = False
         self.workers = []
         self.issuance = IssuanceCache()
+        self.treasury = TreasuryHistory()
         super().__init__(address, handler)
         self.workers = [threading.Thread(target=self.process_requests, name=f'price-http-{i}', daemon=True)
                         for i in range(self.handler_count)]
@@ -672,25 +674,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path == '/api/historic':
             try:
-                params = urllib.parse.parse_qs(url.query, max_num_fields=12, keep_blank_values=True)
+                params = urllib.parse.parse_qs(url.query, max_num_fields=20, keep_blank_values=True)
                 selected = params.get('series', [])
-                if len(selected) != 1 or selected[0] not in ('price', 'ti', 'price,ti', 'ti,price'):
-                    raise ValueError('Choose series=price, ti, or price,ti.')
-                series = selected[0].split(',')
+                series = selected[0].split(',') if len(selected) == 1 else []
+                if (not series or len(set(series)) != len(series) or
+                        not set(series) <= {'price', 'ti', 'treasury'}):
+                    raise ValueError('Choose a nonempty unique subset of price, ti, treasury.')
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
-                ti = None
-                if 'ti' in series:
-                    if any(len(params.get(name, [])) > 1 for name in ('tiStart', 'tiEnd', 'tiCursor')):
-                        raise ValueError('Choose one issuance window and cursor.')
-                    ti_end = float(params.get('tiEnd', params.get('end', [time.time()]))[0])
-                    ti_start = float(params.get('tiStart', params.get('start', [ti_end - 3600]))[0])
-                    if 'tiEnd' not in params and 'end' not in params:
-                        ti_start = max(ti_start, ti_end - HISTORY_SECONDS)
-                    ti_start, ti_end = time_window({'start': [ti_start], 'end': [ti_end]})
-                    ti = self.server.issuance.selection(
-                        ti_start, ti_end, params.get('tiCursor', [None])[0])
-                end = ti_end if ti is not None else None
+                histories = {}
+                end = None
+                for name, history in (('ti', self.server.issuance), ('treasury', self.server.treasury)):
+                    if name not in series:
+                        continue
+                    start_name, end_name, cursor_name = name + 'Start', name + 'End', name + 'Cursor'
+                    if any(len(params.get(key, [])) > 1 for key in (start_name, end_name, cursor_name)):
+                        raise ValueError(f'Choose one {history.label.lower()} window and cursor.')
+                    state_end = float(params.get(end_name, params.get('end', [time.time()]))[0])
+                    state_start = float(params.get(start_name, params.get('start', [state_end - 3600]))[0])
+                    if end_name not in params and 'end' not in params:
+                        state_start = max(state_start, state_end - HISTORY_SECONDS)
+                    state_start, state_end = time_window({'start': [state_start], 'end': [state_end]})
+                    histories[name] = history.selection(
+                        state_start, state_end, params.get(cursor_name, [None])[0])
+                    end = state_end if end is None else max(end, state_end)
                 if 'price' in series:
                     live = 'end' not in params
                     cache = self.server.cache
@@ -730,7 +737,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(400, {'error': str(error)})
                 return
             except (sqlite3.Error, OSError):
-                logging.exception('Historical issuance read failed')
+                logging.exception('Historical state read failed')
                 self.respond(503, {'error': 'Stored history is temporarily unavailable.'})
                 return
             chunks = None
@@ -747,11 +754,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(503, {'error': 'Stored history is temporarily unavailable.'})
                     return
                 except RuntimeError:
-                    if ti is None:
+                    if not histories:
                         self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                         return
                     chunks = encode_response((), None, False, None, raw=raw, streaming=streaming)
-            chunks = historic_response(chunks, ti, streaming)
+            chunks = historic_response(chunks, histories, streaming)
             self.send_headers(200, 'application/x-ndjson' if streaming else 'application/json', history_end=end)
             try:
                 for chunk in chunks:
@@ -806,7 +813,7 @@ def main():
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--gap-repair-history', type=Path,
-                        help='Persist issuance and price repairs indefinitely; gradually repair recent missing history')
+                        help='Persist issuance, Treasury and price repairs indefinitely; gradually repair recent missing history')
     parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
                         help='Polkadot Hub HTTP archive RPC for recent issuance and pool-history gap repair')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
@@ -814,6 +821,7 @@ def main():
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache(archive=args.archive, history_path=args.gap_repair_history)
     server.issuance = IssuanceCache(history_path=args.gap_repair_history)
+    server.treasury = TreasuryHistory(args.gap_repair_history)
     worker = None
     repair = None
     issuance = None
@@ -826,10 +834,9 @@ def main():
             issuance.thread.start()
             if args.gap_repair_history:
                 from gap_repair import GapRepair
-                from treasury import TreasuryHistory
                 repair = GapRepair(server.cache, args.gap_repair_history,
                                    chain=HubChain(args.hub_rpc), issuance=server.issuance,
-                                   treasury=TreasuryHistory(args.gap_repair_history))
+                                   treasury=server.treasury)
                 repair.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
             url = f'http://{browser_host}:{server.server_port}'

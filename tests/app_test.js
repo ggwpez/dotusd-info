@@ -74,7 +74,7 @@ function deferred() {
   return {promise, resolve};
 }
 
-function historicStream(ti, end, ranges = []) {
+function historicStream(ti, end, ranges = [], treasury) {
   const started = deferred(), finished = deferred();
   let first = true;
   const reader = {
@@ -82,7 +82,7 @@ function historicStream(ti, end, ranges = []) {
       if (first) {
         first = false;
         return {done: false, value: JSON.stringify({
-          encoding: 'ranges-stream-v1', fetchedAt: end, historyReady: true, extremes: null, ti,
+          encoding: 'ranges-stream-v1', fetchedAt: end, historyReady: true, extremes: null, ti, treasury,
         }) + '\n' + JSON.stringify({ranges}) + '\n'};
       }
       started.resolve();
@@ -132,15 +132,26 @@ function checkApp() {
 
   showIssuance = true;
   issuanceRows = [[110, 1000000, 1], [110, 1307938.731358, 2], [180, 2000000, 5]];
+  treasuryRows = [[110, 100, 1], [110, 0, 2], [180, 200, 5]];
   draw();
   assert(tip.children[3].textContent === 'TI: 1.31M dotUSD',
     'hover matches issuance by block despite estimated or duplicate timestamps');
+  assert(tip.children[4].textContent === 'Treasury: 0 dotUSD',
+    'Treasury matches the exact block despite timestamps and displays zero');
+  assert(tip.children[4].style.color === treasuryColor && treasuryColor !== issuanceColor,
+    'Treasury tooltip identifies its distinct line color');
   issuanceRows = [[110, 1000000, 1], [180, 2000000, 5]];
   draw();
   assert(tip.children[3].textContent === 'TI: unavailable', 'hover does not bridge issuance gaps');
+  treasuryRows = [[110, 100, 1], [130, 200, 3]];
+  draw();
+  assert(tip.children[4].textContent === 'Treasury: unavailable',
+    'Treasury never substitutes nearest timestamp or block');
+  treasuryRows = [];
   issuanceRows = [];
   draw();
   assert(tip.children[3].textContent === 'TI: unavailable', 'hover handles unloaded issuance');
+  assert(tip.children[4].textContent === 'Treasury: unavailable', 'hover handles unloaded Treasury');
   showIssuance = false;
   draw();
   assert(tip.children.length === 3, 'disabled issuance leaves the price-only tooltip');
@@ -220,11 +231,34 @@ function checkApp() {
     'issuance connects 1800-block samples but not wider gaps');
   assert(supplyPath.every(call => Number.isFinite(call[3]) && call[3] === supplyPath[0][3]),
     'constant issuance has a finite horizontal line');
+  treasuryRows = [[110, 0, 1], [120, 1000000, 1801], [180, 2000000, 3602]];
+  drawing.length = 0;
+  drawIssuance(geometry);
+  const purpleStart = drawing.findIndex(call => call[1] === 'strokeStyle' && call[2] === treasuryColor);
+  const treasuryPath = drawing.slice(purpleStart).filter(call => ['moveTo', 'lineTo'].includes(call[1]));
+  assert(treasuryPath.length === 3 && treasuryPath[0][1] === 'moveTo' &&
+    treasuryPath[1][1] === 'lineTo' && treasuryPath[2][1] === 'moveTo',
+    'Treasury connects exactly 1800-block gaps but not wider gaps');
+  assert(treasuryPath.every(call => Number.isFinite(call[3]) &&
+    call[3] >= geometry.top && call[3] <= geometry.bottom),
+    'shared linear axis includes Treasury zero and values above TI');
+  const sharedSupply = drawing.slice(0, purpleStart).filter(call => ['moveTo', 'lineTo'].includes(call[1]));
+  assert(sharedSupply.every(call => call[3] === treasuryPath[1][3]) &&
+    treasuryPath[0][3] > treasuryPath[1][3] && treasuryPath[1][3] > treasuryPath[2][3],
+    'identical TI and Treasury balances share exactly the same linear dotUSD coordinate');
+  issuanceRows = [];
+  treasuryRows = [[110, 0, 1], [120, 0, 2]];
+  drawing.length = 0;
+  drawIssuance(geometry);
+  const zeros = drawing.filter(call => ['moveTo', 'lineTo'].includes(call[1]));
+  assert(zeros.length === 2 && zeros.every(call => Number.isFinite(call[3]) && call[3] === geometry.bottom),
+    'Treasury-only all-zero history is finite at the axis baseline');
   state.start = 300;
   state.end = 400;
   drawing.length = 0;
   drawIssuance(geometry);
-  assert(!drawing.some(call => call[1] === 'arc'), 'issuance is not extrapolated into missing history');
+  assert(!drawing.some(call => ['moveTo', 'lineTo', 'arc'].includes(call[1])),
+    'neither series is extrapolated into missing history');
   showIssuance = false;
   // Returning traces also supports comparisons against the pre-refactor renderer.
   return {initialDraw, hoverDraw, zoom: state.zoom};

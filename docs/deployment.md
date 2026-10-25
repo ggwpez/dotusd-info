@@ -166,7 +166,8 @@ For each selected block, one `state_queryStorageAt` call requests whichever of
 TI and Treasury holdings is missing; saved series are not requested again.
 The `treasury(number, timestamp, balance)` table stores dotUSD units and actual
 chain timestamps. Treasury collection is historical-only, with no separate live
-poll, chart series or API. Missing Treasury accounts record zero; RPC failures
+poll. The issuance setting shows both state series through the shared historic
+API and browser subscription. Missing Treasury accounts record zero; RPC failures
 and unsupported layouts leave a gap for retry.
 RPC failures back off up to fifteen minutes and do not interrupt live collection
 or the independent issuance poll. Inspect `Archive gap repair` messages in

@@ -69,19 +69,21 @@ remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
 ## Total issuance
 
-`GET /api/historic` selects `series=price`, `series=ti`, or `series=price,ti`.
-TI is returned under `ti` as `{rows, cursor, reset, error}`; each row is
-`[timestamp_seconds, issuance_dotusd, block_number]`. Generic `start`/`end`
-select the window (default: last hour); `tiStart`/`tiEnd` override the TI bounds
-when price polls use a block cursor. Omitting `tiEnd` in live chart requests
-allows the server to advance the window.
+`GET /api/historic` selects any nonempty unique subset of `price`, `ti`, and
+`treasury`, in any order. TI is returned under `ti` as `{rows, cursor, reset, error}`;
+each row is `[timestamp_seconds, issuance_dotusd, block_number]`. Treasury has
+the same shape under `treasury`, with holdings in dotUSD units.
+Generic `start`/`end` select the window (default: last hour).
+`tiStart`/`tiEnd` and `treasuryStart`/`treasuryEnd` independently override state
+bounds when price polls use a block cursor. Omitting the respective end in live
+chart requests allows the server to advance the window.
 
-The opaque `tiCursor` returns only changed samples, including older backfill
-and corrections, rather than downloading the full history on every poll.
+The opaque `tiCursor` and `treasuryCursor` independently return only changed
+samples, including older backfill and corrections, rather than downloading the full history on every poll.
 A bounded 4,096-change journal tracks revisions without per-client server state.
 Missing, expired, or previous-server cursors return `reset: true` with a fresh
-selected-window snapshot. Unchanged polls return no TI rows. Rows are ordered
-by finalized block number, with nondecreasing timestamps.
+selected-window snapshot. Unchanged polls return no rows for that series. Rows
+are ordered by finalized block number, with nondecreasing timestamps.
 With `--gap-repair-history PATH`, the seven-day in-memory history includes
 restored, live and backfilled samples, with older saved samples available through
 explicit historical windows; missing blocks are omitted, so this is
@@ -186,8 +188,14 @@ and timestamp decoding. It omits saved series and skips fully populated blocks.
 Independent decoder failures preserve the other series' valid sample.
 Price repair and both state series share the existing eight-block pass limit.
 `TreasuryHistory` stores `(number, timestamp, balance)` in the repair database's
-`treasury` table indefinitely and restores seven days into memory. This is data
-collection only: there is no Treasury live worker, chart series or history API.
+`treasury` table indefinitely and restores seven days into memory. It shares
+the bounded history cache implementation with TI, including an independent
+revision journal and historical SQLite selection. The HTTP handler and archive
+worker use the same cache instance, so new backfill points reach subscriptions.
+There is no Treasury live RPC worker; without archive repair its API is empty.
+The existing issuance setting shows both series on a shared right linear axis:
+TI blue, Treasury purple. Exact-block hover values distinguish measured data
+from coarse-line interpolation.
 
 
 ## Browser loading
@@ -223,12 +231,13 @@ available in either view.
 
 The chart has one history subscription: one six-second polling loop and one
 abort controller for `/api/historic`. The TI setting selects `series=price`
-or `series=price,ti`; it does not start another fetch loop. Navigation and
-setting changes cancel the old request before replacing it. Hidden pages do
-not poll. With TI enabled, fixed historical views also poll for repair deltas.
-TI cursors advance only after a complete response; stale or interrupted
-responses cannot overwrite the current selection. TI deltas merge by block,
-and expanding the selected window requests a fresh TI snapshot.
+or `series=price,ti,treasury`; it does not start another fetch loop. Navigation
+and setting changes cancel the old request before replacing it. Hidden pages
+do not poll. With TI enabled, fixed historical views also poll for repair deltas.
+TI and Treasury cursors advance only after a complete response; stale or
+interrupted responses cannot overwrite the current selection. Both series merge
+deltas by block and track independent coverage; expanding the selected window
+requests fresh snapshots for any series without full coverage.
 
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a

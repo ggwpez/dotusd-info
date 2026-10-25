@@ -1,13 +1,9 @@
 """Historical Treasury dotUSD holdings, with permanent storage and a seven-day cache."""
-from contextlib import closing
 import hashlib
 from pathlib import Path
-import sqlite3
-import threading
-import time
 
 from archive_reader import TIMESTAMP, decimals, metadata_key
-from issuance import ASSET, RETENTION, asset_key, total_supply
+from issuance import ASSET, IssuanceCache, asset_key, total_supply
 
 # Polkadot Treasury PalletId(*b"py/trsry"), converted to AccountId32.
 # SS58: 13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB
@@ -91,58 +87,14 @@ def read_history(rpc, number, *, issuance=False, treasury=False, at=None, timest
     return rows
 
 
-class TreasuryHistory:
-    def __init__(self, path):
-        self.history_path = Path(path)
-        self.lock = threading.Lock()
-        self.rows = ()
-        self.restored = False
+class TreasuryHistory(IssuanceCache):
+    table = 'treasury'
+    value_column = 'balance'
+    label = 'Treasury'
+    loading_error = 'Loading recent finalized Treasury dotUSD holdings.'
 
-    def database(self):
-        # A fresh connection per operation keeps archive and startup threads separate.
-        self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.history_path)
-        db.execute('PRAGMA journal_mode=WAL')
-        db.execute('''CREATE TABLE IF NOT EXISTS treasury (
-            number INTEGER PRIMARY KEY, timestamp REAL NOT NULL, balance REAL NOT NULL)''')
-        db.execute('CREATE INDEX IF NOT EXISTS treasury_time ON treasury(timestamp)')
-        return db
-
-    def restore(self):
-        with self.lock:
-            if not self.restored:
-                self._merge((), time.time())
-
-    def merge(self, rows, now=None):
-        with self.lock:
-            self._merge(rows, time.time() if now is None else now)
-
-    def _merge(self, rows, now):
-        cutoff = now - RETENTION
-        with closing(self.database()) as db:
-            with db:
-                retained = {row[2]: row for row in self.rows if row[0] > cutoff}
-                if not self.restored:
-                    for row in db.execute(
-                            'SELECT timestamp,balance,number FROM treasury WHERE timestamp>? ORDER BY number',
-                            (cutoff,)):
-                        retained.setdefault(row[2], row)
-                incoming = [tuple(row) for row in rows]
-                for row in incoming:
-                    retained.pop(row[2], None)
-                    if row[0] > cutoff:
-                        retained[row[2]] = row
-                merged = tuple(retained[number] for number in sorted(retained))
-                if any(a[0] > b[0] for a, b in zip(merged, merged[1:])):
-                    raise ValueError('Treasury timestamps moved backwards')
-                db.executemany('INSERT OR REPLACE INTO treasury VALUES(?,?,?)',
-                               [(row[2], row[0], row[1]) for row in incoming])
-            # Publish only after a successful commit; old rows remain on disk indefinitely.
-            self.rows = merged
-            self.restored = True
-
-    def snapshot(self):
-        with self.lock:
-            cutoff = time.time() - RETENTION
-            self.rows = tuple(row for row in self.rows if row[0] > cutoff)
-            return {'rows': self.rows}
+    def __init__(self, path=None):
+        super().__init__(Path(path) if path is not None else None)
+        if path is None:
+            # Treasury is archive-backed only; no separate live RPC worker.
+            self.error = None

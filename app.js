@@ -74,7 +74,9 @@ try { showIssuance = localStorage.getItem('dotusd-issuance-axis') === 'true'; } 
 const preferredIssuance = showIssuance;
 showIssuance = initialView.issuance ?? preferredIssuance;
 let issuanceRows = [], issuanceCursor = null, issuanceCoverage = null;
+let treasuryRows = [], treasuryCursor = null, treasuryCoverage = null;
 const issuanceColor = '#82b7ff';
+const treasuryColor = '#d9a3ff';
 const issuanceFormat = new Intl.NumberFormat('en-US', {notation: 'compact', maximumSignificantDigits: 3});
 const issuanceNumber = value => issuanceFormat.format(value);
 const preferredScale = displayScale, preferredAxis = axisScale;
@@ -115,7 +117,7 @@ function applyScale() {
     (axisScale === 'log' ? ' · symmetric log axis' : '');
   $('chart-title').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Peg deviation';
   canvas.setAttribute('aria-label', 'dotUSD chart in ' + chartUnit +
-    (showIssuance ? '. Total dotUSD issuance on the right linear axis' : '') +
+    (showIssuance ? '. Total dotUSD issuance and Treasury holdings on the right linear dotUSD axis' : '') +
     '. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples.');
   document.querySelectorAll('[data-rating]').forEach(segment => {
     const index = Number(segment.dataset.rating);
@@ -259,6 +261,10 @@ async function refresh(force = false, preferCache = false) {
       (end > issuanceCoverage.end && !(live && issuanceCoverage.live)))) {
     issuanceCursor = null;
   }
+  if (includeIssuance && (!treasuryCoverage || start < treasuryCoverage.start ||
+      (end > treasuryCoverage.end && !(live && treasuryCoverage.live)))) {
+    treasuryCursor = null;
+  }
   const cachedRows = historyCache.rows.window(start, end);
   const last = cachedRows.at(-1);
   // Advance only from a completed history snapshot; warming/backfills need the full window.
@@ -282,7 +288,8 @@ async function refresh(force = false, preferCache = false) {
   publish(historyCache.rows);
   let timeout;
   try {
-    if (preferCache && !force && !missing.length && (!includeIssuance || issuanceCursor !== null)) return;
+    if (preferCache && !force && !missing.length &&
+        (!includeIssuance || (issuanceCursor !== null && treasuryCursor !== null))) return;
     if (!force && !live && !missing.length && !refreshHistory && !includeIssuance) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
     const lowerBound = blockCursor === null ? `start=${start}` : `startpoint=${blockCursor}`;
@@ -290,10 +297,12 @@ async function refresh(force = false, preferCache = false) {
     // History streams need full-window extrema before all chunks arrive.
     // Incremental polls already have that history locally.
     const statisticsWindow = incremental ? '' : `&windowStart=${start}${live ? '' : `&windowEnd=${end}`}`;
-    const selection = includeIssuance ? 'price,ti' : 'price';
+    const selection = includeIssuance ? 'price,ti,treasury' : 'price';
     const issuanceWindow = includeIssuance ? `&tiStart=${tiStart}${tiEnd === null ? '' : `&tiEnd=${tiEnd}`}` +
       (issuanceCursor === null ? '' : `&tiCursor=${encodeURIComponent(issuanceCursor)}`) : '';
-    const response = await fetch(`${source.endpoint}?series=${selection}&${lowerBound}${upperBound}${statisticsWindow}${issuanceWindow}&format=stream`, {signal: requestController.signal});
+    const treasuryWindow = includeIssuance ? `&treasuryStart=${tiStart}${tiEnd === null ? '' : `&treasuryEnd=${tiEnd}`}` +
+      (treasuryCursor === null ? '' : `&treasuryCursor=${encodeURIComponent(treasuryCursor)}`) : '';
+    const response = await fetch(`${source.endpoint}?series=${selection}&${lowerBound}${upperBound}${statisticsWindow}${issuanceWindow}${treasuryWindow}&format=stream`, {signal: requestController.signal});
     if (ticket !== generation) return;
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
@@ -308,14 +317,17 @@ async function refresh(force = false, preferCache = false) {
       state.end = end;
     }
     const runs = [];
-    let lastDraw = -Infinity, pendingIssuance;
+    let lastDraw = -Infinity, pendingIssuance, pendingTreasury;
     for await (const message of readPriceStream(response)) {
       if (ticket !== generation) return;
       if (message.encoding) {
         state.extremes = message.extremes;
         state.serverWarming = message.historyReady === false;
         state.fetchedAt = message.fetchedAt;
-        if (includeIssuance) pendingIssuance = message.ti;
+        if (includeIssuance) {
+          pendingIssuance = message.ti;
+          pendingTreasury = message.treasury;
+        }
       } else if (message.ranges) {
         const batch = RangeSeries.fromWire(message.ranges);
         runs.push(...(blockCursor === null ? batch.window(left, end) : batch).runs);
@@ -337,6 +349,12 @@ async function refresh(force = false, preferCache = false) {
       issuanceCursor = pendingIssuance.cursor;
       // A narrowed subscription no longer observes repairs outside its window.
       issuanceCoverage = {start: tiStart, end: tiEnd ?? end, live};
+    }
+    if (Array.isArray(pendingTreasury?.rows) && typeof pendingTreasury.cursor === 'string' &&
+        typeof pendingTreasury.reset === 'boolean') {
+      treasuryRows = mergeIssuanceRows(treasuryRows, pendingTreasury, Date.now()/1000);
+      treasuryCursor = pendingTreasury.cursor;
+      treasuryCoverage = {start: tiStart, end: tiEnd ?? end, live};
     }
     state.historyLoading = historyCache.missing(start, end).length > 0;
     publish(historyCache.rows);
@@ -506,16 +524,19 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
 
 function drawIssuance({right, top, bottom, x}) {
   if (!showIssuance) return;
-  const visible = issuanceRows.filter(row => row[0] >= state.start && row[0] <= state.end);
-  ctx.fillStyle = issuanceColor;
+  const visible = [issuanceRows, treasuryRows].map(rows =>
+    rows.filter(row => row[0] >= state.start && row[0] <= state.end));
+  ctx.fillStyle = '#8792a3';
   ctx.font = '10px ui-monospace, monospace';
   ctx.textAlign = 'left';
   ctx.fillText('dotUSD', right + 10, top - 6);
-  if (!visible.length) return;
+  if (!visible.some(rows => rows.length)) return;
   let low = Infinity, high = -Infinity;
-  for (const row of visible) {
-    low = Math.min(low, row[1]);
-    high = Math.max(high, row[1]);
+  for (const rows of visible) {
+    for (const row of rows) {
+      low = Math.min(low, row[1]);
+      high = Math.max(high, row[1]);
+    }
   }
   // Leave enough separation for three-significant-digit compact tick labels.
   const padding = Math.max((high - low) * .1, high * .02, .000001);
@@ -525,17 +546,19 @@ function drawIssuance({right, top, bottom, x}) {
     const value = min + (max - min) * i / 4;
     ctx.fillText(issuanceNumber(value), right + 10, y(value) + 3);
   }
-  ctx.strokeStyle = issuanceColor;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  let previous;
-  for (const row of visible) {
-    // Show the coarse backfill, but do not bridge an unfilled coarse interval.
-    if (!previous || row[2] <= previous[2] || row[2] - previous[2] > 1800) ctx.moveTo(x(row[0]), y(row[1]));
-    else ctx.lineTo(x(row[0]), y(row[1]));
-    previous = row;
+  for (const [index, rows] of visible.entries()) {
+    ctx.strokeStyle = index === 0 ? issuanceColor : treasuryColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let previous;
+    for (const row of rows) {
+      // Show coarse backfills, but do not bridge an unfilled coarse interval.
+      if (!previous || row[2] <= previous[2] || row[2] - previous[2] > 1800) ctx.moveTo(x(row[0]), y(row[1]));
+      else ctx.lineTo(x(row[0]), y(row[1]));
+      previous = row;
+    }
+    ctx.stroke();
   }
-  ctx.stroke();
 }
 
 function drawOverlay({left, right, top, bottom, x, y}, width, height) {
@@ -580,21 +603,25 @@ function drawOverlay({left, right, top, bottom, x, y}, width, height) {
     tip.append(stamp, value, price);
     if (showIssuance) {
       // Price timestamps are estimated; match actual chain samples by block.
-      let low = 0, high = issuanceRows.length;
-      while (low < high) {
-        const mid = Math.floor((low + high) / 2);
-        if (issuanceRows[mid][2] < row[2]) low = mid + 1;
-        else high = mid;
+      for (const [label, rows, color] of [
+        ['TI', issuanceRows, issuanceColor], ['Treasury', treasuryRows, treasuryColor],
+      ]) {
+        let low = 0, high = rows.length;
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2);
+          if (rows[mid][2] < row[2]) low = mid + 1;
+          else high = mid;
+        }
+        const sample = rows[low];
+        const value = document.createElement('div');
+        value.textContent = sample && row[2] !== null && sample[2] === row[2]
+          ? `${label}: ${issuanceNumber(sample[1])} dotUSD` : `${label}: unavailable`;
+        value.style.color = color;
+        tip.append(value);
       }
-      const sample = issuanceRows[low];
-      const issuance = document.createElement('div');
-      issuance.textContent = sample && row[2] !== null && sample[2] === row[2]
-        ? `TI: ${issuanceNumber(sample[1])} dotUSD` : 'TI: unavailable';
-      issuance.style.color = issuanceColor;
-      tip.append(issuance);
     }
     tip.style.left = `${Math.max(0, Math.min(px + 16, width - 230))}px`;
-    tip.style.top = `${Math.max(0, Math.min(py + 16, height - (showIssuance ? 125 : 100)))}px`;
+    tip.style.top = `${Math.max(0, Math.min(py + 16, height - (showIssuance ? 150 : 100)))}px`;
   }
   ctx.restore();
 }
@@ -633,8 +660,10 @@ function draw() {
     ctx.font = '10px ui-monospace, monospace';
     let issuanceWidth = showIssuance ? 90 : 20;
     if (showIssuance) {
-      for (const row of issuanceRows) {
-        issuanceWidth = Math.max(issuanceWidth, ctx.measureText(issuanceNumber(row[1] * 1.00001)).width + 25);
+      for (const rows of [issuanceRows, treasuryRows]) {
+        for (const row of rows) {
+          issuanceWidth = Math.max(issuanceWidth, ctx.measureText(issuanceNumber(row[1] * 1.00001)).width + 25);
+        }
       }
     }
     const right = rect.width - issuanceWidth, top = 18, bottom = rect.height - 35;
@@ -799,6 +828,8 @@ window.addEventListener('popstate', () => {
   if (issuanceChanged && showIssuance) {
     issuanceCursor = null;
     issuanceCoverage = null;
+    treasuryCursor = null;
+    treasuryCoverage = null;
   }
   applyScale();
   if (!rangeChanged) {
@@ -835,6 +866,8 @@ $('issuance-axis').addEventListener('change', event => {
   if (showIssuance) {
     issuanceCursor = null;
     issuanceCoverage = null;
+    treasuryCursor = null;
+    treasuryCoverage = null;
   }
   try { localStorage.setItem('dotusd-issuance-axis', String(showIssuance)); } catch {}
   applyScale();

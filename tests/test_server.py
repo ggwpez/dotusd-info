@@ -3,6 +3,7 @@ import importlib.util
 import json
 import io
 import math
+from itertools import permutations
 import random
 import queue
 import time
@@ -23,7 +24,7 @@ spec.loader.exec_module(page)
 
 
 class PageTests(unittest.TestCase):
-    def test_historic_series_selection_formats_and_fresh_issuance_deltas(self):
+    def test_historic_series_selection_formats_and_fresh_state_deltas(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()
         now = time.time()
@@ -34,12 +35,18 @@ class PageTests(unittest.TestCase):
         server.issuance = page.IssuanceCache(Path(directory.name) / 'issuance.db')
         rows = [[now - 50, 100., 10], [now - 30, 120., 30], [now - 10, 140., 50]]
         server.issuance.merge(rows, live=True)
+        server.treasury = page.TreasuryHistory(Path(directory.name) / 'issuance.db')
+        treasury_rows = [[now - 45, 0., 15], [now - 25, 60., 35], [now - 5, 70., 55]]
+        server.treasury.merge(treasury_rows)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}/api/historic?'
-        bounds = f'&start={now-60}&end={now}&tiStart={now-50}&tiEnd={now-10}'
+        bounds = (f'&start={now-60}&end={now}&tiStart={now-50}&tiEnd={now-10}'
+                  f'&treasuryStart={now-45}&treasuryEnd={now-5}')
+        combinations = [','.join(names) for length in (1, 2, 3)
+                        for names in permutations(('price', 'ti', 'treasury'), length)]
         try:
-            for series in ('price', 'ti', 'price,ti'):
+            for series in combinations:
                 for encoding in ('raw', 'ranges-v1', 'stream'):
                     with self.subTest(series=series, encoding=encoding):
                         with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
@@ -56,7 +63,7 @@ class PageTests(unittest.TestCase):
                                     self.assertEqual(body['samples' if encoding == 'raw' else 'ranges'],
                                                      prices if encoding == 'raw' else list(page.pack_ranges(prices)))
                                 else:
-                                    self.assertEqual(set(body), {'ti'})
+                                    self.assertEqual(set(body), set(series.split(',')))
                             if 'price' in series:
                                 self.assertTrue(body['historyReady'])
                                 self.assertEqual(body['fetchedAt'], now)
@@ -69,24 +76,47 @@ class PageTests(unittest.TestCase):
                                 self.assertIsNone(body['ti']['error'])
                             else:
                                 self.assertNotIn('ti', body)
-            route = base + 'series=price,ti&format=stream&startpoint=50' + bounds
+                            if 'treasury' in series:
+                                self.assertEqual(body['treasury']['rows'], treasury_rows[1:])
+                                self.assertTrue(body['treasury']['reset'])
+                                self.assertIsNone(body['treasury']['error'])
+                            else:
+                                self.assertNotIn('treasury', body)
+            route = (base + 'series=price,ti,treasury&format=stream&startpoint=55' + bounds +
+                     f'&windowStart={now-60}&windowEnd={now}')
             with urlopen(route) as response:
                 initial, done = [json.loads(line) for line in response]
             cursor = initial['ti']['cursor']
+            treasury_cursor = initial['treasury']['cursor']
             self.assertEqual(done, {'done': True})
-            with urlopen(route + '&tiCursor=' + cursor) as response:
+            cursors = '&tiCursor=' + cursor + '&treasuryCursor=' + treasury_cursor
+            with urlopen(route + cursors) as response:
                 unchanged, done = [json.loads(line) for line in response]
             self.assertEqual(unchanged['ti']['rows'], [])
             self.assertFalse(unchanged['ti']['reset'])
+            self.assertEqual(unchanged['treasury']['rows'], [])
+            self.assertFalse(unchanged['treasury']['reset'])
             # Older archive repairs and corrected supply are independent of the price cursor.
             server.issuance.merge([(now - 40, 110., 20), (now - 30, 121., 30),
                                    (now - 5, 150., 60)])
-            with urlopen(route + '&tiCursor=' + cursor) as response:
+            server.treasury.merge([(now - 35, 0., 25), (now - 25, 61., 35)])
+            with urlopen(route + cursors) as response:
                 changed, done = [json.loads(line) for line in response]
             self.assertEqual(changed['ti']['rows'], [[now - 40, 110., 20], [now - 30, 121., 30]])
             self.assertFalse(changed['ti']['reset'])
             self.assertNotEqual(changed['ti']['cursor'], cursor)
             self.assertEqual(done, {'done': True})
+            self.assertEqual(changed['treasury']['rows'], [[now - 35, 0., 25], [now - 25, 61., 35]])
+            self.assertFalse(changed['treasury']['reset'])
+            self.assertNotEqual(changed['treasury']['cursor'], treasury_cursor)
+            # A state cursor cannot suppress another series' rows.
+            with urlopen(route + '&tiCursor=' + changed['ti']['cursor'] +
+                         '&treasuryCursor=' + changed['ti']['cursor']) as response:
+                independent, done = [json.loads(line) for line in response]
+            self.assertEqual(independent['ti']['rows'], [])
+            self.assertTrue(independent['treasury']['reset'])
+            self.assertEqual(independent['treasury']['rows'],
+                             [[now - 35, 0., 25], [now - 25, 61., 35], treasury_rows[2]])
             with urlopen(route + '&tiCursor=expired') as response:
                 reset, done = [json.loads(line) for line in response]
             self.assertTrue(reset['ti']['reset'])
@@ -111,7 +141,14 @@ class PageTests(unittest.TestCase):
                    f'series=ti&tiStart={now}&tiEnd={now-1}',
                    f'series=ti&tiStart={now-10}&tiStart={now-20}',
                    f'series=ti&tiStart={now-10}&tiEnd={now}&tiEnd={now}',
-                   f'series=ti&tiStart={now-10}&tiCursor=a&tiCursor=b')
+                   f'series=ti&tiStart={now-10}&tiCursor=a&tiCursor=b',
+                   'series=treasury,treasury', 'series=price,ti,treasury,unknown',
+                   'series=treasury&treasuryStart=nan',
+                   'series=treasury&treasuryStart=0&treasuryEnd=604801',
+                   f'series=treasury&treasuryStart={now}&treasuryEnd={now-1}',
+                   f'series=treasury&treasuryStart={now-10}&treasuryStart={now-20}',
+                   f'series=treasury&treasuryStart={now-10}&treasuryEnd={now}&treasuryEnd={now}',
+                   f'series=treasury&treasuryCursor=a&treasuryCursor=b')
         try:
             for query in invalid:
                 with self.subTest(query=query), self.assertRaises(HTTPError) as error:
@@ -143,6 +180,64 @@ class PageTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+    def test_treasury_warming_failures_and_disabled_history_remain_independent(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        directory = tempfile.TemporaryDirectory()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}/api/historic?'
+        now = time.time()
+        bounds = f'&start={now-60}&end={now}'
+        try:
+            with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
+                with urlopen(base + 'series=treasury' + bounds) as response:
+                    disabled = json.load(response)['treasury']
+                self.assertEqual(disabled['rows'], [])
+                self.assertIsNone(disabled['error'])
+                server.treasury = page.TreasuryHistory(Path(directory.name) / 'history.db')
+                with urlopen(base + 'series=treasury' + bounds) as response:
+                    loading = json.load(response)['treasury']
+                self.assertEqual(loading['rows'], [])
+                self.assertIn('Loading', loading['error'])
+                rows = [[now - 40, 0., 10], [now - 20, 50., 20]]
+                server.treasury.merge(rows)
+                for series in ('treasury', 'ti,treasury', 'price,treasury', 'price,ti,treasury'):
+                    for encoding in ('raw', 'ranges-v1', 'stream'):
+                        with self.subTest(series=series, encoding=encoding):
+                            with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
+                                if encoding == 'stream':
+                                    body, done = [json.loads(line) for line in response]
+                                    self.assertEqual(done, {'done': True})
+                                else:
+                                    body = json.load(response)
+                            self.assertEqual(body['treasury']['rows'], rows)
+                            self.assertIsNone(body['treasury']['error'])
+                            if 'price' in series:
+                                self.assertFalse(body['historyReady'])
+                                self.assertIsNone(body['fetchedAt'])
+                            if 'ti' in series:
+                                self.assertEqual(body['ti']['rows'], [])
+                                self.assertIn('Loading', body['ti']['error'])
+                with server.treasury.lock:
+                    server.treasury.error = 'Treasury history temporarily unavailable.'
+                with urlopen(base + 'series=treasury' + bounds) as response:
+                    failed = json.load(response)['treasury']
+                self.assertEqual(failed['rows'], rows)
+                self.assertEqual(failed['error'], server.treasury.error)
+                old = now - 30 * 86400
+                with patch.object(server.treasury, 'database', side_effect=OSError('Disk unavailable')):
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(base + f'series=treasury&start={old}&end={old+60}')
+                    self.assertEqual(error.exception.code, 503)
+                    self.assertIn('Stored history', json.load(error.exception)['error'])
+                    error.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+            directory.cleanup()
 
     def test_historic_issuance_reads_cached_loading_success_and_failure_states(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)

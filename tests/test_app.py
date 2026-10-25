@@ -314,25 +314,30 @@ class AppTests(unittest.TestCase):
             const combined = pending;
             require(requests.length === 2 && requests[0].signal.aborted,
                 'TI enable cancels and reconfigures the existing request exactly once');
-            require(requests[1].url.startsWith('/api/historic?series=price,ti&') &&
+            require(requests[1].url.startsWith('/api/historic?series=price,ti,treasury&') &&
                 requests[1].url.includes('&tiStart=' + (now - 3600)) &&
-                !requests[1].url.includes('tiEnd=') && !requests[1].url.includes('tiCursor='),
-                'enabled live subscription requests the full TI viewport without an end or cursor');
+                requests[1].url.includes('&treasuryStart=' + (now - 3600)) &&
+                !requests[1].url.includes('tiEnd=') && !requests[1].url.includes('tiCursor=') &&
+                !requests[1].url.includes('treasuryEnd=') && !requests[1].url.includes('treasuryCursor='),
+                'enabled live subscription requests both full viewports without ends or cursors');
             requests[0].respond({headers: {get: () => 'obsolete-release'}});
             await price;
             require(!reloading, 'cancelled price response cannot trigger a version reload');
             const stale = historicStream({rows: [[now - 10, 1000, 10]],
-                reset: true, cursor: 'stale', error: null}, now);
+                reset: true, cursor: 'stale', error: null}, now, [],
+                {rows: [[now - 10, 100, 10]], reset: true, cursor: 'stale-treasury', error: null});
             requests[1].respond(stale.response);
             await stale.started;
-            require(issuanceCursor === null && !issuanceRows.length,
-                'TI header alone never publishes samples or advances the cursor');
+            require(issuanceCursor === null && !issuanceRows.length &&
+                treasuryCursor === null && !treasuryRows.length,
+                'header alone never publishes either series or advances cursors');
 
             elements.get('issuance-axis').events.change({target: {checked: false}});
             const disabled = pending;
             require(requests.length === 3 && requests[1].signal.aborted &&
                 requests[2].url.startsWith('/api/historic?series=price&') &&
-                !requests[2].url.includes('&ti'), 'TI disable reconfigures one request back to price only');
+                !requests[2].url.includes('&ti') && !requests[2].url.includes('&treasury'),
+                'disable reconfigures one request back to price only');
             const priceOnly = historicStream(undefined, now);
             requests[2].respond(priceOnly.response);
             await priceOnly.started;
@@ -340,22 +345,27 @@ class AppTests(unittest.TestCase):
             await disabled;
             stale.finish();
             await combined;
-            require(issuanceCursor === null && !issuanceRows.length && !loading,
+            require(issuanceCursor === null && !issuanceRows.length &&
+                treasuryCursor === null && !treasuryRows.length && !loading,
                 'a stale combined stream cannot overwrite the new subscription');
 
             issuanceCursor = 'previous-enable';
+            treasuryCursor = 'previous-treasury-enable';
             elements.get('issuance-axis').events.change({target: {checked: true}});
             const enabled = pending;
-            require(requests.length === 4 && !requests[3].url.includes('tiCursor='),
-                'each TI enable resets the revision cursor');
+            require(requests.length === 4 && !requests[3].url.includes('tiCursor=') &&
+                !requests[3].url.includes('treasuryCursor='),
+                'each enable resets both revision cursors');
             const fresh = historicStream({rows: [[now - 5, 1100, 11]],
-                reset: true, cursor: 'fresh', error: null}, now);
+                reset: true, cursor: 'fresh', error: null}, now, [],
+                {rows: [[now - 5, 0, 11]], reset: true, cursor: 'fresh-treasury', error: null});
             requests[3].respond(fresh.response);
             await fresh.started;
             fresh.finish();
             await enabled;
-            require(issuanceCursor === 'fresh' && issuanceRows[0][2] === 11 && !loading,
-                'the active completed stream publishes TI');
+            require(issuanceCursor === 'fresh' && issuanceRows[0][2] === 11 && !loading &&
+                treasuryCursor === 'fresh-treasury' && treasuryRows[0][1] === 0,
+                'the active completed stream publishes both series');
             require(requests.every(request => request.url.startsWith('/api/historic?')),
                 'there is no second issuance fetch or legacy endpoint');
             return true;
@@ -498,7 +508,8 @@ class AppTests(unittest.TestCase):
             return result.promise;
         };
         async function finishRequest(pending, cursor, reset = false, rows = []) {
-            const stream = historicStream({rows, cursor, reset, error: null}, now);
+            const stream = historicStream({rows, cursor, reset, error: null}, now, [],
+                {rows, cursor: 'treasury-' + cursor, reset, error: null});
             requests.at(-1).respond(stream.response);
             await stream.started;
             stream.finish();
@@ -511,22 +522,28 @@ class AppTests(unittest.TestCase):
             now += 6;
             let pending = refresh();
             require(requests.at(-1).url.includes('&tiCursor=live-1') &&
+                requests.at(-1).url.includes('&treasuryCursor=treasury-live-1') &&
                 requests.at(-1).url.includes('&tiStart=' + (now - 3600)) &&
-                !requests.at(-1).url.includes('&tiEnd='),
-                'forward live motion keeps the TI cursor and moves its viewport lower bound');
+                requests.at(-1).url.includes('&treasuryStart=' + (now - 3600)) &&
+                !requests.at(-1).url.includes('&tiEnd=') && !requests.at(-1).url.includes('&treasuryEnd='),
+                'forward live motion keeps both cursors and moves both viewport lower bounds');
             await finishRequest(pending, 'live-2');
             state.live = false;
             state.zoom = [now - 100, now - 50];
             const beforeNavigation = requests.length;
             await refresh(false, true);
-            require(requests.length === beforeNavigation && issuanceCursor === 'live-2',
+            require(requests.length === beforeNavigation && issuanceCursor === 'live-2' &&
+                treasuryCursor === 'treasury-live-2',
                 'a covered narrower viewport can render locally until the shared poll');
             require(needsRefresh(), 'TI keeps complete fixed-history views subscribed for repairs');
             pending = refresh();
             require(requests.at(-1).url.includes('&tiStart=' + (now - 100)) &&
                 requests.at(-1).url.includes('&tiEnd=' + (now - 50)) &&
-                requests.at(-1).url.includes('&tiCursor=live-2'),
-                'fixed history requests explicit TI viewport bounds on the same subscription');
+                requests.at(-1).url.includes('&tiCursor=live-2') &&
+                requests.at(-1).url.includes('&treasuryStart=' + (now - 100)) &&
+                requests.at(-1).url.includes('&treasuryEnd=' + (now - 50)) &&
+                requests.at(-1).url.includes('&treasuryCursor=treasury-live-2'),
+                'fixed history requests independent explicit bounds on the same subscription');
             await finishRequest(pending, 'fixed-1', false, [[now - 80, 1000, 10]]);
             pending = refresh();
             require(requests.length === beforeNavigation + 2 &&
@@ -537,22 +554,133 @@ class AppTests(unittest.TestCase):
 
             state.zoom = [now - 200, now - 50];
             pending = refresh(false, true);
-            require(!requests.at(-1).url.includes('tiCursor=') && issuanceCursor === null,
-                'extending left beyond the completed TI viewport resets its cursor even with cached prices');
+            require(!requests.at(-1).url.includes('tiCursor=') && issuanceCursor === null &&
+                !requests.at(-1).url.includes('treasuryCursor=') && treasuryCursor === null,
+                'extending left resets both cursors even with cached prices');
             await finishRequest(pending, 'wider', true, [[now - 150, 900, 9]]);
             require(issuanceRows.length === 1 && issuanceRows[0][2] === 9,
                 'a wider-window reset replaces the narrow cache');
             state.zoom = [now - 150, now - 10];
             pending = refresh(false, true);
-            require(!requests.at(-1).url.includes('tiCursor='),
-                'extending the fixed upper bound also resets the cursor');
+            require(!requests.at(-1).url.includes('tiCursor=') && !requests.at(-1).url.includes('treasuryCursor='),
+                'extending the fixed upper bound also resets both cursors');
             await finishRequest(pending, 'later', true);
             state.live = true; state.zoom = null; state.range = 7200;
             pending = refresh(false, true);
             require(!requests.at(-1).url.includes('tiCursor=') && !requests.at(-1).url.includes('tiEnd=') &&
-                requests.at(-1).url.includes('&tiStart=' + (now - 7200)),
-                'returning to a wider live window resets TI independently of the price cache');
+                requests.at(-1).url.includes('&tiStart=' + (now - 7200)) &&
+                !requests.at(-1).url.includes('treasuryCursor=') && !requests.at(-1).url.includes('treasuryEnd=') &&
+                requests.at(-1).url.includes('&treasuryStart=' + (now - 7200)),
+                'returning to a wider live window resets both series independently of the price cache');
             await finishRequest(pending, 'wide-live', true);
+            return true;
+        })();
+        """
+        self.assertTrue(evaluate(source, asynchronous=True))
+
+    def test_treasury_revisions_failures_and_independent_coverage(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        class TextDecoder { decode(value) { return value ?? ''; } }
+        const setTimeout = () => 1, clearTimeout = () => {};
+        const performance = {now: () => 100};
+        const now = Date.now()/1000;
+        Date.now = () => now * 1000;
+        const requests = [];
+        const fetch = url => {
+            const result = deferred();
+            requests.push({url, respond: result.resolve});
+            return result.promise;
+        };
+        const snapshot = (rows, cursor, reset = false) => ({rows, cursor, reset, error: null});
+        async function complete(pending, ti, treasury, ranges = []) {
+            const stream = historicStream(ti, now, ranges, treasury);
+            requests.at(-1).respond(stream.response);
+            await stream.started;
+            stream.finish();
+            await pending;
+        }
+        (async () => {
+            reloading = false; showIssuance = true;
+            state.range = 3600; state.live = true; state.zoom = null;
+            const initial = [[now - 120, 0, 10], [now - 90, 120, 12]];
+            const cursor = 'treasury:1 /+';
+            let pending = refresh();
+            await complete(pending, snapshot([[now - 90, 1000, 12]], 'ti:1', true),
+                snapshot(initial, cursor, true), [[now - 90, 12, 1]]);
+            require(treasuryCursor === cursor && treasuryRows.length === 2 && treasuryRows[0][1] === 0,
+                'completed Treasury reset retains zero balances');
+            const retained = treasuryRows, retainedCoverage = treasuryCoverage;
+            const retainedTI = issuanceRows, retainedTICoverage = issuanceCoverage;
+            const update = snapshot([[now - 100, 100, 11], [now - 95, 125, 12], [now - 80, 130, 13]],
+                'treasury:2');
+            for (const endings of [[], [{done: true}, {ranges: []}]]) {
+                pending = refresh();
+                require(requests.at(-1).url.includes('startpoint=12') &&
+                    requests.at(-1).url.includes('&tiCursor=ti%3A1') &&
+                    requests.at(-1).url.includes('&treasuryCursor=' + encodeURIComponent(cursor)),
+                    'price, TI, and opaque Treasury cursors are independent');
+                const interrupted = historicStream(snapshot([], 'ti:lost', true), now, [], update);
+                requests.at(-1).respond(interrupted.response);
+                await interrupted.started;
+                require(treasuryRows === retained && treasuryCursor === cursor &&
+                    treasuryCoverage === retainedCoverage && issuanceRows === retainedTI &&
+                    issuanceCoverage === retainedTICoverage,
+                    'headers cannot publish either cursor, coverage, or sample cache');
+                interrupted.finish(endings);
+                await pending;
+                require(state.error && treasuryRows === retained && treasuryCursor === cursor &&
+                    treasuryCoverage === retainedCoverage && issuanceRows === retainedTI &&
+                    issuanceCursor === 'ti:1' && issuanceCoverage === retainedTICoverage,
+                    'truncated or trailing-invalid streams retain both completed snapshots');
+            }
+            pending = refresh();
+            requests.at(-1).respond({ok: false, headers: {get: () => APP_VERSION},
+                json: async () => ({error: 'Archive unavailable'})});
+            await pending;
+            require(state.error && treasuryRows === retained && treasuryCursor === cursor,
+                'HTTP failures preserve successful Treasury data and revision');
+            for (const treasury of [undefined, {error: 'Treasury unavailable'}]) {
+                pending = refresh();
+                await complete(pending, snapshot([], 'ti:2'), treasury);
+                require(treasuryRows === retained && treasuryCursor === cursor &&
+                    treasuryCoverage === retainedCoverage && issuanceCursor === 'ti:2',
+                    'missing Treasury metadata cannot consume its cursor or block a successful TI update');
+            }
+            pending = refresh();
+            await complete(pending, undefined, update);
+            require(!state.error && treasuryCursor === 'treasury:2' && issuanceCursor === 'ti:2' &&
+                JSON.stringify(treasuryRows) === JSON.stringify([initial[0], ...update.rows]),
+                'Treasury repairs insert old blocks, replace exact blocks, and preserve untouched zero rows');
+
+            state.live = false; state.zoom = [now - 100, now - 50];
+            pending = refresh();
+            await complete(pending, undefined, snapshot([], 'treasury:narrow'));
+            require(treasuryCoverage.start === now - 100 && treasuryCoverage.end === now - 50 &&
+                !treasuryCoverage.live && issuanceCoverage.live,
+                'each completed series tracks its own subscribed coverage');
+            state.zoom = [now - 200, now - 50];
+            pending = refresh(false, true);
+            require(requests.at(-1).url.includes('&tiCursor=ti%3A2') &&
+                !requests.at(-1).url.includes('treasuryCursor=') &&
+                requests.at(-1).url.includes('&treasuryStart=' + (now - 200)) &&
+                requests.at(-1).url.includes('&treasuryEnd=' + (now - 50)),
+                'expansion resets only Treasury when TI still covers the requested viewport');
+            const narrowCoverage = treasuryCoverage, repairedRows = treasuryRows;
+            const widened = historicStream(undefined, now, [], snapshot([], 'treasury:wide', true));
+            requests.at(-1).respond(widened.response);
+            await widened.started;
+            require(treasuryCoverage === narrowCoverage && treasuryRows === repairedRows,
+                'expanded coverage and empty reset remain staged until stream completion');
+            widened.finish();
+            await pending;
+            require(!treasuryRows.length && treasuryCursor === 'treasury:wide' &&
+                treasuryCoverage.start === now - 200 && issuanceCursor === 'ti:2',
+                'completed empty reset replaces only Treasury and commits expanded coverage');
             return true;
         })();
         """
