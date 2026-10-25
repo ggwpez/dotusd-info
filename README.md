@@ -10,9 +10,11 @@ particular period.
 
 Prices come from the dotUSD → DOT → USDT pools. They are quoted against USDT and
 do not include trading fees or slippage. Timestamps are estimated, and missing
-blocks appear as gaps in the chart. Production gradually repairs internal gaps
-from the Parity archive: up to eight blocks per pass, with a one-minute pause
-between passes. Open charts pick up repairs automatically.
+blocks appear as gaps in the chart. Production gradually repairs internal price
+gaps and backfills total issuance from the Parity archive: both share a limit of
+eight archive blocks per pass, with a one-minute pause between passes. Missing
+issuance is filled recent-first, even where price history is already complete.
+Open charts pick up repairs automatically.
 
 The retired CoinGecko comparison implementation is preserved on the
 `preserve-coingecko` branch. Production serves only the pool-price chart;
@@ -59,12 +61,19 @@ The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environme
 In **Settings**, enable **Total dotUSD issuance** to show a blue series on a
 separate right-hand, linear axis in dotUSD units. Values use three significant
 digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
-The server reads only the latest 15 finalized blocks from the public Asset Hub
-RPC, independently of Prometheus, and refreshes the window every six seconds
-after each fetch. No issuance history is backfilled or stored on disk.
-Use **Zoom to issuance samples** to inspect this short window; range buttons
-return to the normal live chart. The legend shows the latest value, block and age,
-and reports RPC failures without discarding the last successful window.
+An independent live poll reads the latest 15 finalized blocks from the public
+Asset Hub RPC and refreshes every six seconds after each fetch. With
+`--gap-repair-history PATH` (enabled in production), successful live samples and
+historical issuance share the price-repair SQLite database, retain seven days,
+and restore at startup. Historical filling follows the retained price block
+range; it is gradual, not a guarantee of complete seven-day coverage.
+Without that flag, issuance remains a recent-only, in-memory preview.
+
+Issuance uses actual chain timestamps and leaves missing blocks disconnected.
+Use **Zoom to issuance samples** to fit all available samples, whether a short
+preview or accumulated history; range buttons return to the normal live chart.
+The legend identifies the latest cached value, block and age (not necessarily a
+sample in the displayed window), and reports RPC failures while retaining data.
 `--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
 command above even without local Prometheus; only price history remains unavailable.
 

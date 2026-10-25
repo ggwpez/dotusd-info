@@ -1,13 +1,17 @@
-"""Recent finalized dotUSD issuance, independent of the pool-price history."""
+"""Finalized dotUSD issuance, with optional persistent seven-day history."""
 import hashlib
+from contextlib import closing
 import logging
+import sqlite3
 import threading
+import time
 
 from archive_reader import TIMESTAMP, decimals, metadata_key
 from hub_quotes import HubChain
 
 ASSET = 7873
 BLOCKS = 15
+RETENTION = 7 * 86400
 
 
 def asset_key(asset):
@@ -35,14 +39,84 @@ def total_supply(encoded):
     return int.from_bytes(data[128:144], 'little')
 
 
+def read_issuance(rpc, number, at=None, timestamp=None):
+    """Read supply at one finalized block; reuse a price repair's hash/time."""
+    supply_key, precision_key = asset_key(ASSET), metadata_key(ASSET)
+    keys = [supply_key, precision_key]
+    if timestamp is None:
+        keys.insert(0, TIMESTAMP)
+    at = at if at is not None else rpc.block_hash(number)
+    values = rpc.storage(at, keys)
+    if timestamp is None:
+        encoded = values[TIMESTAMP]
+        if encoded is None:
+            raise ValueError(f'Missing timestamp at block {number}')
+        stamp = bytes.fromhex(encoded[2:])
+        if not encoded.startswith('0x') or len(stamp) != 8:
+            raise ValueError('Invalid issuance timestamp')
+        timestamp = int.from_bytes(stamp, 'little')
+    supply = total_supply(values[supply_key]) / 10 ** decimals(values[precision_key])
+    return timestamp / 1000, supply, number
+
+
 class IssuanceCache:
-    def __init__(self):
+    def __init__(self, history_path=None):
         self.lock = threading.Lock()
         self.rows = ()
         self.error = 'Loading recent finalized dotUSD issuance.'
+        self.history_path = history_path
+        self.restored = history_path is None
+
+    def database(self):
+        # Never share a SQLite connection between the live and archive threads.
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(self.history_path)
+        db.execute('PRAGMA journal_mode=WAL')
+        db.execute('''CREATE TABLE IF NOT EXISTS issuance (
+            number INTEGER PRIMARY KEY, timestamp REAL NOT NULL, supply REAL NOT NULL)''')
+        db.execute('CREATE INDEX IF NOT EXISTS issuance_time ON issuance(timestamp)')
+        return db
+
+    def restore(self):
+        with self.lock:
+            if not self.restored:
+                self._merge((), time.time())
+
+    def merge(self, rows, live=False, now=None):
+        with self.lock:
+            self._merge(rows, time.time() if now is None else now)
+            if live:
+                self.error = None
+
+    def _merge(self, rows, now):
+        if self.history_path is None:
+            self.rows = tuple(rows)
+            return
+        cutoff = now - RETENTION
+        with closing(self.database()) as db:
+            with db:
+                db.execute('DELETE FROM issuance WHERE timestamp<=?', (cutoff,))
+                retained = {row[2]: row for row in self.rows if row[0] > cutoff}
+                if not self.restored:
+                    for row in db.execute('SELECT timestamp,supply,number FROM issuance ORDER BY number'):
+                        retained.setdefault(row[2], row)
+                incoming = [row for row in rows if row[0] > cutoff]
+                retained.update((row[2], row) for row in incoming)
+                merged = tuple(retained[number] for number in sorted(retained))
+                if any(a[0] > b[0] for a, b in zip(merged, merged[1:])):
+                    raise ValueError('Issuance timestamps moved backwards')
+                db.executemany('INSERT OR REPLACE INTO issuance VALUES(?,?,?)',
+                               [(row[2], row[0], row[1]) for row in incoming])
+            self.rows = merged
+            self.restored = True
+            if self.rows and self.error and self.error.startswith('Loading'):
+                self.error = None
 
     def snapshot(self):
         with self.lock:
+            if self.history_path is not None:
+                cutoff = time.time() - RETENTION
+                self.rows = tuple(row for row in self.rows if row[0] > cutoff)
             return {'rows': self.rows, 'error': self.error}
 
 
@@ -57,11 +131,11 @@ class IssuanceWorker:
 
     def poll(self):
         try:
+            self.cache.restore()
             head = self.chain.finalized()
             existing = {row[2]: row for row in self.cache.snapshot()['rows']}
             if existing and head < max(existing):
                 raise ValueError('Hub finalized head moved backwards')
-            keys = [TIMESTAMP, asset_key(ASSET), metadata_key(ASSET)]
             rows = []
             for number in range(max(1, head - BLOCKS + 1), head + 1):
                 if self.stop.is_set():
@@ -69,26 +143,15 @@ class IssuanceWorker:
                 if number in existing:
                     rows.append(existing[number])
                     continue
-                at = self.chain.rpc.block_hash(number)
+                rows.append(read_issuance(self.chain.rpc, number))
                 if self.stop.is_set():
                     return
-                values = self.chain.rpc.storage(at, keys)
-                timestamp = values[TIMESTAMP]
-                if timestamp is None:
-                    raise ValueError(f'Missing timestamp at block {number}')
-                stamp = bytes.fromhex(timestamp[2:])
-                if not timestamp.startswith('0x') or len(stamp) != 8:
-                    raise ValueError('Invalid issuance timestamp')
-                supply = total_supply(values[keys[1]]) / 10 ** decimals(values[keys[2]])
-                rows.append((int.from_bytes(stamp, 'little') / 1000, supply, number))
             # Hub MinimumPeriod is zero: consecutive blocks may share chain time.
             if any(a[0] > b[0] for a, b in zip(rows, rows[1:])):
                 raise ValueError('Issuance timestamps moved backwards')
-            with self.cache.lock:
-                self.cache.rows = tuple(rows)
-                self.cache.error = None
+            self.cache.merge(rows, live=True)
         except Exception as error:
-            # Publish complete successful windows only; failures keep the last one.
+            # Failures retain every previously published live or historical row.
             with self.cache.lock:
                 self.cache.error = f'Issuance refresh failed: {error}'
             logging.exception('Recent dotUSD issuance refresh failed')

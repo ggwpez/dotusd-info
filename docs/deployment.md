@@ -112,16 +112,29 @@ Inspect progress with `ssh server journalctl -u dotusd-backfill -n 20 --no-pager
 The comparison implementation is preserved on `preserve-coingecko`.
 Production no longer serves `/coingecko` or `/api/coingecko/prices` and does
 not start a comparison worker. Existing comparison history files are left
-untouched; `/var/lib/dotusd-quotes` remains the state directory for pool repairs.
+untouched; `/var/lib/dotusd-quotes` remains the state directory for price repairs
+and total issuance history.
 
-## Automatic pool gap recovery
+## Automatic price gap recovery and issuance history
 
 The supplied service enables `--gap-repair-history
 /var/lib/dotusd-quotes/pool-repairs.sqlite3`. This uses the existing writable
-state directory and needs no additional service or timer. It queries the Parity
-archive independently of the live collector, with eight blocks per pass, at most
-two sequential RPC requests per second and a one-minute pause after each pass.
-Restarting the website resumes saved progress. RPC failures back off up to
-fifteen minutes and do not interrupt live collection. Inspect `Archive gap repair`
-messages in `journalctl -u dotusd-info`. Omit the option to disable automatic
-repair. The seven-day retention bounds both repaired history and saved evidence.
+state directory and needs no additional service or timer. The same SQLite file
+stores price-repair evidence and seven days of total issuance, including
+successful samples from the independent recent 15-block live issuance poll.
+Startup restores retained issuance before new RPC samples arrive.
+
+The repair worker queries the Parity archive independently of the live collector.
+Price repair and issuance backfill share a limit of eight archive blocks per pass,
+at most two sequential RPC requests per second and a one-minute pause after each
+pass. Missing issuance is filled recent-first throughout the retained price block
+range, even where prices are already complete; seven-day coverage grows gradually
+and may remain incomplete. Restarting the website resumes saved progress.
+RPC failures back off up to fifteen minutes and do not interrupt live collection
+or the independent issuance poll. Inspect `Archive gap repair` messages in
+`journalctl -u dotusd-info`.
+
+Omit the option to disable automatic repair and disk-backed issuance history;
+issuance then remains a recent-only, in-memory preview. Seven-day retention bounds
+repaired history, saved evidence and persisted issuance. The original chain
+timestamps are used for issuance rather than the estimated pool-price clock.

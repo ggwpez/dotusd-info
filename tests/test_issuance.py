@@ -1,8 +1,12 @@
+from contextlib import closing
+from pathlib import Path
+import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, call, patch
 
 from archive_reader import TIMESTAMP, metadata_key
-from issuance import ASSET, IssuanceCache, IssuanceWorker, asset_key, total_supply
+from issuance import ASSET, RETENTION, IssuanceCache, IssuanceWorker, asset_key, total_supply
 
 
 def details(supply):
@@ -138,3 +142,90 @@ class IssuanceTests(unittest.TestCase):
         worker.poll()
         worker.chain.rpc.storage.assert_not_called()
         self.assertEqual(worker.cache.snapshot()['rows'], ())
+
+    def persistent_cache(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return IssuanceCache(Path(directory.name) / 'repairs.db')
+
+    def test_live_windows_accumulate_and_restore_with_persistence(self):
+        now = 1_700_001_000
+        worker = self.worker()
+        worker.cache = self.persistent_cache()
+        historical = (now - 1000, 80., 50)
+        with patch('issuance.time.time', return_value=now):
+            worker.cache.merge([historical])
+            worker.poll()
+            worker.chain.finalized.return_value = 102
+            worker.poll()
+            rows = worker.cache.snapshot()['rows']
+            self.assertEqual([row[2] for row in rows], [50] + list(range(86, 103)))
+            restarted = IssuanceCache(worker.cache.history_path)
+            restarted.restore()
+            self.assertEqual(restarted.snapshot(), {'rows': rows, 'error': None})
+            self.assertEqual(rows[0], historical)
+
+    def test_concurrent_backfill_survives_live_snapshot_and_retention(self):
+        now = 1_700_001_000
+        worker = self.worker()
+        worker.cache = self.persistent_cache()
+        expired = (now - RETENTION, 1., 1)
+        historical = (now - 1000, 50., 50)
+        arriving = (now - 900, 51., 51)
+        started, release = threading.Event(), threading.Event()
+        def storage(at, keys):
+            if at == 'block-86':
+                started.set()
+                if not release.wait(5):
+                    raise TimeoutError('Test did not release live poll')
+            return self.storage(at, keys)
+        worker.chain.rpc.storage.side_effect = storage
+        with patch('issuance.time.time', return_value=now):
+            worker.cache.merge([expired, historical], now=now - 1)
+            thread = threading.Thread(target=worker.poll)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(5))
+                worker.cache.merge([arriving])
+            finally:
+                release.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertIsNone(worker.cache.snapshot()['error'])
+            self.assertEqual([row[2] for row in worker.cache.snapshot()['rows']],
+                             [50, 51] + list(range(86, 101)))
+            restarted = IssuanceCache(worker.cache.history_path)
+            restarted.restore()
+            self.assertEqual(restarted.snapshot()['rows'], worker.cache.snapshot()['rows'])
+            with closing(restarted.database()) as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM issuance WHERE number=1').fetchone()[0], 0)
+
+    def test_persistence_failure_preserves_good_history_and_retries(self):
+        now = 1_700_001_000
+        worker = self.worker()
+        worker.cache = self.persistent_cache()
+        with patch('issuance.time.time', return_value=now):
+            worker.poll()
+            previous = worker.cache.snapshot()['rows']
+            worker.chain.finalized.return_value = 101
+            with patch.object(worker.cache, 'database', side_effect=OSError('Disk unavailable')), \
+                    patch('issuance.logging.exception'):
+                worker.poll()
+            self.assertEqual(worker.cache.snapshot()['rows'], previous)
+            self.assertIn('Disk unavailable', worker.cache.snapshot()['error'])
+            worker.poll()
+            self.assertIsNone(worker.cache.snapshot()['error'])
+            self.assertEqual([row[2] for row in worker.cache.snapshot()['rows']], list(range(86, 102)))
+
+    def test_restart_prunes_expired_disk_rows_without_price_history(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        old = (now - RETENTION, 1., 1)
+        kept = (now - 10, 2., 2)
+        cache.merge([old, kept], now=now - 1)
+        with patch('issuance.time.time', return_value=now):
+            restarted = IssuanceCache(cache.history_path)
+            restarted.restore()
+            self.assertEqual(restarted.snapshot()['rows'], (kept,))
+            with closing(restarted.database()) as db:
+                self.assertEqual(db.execute('SELECT number FROM issuance').fetchall(), [(2,)])

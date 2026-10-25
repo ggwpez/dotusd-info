@@ -679,13 +679,14 @@ def main():
     parser.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--gap-repair-history', type=Path,
-                        help='Enable gradual Parity archive gap recovery, persisted in this SQLite file')
+                        help='Persist seven-day issuance history and gradually repair missing issuance and pool prices')
     parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
                         help='Polkadot Hub HTTP archive RPC for recent issuance and pool-history gap repair')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
+    server.issuance = IssuanceCache(history_path=args.gap_repair_history)
     worker = None
     repair = None
     issuance = None
@@ -698,7 +699,8 @@ def main():
             issuance.thread.start()
             if args.gap_repair_history:
                 from gap_repair import GapRepair
-                repair = GapRepair(server.cache, args.gap_repair_history, chain=HubChain(args.hub_rpc))
+                repair = GapRepair(server.cache, args.gap_repair_history,
+                                   chain=HubChain(args.hub_rpc), issuance=server.issuance)
                 repair.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
             url = f'http://{browser_host}:{server.server_port}'

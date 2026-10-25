@@ -258,6 +258,47 @@ class AppTests(unittest.TestCase):
         """
         self.assertTrue(evaluate(source))
 
+    def test_large_sparse_issuance_history_and_sample_zoom(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        showIssuance = true;
+        // A full retention window must not be expanded into function arguments.
+        issuanceRows = Array.from({length: 300000}, (_, i) => [i * 2, 1000000 + i, i * 2]);
+        state.start = 0; state.end = 604800;
+        let points = 0, connections = 0;
+        // Count drawing work without retaining a canvas trace for every sample.
+        ctx.fillText = ctx.beginPath = ctx.moveTo = ctx.stroke = ctx.fill = () => {};
+        ctx.lineTo = () => connections++;
+        ctx.arc = (x, y) => {
+            require(Number.isFinite(x) && Number.isFinite(y), 'finite historical sample position');
+            points++;
+        };
+        const bounds = {right: 700, top: 20, bottom: 300, x: time => time / 1000};
+        drawIssuance(bounds);
+        require(points === issuanceRows.length, 'large historical window renders every available sample');
+        require(connections === 0, 'sparse history never draws across missing blocks');
+        require($('issuance-status').textContent.startsWith('Latest total issuance:'),
+                'legend identifies the latest cached sample, not the historical view');
+        refresh = () => {};
+        writeViewUrl = () => {};
+        $('issuance-zoom').onclick();
+        require(state.zoom[0] === -2 && state.zoom[1] === 600000 && !state.live,
+                'sample zoom includes all retained history');
+        // Without repair, exactly the same control still fits the recent preview.
+        issuanceRows = Array.from({length: 15}, (_, i) => [100 + i * 2, 1000000, i]);
+        $('issuance-zoom').onclick();
+        require(state.zoom[0] === 98 && state.zoom[1] === 130, 'recent preview zoom stays narrow');
+        state.start = 0; state.end = 200;
+        points = connections = 0;
+        drawIssuance(bounds);
+        require(points === 15 && connections === 14, 'consecutive preview samples stay connected');
+        JSON.stringify(true);
+        """
+        self.assertTrue(evaluate(source))
+
     def test_drawing_hover_keyboard_and_drag_zoom(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')

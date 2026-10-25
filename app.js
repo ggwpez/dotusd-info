@@ -507,7 +507,7 @@ function drawIssuance({right, top, bottom, x}) {
   $('issuance-zoom').disabled = !last;
   const age = last ? Math.max(0, Math.round(Date.now()/1000 - last[0])) : 0;
   $('issuance-status').textContent = (last ?
-    `Total issuance: ${issuanceNumber(last[1])} dotUSD · block ${last[2].toLocaleString()} · ${age}s ago` :
+    `Latest total issuance: ${issuanceNumber(last[1])} dotUSD · block ${last[2].toLocaleString()} · ${age}s ago` :
     'Loading dotUSD issuance…') +
     (issuanceError ? ` · ${issuanceError}` : '') +
     (last && !visible.length ? ' · No issuance samples in this window' : '');
@@ -516,8 +516,11 @@ function drawIssuance({right, top, bottom, x}) {
   ctx.textAlign = 'left';
   ctx.fillText('dotUSD', right + 10, top - 6);
   if (!visible.length) return;
-  const low = Math.min(...visible.map(row => row[1]));
-  const high = Math.max(...visible.map(row => row[1]));
+  let low = Infinity, high = -Infinity;
+  for (const row of visible) {
+    low = Math.min(low, row[1]);
+    high = Math.max(high, row[1]);
+  }
   // Leave enough separation for three-significant-digit compact tick labels.
   const padding = Math.max((high - low) * .1, high * .02, .000001);
   const min = Math.max(0, low - padding), max = high + padding;

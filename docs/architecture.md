@@ -51,13 +51,16 @@ The collector and Prometheus are managed by the arbitrage repository.
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
-## Recent total issuance
+## Total issuance
 
 `GET /api/issuance` returns `{"rows": [[timestamp_seconds, issuance_dotusd, block_number], ...], "error": null}`.
-Rows are ordered by finalized block number, with nondecreasing timestamps, and
-cover at most the latest 15 finalized Polkadot Hub blocks, not the seven-day price
-window. This is total issued dotUSD (asset ID 7873), not circulating supply or a
-pool reserve. Timestamps come from `Timestamp.Now` in each block, unlike the
+Rows are ordered by finalized block number, with nondecreasing timestamps. With
+`--gap-repair-history PATH`, they expose all retained issuance samples from the
+seven-day history, including restored, live and backfilled samples; missing
+blocks are omitted, so this is not a promise of complete coverage. Without that
+flag, they cover at most the latest 15 finalized Polkadot Hub blocks. This is
+total issued dotUSD (asset ID 7873), not circulating supply or a pool reserve.
+Timestamps come from `Timestamp.Now` in each block, unlike the
 estimated clock used by pool-price history. The Hub runtime's timestamp
 `MinimumPeriod` is zero, so consecutive blocks can legitimately share a timestamp;
 all such blocks remain in the response without synthetic time offsets. Values
@@ -66,8 +69,8 @@ the decimals decoded from that block's `Assets.Metadata`.
 
 An independent `issuance.py` background worker starts with the server. It uses
 `--hub-rpc`, whose default is the public Parity archive endpoint
-`https://polkadot-asset-hub-rpc.polkadot.io`; issuance needs neither a private node
-nor archive backfill. The existing price source remains unchanged. A local run
+`https://polkadot-asset-hub-rpc.polkadot.io`; the recent issuance preview needs
+neither a private node nor archive backfill. The existing price source remains unchanged. A local run
 with an existing Prometheus source is:
 
 ```sh
@@ -78,7 +81,7 @@ Open <http://127.0.0.1:3001> and enable issuance in Settings. The cached endpoin
 is also readable directly at <http://127.0.0.1:3001/api/issuance>. Install
 `requirements.txt` first; the storage-key hash uses the existing `xxhash`
 dependency. `--hub-rpc URL` overrides the RPC for both issuance and optional
-pool-history gap repair.
+price/issuance history repair.
 
 The worker reuses the bounded `HubRpc`/`archive_reader.Rpc` storage reader,
 verifies the Hub genesis before accepting finality, and pins timestamp, asset
@@ -86,16 +89,29 @@ details and metadata reads to each finalized block hash. Calls are sequential
 with a 100 ms pause, a ten-second request timeout and a 16 MiB response limit.
 Each refresh fetches at most 15 blocks; already cached finalized blocks are
 reused. It waits six seconds between passes and after failures. A reconnect
-skips older blocks rather than backfilling. The immutable cache retains one
-15-row window, published only when the entire refresh succeeds.
+skips older blocks rather than backfilling. Its recent window is published only
+when the entire refresh succeeds. Without gap repair, this is the whole in-memory
+issuance history. With gap repair, successful live samples also merge into the
+retained issuance cache and persist in the same SQLite database as archive
+repairs. Retained issuance restores at startup and expires after seven days.
+The separate repair worker fills missing historical issuance within the retained
+price block bounds, even when no price gaps remain; it does not enlarge the live
+worker's 15-block fetch window.
 
-Requests read only that cache and never trigger RPC work. Startup returns an
-empty `rows` array and a loading `error` string with HTTP 200. On RPC or decoding
-failure, the last successful rows remain available with a non-null `error`;
-recovery clears it. No synthetic values, zero replacements for missing state,
-or extrapolated timestamps are generated. `Cache-Control: no-store` and
+Requests read only cached rows and never trigger RPC work. Without restored
+history, startup returns an empty `rows` array and a loading `error` string with
+HTTP 200. On live RPC or decoding failure, retained rows remain available with a
+non-null `error`; a successful live refresh clears it. No synthetic values, zero
+replacements for missing state, or extrapolated timestamps are generated.
+`Cache-Control: no-store` and
 `X-App-Version` follow the existing API conventions. Shutdown signals and joins
 the issuance worker alongside the price and repair workers.
+
+The chart uses an independent linear right axis. It connects only consecutive
+issuance blocks and does not interpolate across missing blocks. **Zoom to issuance
+samples** fits all available samples, preserving the narrow preview without the
+repair flag. The legend labels the latest cached sample, which may be outside the
+displayed historical window; missing samples in that window are called out.
 
 ### Storage decoding evidence
 
@@ -231,21 +247,31 @@ parse/cache construction at 1.5 ms versus raw JSON parsing at 12.2 ms; drawing
 point preparation at 0.8 ms versus 1.4 ms. These are component timings over 20
 measured runs after five warmups, not end-to-end browser performance guarantees.
 
-## Automatic pool-history gap repair
+## Automatic price and issuance history repair
 
 With `--gap-repair-history PATH`, a separate background worker fills internal
-block-number gaps in the retained seven-day pool history using only Parity's
-`https://polkadot-asset-hub-rpc.polkadot.io`. It waits for initial history loading
-and gives live ingestion two minutes before considering a gap. Timestamp pauses
-without missing block numbers are left intact. It does not extend the live tip.
+block-number gaps in the retained seven-day pool history and missing total
+issuance throughout that history's block range. Issuance is eligible even where
+all prices are present. It uses Parity's
+`https://polkadot-asset-hub-rpc.polkadot.io` by default (overridable with
+`--hub-rpc`). Archive backfill waits for initial price-history loading; price gaps
+also get a two-minute live-ingestion grace period. Missing issuance can be fetched
+through the newest finalized price block without that grace period. Timestamp pauses without missing
+block numbers are not price gaps. It does not extend the live price tip.
 
-Each pass repairs at most eight blocks, newest gaps first. All RPC requests are
-sequential and spaced at least 500 ms apart, followed by a 60-second pause between
-passes. Failures back off from two minutes up to fifteen minutes. The worker
-verifies the Hub genesis and requires the gap's right boundary to be finalized.
-It uses the shared pool reserve decoder; unavailable pools remain gaps.
+Each pass visits at most eight archive blocks shared between price repair and
+issuance backfill, rather than granting each series its own budget. Issuance-only
+work fills recent-first; price gaps retain a share of the batch when both need work.
+All RPC requests are sequential and spaced at least 500 ms apart, followed by a
+60-second pause between passes. Failures back off from two minutes up to fifteen
+minutes. The worker verifies the Hub genesis and finalized boundaries.
+It uses the shared pool reserve decoder and issuance storage decoder; missing
+on-chain state is not replaced with synthetic values. The independent live
+issuance poll keeps its existing cadence and does not use this repair budget.
+Archive failures are logged and backed off; they do not replace successful
+issuance samples or change the endpoint's live-refresh `error`.
 
-Repairs preserve existing boundary samples and fit the chart's estimated
+Price repairs preserve existing boundary samples and fit the chart's estimated
 two-second clock between them. Original chain timestamps, block hashes, prices
 and reserves are saved in a separate SQLite evidence database. Each small batch
 is committed atomically before publication, resumes after restart, and expires
