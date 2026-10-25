@@ -200,9 +200,13 @@ CSP hashes authorize exactly those embedded scripts and styles. Source files rem
 separate for development. The price request also checks the release version,
 avoiding a separate startup version request.
 
-`VERSION` records a release such as `1.0.0+abcdef123456`. The release script
-bumps the minor or patch number and records a 12-character SHA-256 prefix of
-`RELEASE_FILES`; tests require that prefix to match the current files.
+`VERSION` records a release such as `1.0.0+abcdef123456`. Before running the suite,
+`just test` prepares the release: if `RELEASE_FILES` changed, it bumps the patch
+number (or minor with `just test minor`) and records their 12-character SHA-256
+prefix. Unchanged sources keep the same version. Tests and deployment reject
+stale hashes. The workflow is test, commit the changes including `VERSION`, then
+deploy; deployment does not rerun tests and requires the expected public version
+within 60 seconds.
 At startup the server snapshots those files and combines the recorded release
 number with their actual hash. This keeps browser reload detection working even
 while local edits have made the recorded hash stale. The footer shows this same

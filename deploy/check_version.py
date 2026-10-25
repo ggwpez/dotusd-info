@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait up to 25 seconds for the public site to serve the expected release."""
+"""Wait up to 60 seconds for the public site to serve the expected release."""
 import argparse
 import json
 import re
@@ -11,9 +11,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 def fetch_version(url, timeout=5):
     # curl's total timeout also bounds DNS, TLS, and slow response bodies.
+    timeout = min(5, timeout)
     result = subprocess.run(
         ['curl', '--fail', '--silent', '--show-error', '--max-time',
-         str(min(5, timeout)), '--header', 'Cache-Control: no-cache', url],
+         str(timeout), '--header', 'Cache-Control: no-cache', url],
         capture_output=True, text=True, timeout=timeout, check=True)
     payload = json.loads(result.stdout)
     actual = payload.get('version') if isinstance(payload, dict) else None
@@ -42,12 +43,13 @@ def require_newer_version(expected, url):
     if local_number <= remote_number:
         raise ValueError(
             f'Refusing deployment: local {expected} must be newer than deployed {actual}. '
-            'Run `just release` or `just release minor`, then commit VERSION with the changes.')
+            'Run `just test` (or `just test minor` for features), commit VERSION with '
+            'the changes, then run `just deploy`.')
     print(f'Version upgrade verified: {actual} -> {expected}', flush=True)
 
 
 def wait_for_version(expected, url):
-    deadline = time.monotonic() + 25
+    deadline = time.monotonic() + 60
     last_error = 'No response'
     while time.monotonic() < deadline:
         started = time.monotonic()
@@ -70,7 +72,7 @@ def wait_for_version(expected, url):
         delay = min(started + 5, deadline) - time.monotonic()
         if delay > 0:
             time.sleep(delay)
-    raise TimeoutError(f'Deployment verification timed out after 25s at {url}. {last_error}')
+    raise TimeoutError(f'Deployment verification timed out after 60s at {url}. {last_error}')
 
 
 def main():

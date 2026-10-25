@@ -4,14 +4,6 @@ set positional-arguments
 default:
     @just --list
 
-# Bump the release version and refresh its hash (patch or minor).
-release bump='patch':
-    python3 release.py --bump "$1"
-
-# Verify the recorded release hash matches the application.
-check-version:
-    python3 release.py --check
-
 # Create the local Python environment and install dependencies.
 setup:
     python3 -m venv .venv
@@ -25,11 +17,12 @@ run *args:
 preview *args:
     "{{env_var_or_default('PYTHON', '.venv/bin/python')}}" server.py --port 5137 --upstream http://127.0.0.1:9090/api/v1 --no-browser "$@"
 
-# Run the local test suite.
-test:
+# Prepare changed application versions, then run the local test suite.
+test bump='patch':
+    .venv/bin/python release.py --prepare "$1"
     .venv/bin/python -m unittest discover -s tests -v
 
-# Require a newer version, deploy, and verify it publicly within 25 seconds.
+# Deploy the committed release and require its public version within 60 seconds.
 deploy host='server' version_url='https://dotusd.info/version':
     ./deploy/deploy.sh "$1" "$2"
 

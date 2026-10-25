@@ -1,4 +1,4 @@
-"""Require a fresh release hash and verify the release bump workflow."""
+"""Require a fresh release hash and idempotent preparation before tests."""
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +12,7 @@ class ReleaseTests(unittest.TestCase):
     def test_checked_in_release_matches_sources(self):
         release.check()
 
-    def test_bumps_refresh_hash_and_check_rejects_stale_sources(self):
+    def test_preparation_versions_changed_sources_once(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name, body in release.read_sources().items():
@@ -22,12 +22,15 @@ class ReleaseTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(root / 'release.py'), '--check'],
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn('--bump patch', result.stderr)
-            result = subprocess.run([sys.executable, str(root / 'release.py'), '--bump', 'patch'],
+            result = subprocess.run([sys.executable, str(root / 'release.py'), '--prepare', 'patch'],
                                     capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.strip(), release.check(root))
             self.assertTrue(release.read_version(root).startswith('1.2.4+'))
-            self.assertTrue(release.bump('minor', root).startswith('1.3.0+'))
+            prepared = release.read_version(root)
+            self.assertEqual(release.prepare(root=root), prepared)
+            self.assertEqual(release.prepare('minor', root), prepared)
+            (root / 'app.js').write_bytes(b'new feature')
+            self.assertTrue(release.prepare('minor', root).startswith('1.3.0+'))
             release.check(root)
 
     def test_invalid_version_is_rejected_without_overwriting_it(self):
@@ -36,5 +39,5 @@ class ReleaseTests(unittest.TestCase):
             path = root / 'VERSION'
             path.write_text('invalid\n')
             with self.assertRaises(ValueError):
-                release.bump('patch', root)
+                release.prepare(root=root)
             self.assertEqual(path.read_text(), 'invalid\n')

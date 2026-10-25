@@ -97,36 +97,35 @@ The backend lives in `server.py`. The chart is built from `index.html`, `app.js`
 `ranges.js`, and `style.css`. Restart the server after editing these files, since
 it loads them once at startup.
 
-The checked-in `VERSION` contains the release number and the first six bytes of
-its SHA-256 code/asset hash, for example `1.0.0+abcdef123456`. After finishing
-application changes, bump the version and refresh the hash together:
-
-```sh
-just release        # patch bump for fixes
-just release minor  # minor bump for new features
-just check-version
-```
-
-These commands require `just`; without it, use `python3 release.py --bump patch`
-(or `--bump minor`) and `python3 release.py --check`.
-
-Minor bumps reset the patch number to zero. Commit `VERSION` with the changes.
-Tests and deployment reject stale release hashes. The hash covers the files in
-`release.py`'s `RELEASE_FILES`, including runtime dependencies and the release
-script itself; it excludes `VERSION` to avoid a circular hash, and excludes tests
-and documentation. Add new runtime files to that list and the deployment copy list.
-
-Run the tests from the repo root:
+Use this order after making application changes:
 
 ```sh
 just test
+git add <changed-files> VERSION
+git -c commit.gpgsign=false commit --no-gpg-sign -m "Describe the change"
+just deploy
 ```
 
-`just test` uses the environment created by `just setup`; the direct equivalent
-is `.venv/bin/python -m unittest discover -s tests -v`.
-The tests run locally and do not need access to the live data collector. JavaScript
-checks use Node.js, or JavaScriptCore on macOS. If neither is available, those
-checks are skipped.
+`just test` automatically updates `VERSION` when the application hash changes,
+then runs the test suite. It defaults to a patch bump; use `just test minor` for
+a feature release. Minor bumps reset the patch number to zero. Running tests
+again without application changes leaves the version unchanged. Fix any test
+failures before committing, and include `VERSION` in the same commit.
+
+The checked-in `VERSION` contains the release number and the first six bytes of
+its SHA-256 code/asset hash, for example `1.0.0+abcdef123456`. Deployment validates
+this hash internally and refuses stale versions; no separate release or
+check-version command is needed. The hash covers `release.py`'s `RELEASE_FILES`,
+including runtime dependencies and the release script itself. It excludes
+`VERSION`, tests, and documentation. Add new runtime files to that list and the
+deployment copy list.
+
+`just test` uses the environment created by `just setup`. Without `just`, run
+`.venv/bin/python release.py --prepare patch` followed by
+`.venv/bin/python -m unittest discover -s tests -v`.
+The tests run locally and do not need access to the live data collector.
+JavaScript checks use Node.js, or JavaScriptCore on macOS. If neither is
+available, those checks are skipped.
 
 ## Common commands
 
@@ -136,18 +135,16 @@ Run `just` to list the commands. Run `just setup` once before local development.
 | --- | --- |
 | `just setup` | Create `.venv` and install dependencies |
 | `just run [options]` | Start the app locally with optional server arguments |
-| `just test` | Run the test suite |
+| `just test [patch\|minor]` | Prepare the version if code changed, then run tests |
 | `just preview [options]` | Preview locally on port 5137 without SSH or automatic browser launch |
-| `just release [patch\|minor]` | Bump the version and refresh its hash; defaults to patch |
-| `just check-version` | Verify the recorded release hash |
-| `just deploy [host] [version-url]` | Check, test, deploy, and verify the public version |
+| `just deploy [host] [version-url]` | Deploy and verify the public version; does not rerun tests |
 | `just status [host]` | Inspect the deployed service |
 | `just logs [host]` | Read its latest 50 log entries |
 
 Deployment, status, and logs default to the SSH alias `server`. Deployment
 requires a version number newer than the deployed one (a changed hash alone is
 not enough), restarts the remote service, then checks `/version` every 5 seconds for up to
-25 seconds, returning success when it matches the expected release or an error
+60 seconds, returning success when it matches the expected release or an error
 on timeout. See the [deployment guide](docs/deployment.md)
 for prerequisites and specialized backfill and repair procedures.
 
@@ -156,17 +153,17 @@ for prerequisites and specialized backfill and repair procedures.
 `AGENTS.md` is a relative symlink to this README. Keep contributor and agent
 instructions here so they stay in sync.
 
-- After completing application changes, run `just release` for fixes or
-  `just release minor` for features. Run the bump after the final code edit so
-  the recorded hash matches. Include the updated `VERSION` in the same commit.
-- Deployment refuses unchanged or older version numbers and stops if the public
-  version cannot be verified. Bump the version before redeploying.
-- Before committing application changes, run `just check-version` and
-  `just test` (after `just setup`). Resolve failures before committing.
+- After application changes, use this order: `just test`, commit, `just deploy`.
+  `just test` prepares the version automatically; use `just test minor` for
+  features. Include the updated `VERSION` in the commit. Resolve failures before
+  committing. Do not run separate release/check commands or rerun tests in deploy.
+- Deployment validates the release internally, refuses unchanged or older
+  version numbers, and fails if the expected public version is not observed
+  within 60 seconds.
 - Add new runtime files to `RELEASE_FILES` in `release.py` and the copy list in
   `deploy/deploy.sh` so hashing and deployment include them.
 - Documentation-only changes do not need a version bump or the full test suite.
-  Verify links and `just check-version` instead.
+  Verify links instead.
 - Never use `/` in Git branch names; use hyphens, such as
   `fix-footer-version`.
 - Create a commit after each completed change. Commit only task-related changes

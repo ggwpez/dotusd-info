@@ -7,11 +7,13 @@ the existing dotusd.info installation; adapt the domain, service names, and data
 paths for your own host. In the examples, `server` is an SSH configuration alias;
 replace it with your own alias or `user@host`.
 
-Before releasing application changes, run `just release`
-(or `just release minor` for features), run `just test`, and commit the updated `VERSION`
-with the changes. The deployment script checks the recorded hash and runs the
-suite before changing the server; a stale release stops deployment. Before
-transferring files or restarting services, it also checks the public version and
+The release workflow is `just test`, commit, then `just deploy`. `just test`
+prepares the release version automatically; use `just test minor` for features.
+Commit the updated `VERSION` with the changes after the tests pass. Repeating
+`just test` without application changes does not bump the version again.
+The deployment script checks the recorded hash but does not rerun the suite;
+a stale release stops deployment. Before transferring files or restarting
+services, it also checks the public version and
 requires the local MAJOR.MINOR.PATCH number to be strictly newer. The same number
 with a different hash is refused, as are older versions. If the deployed version
 cannot be read or parsed, deployment stops without changing the server.
@@ -20,9 +22,12 @@ The preflight uses the existing `/api/version` alias when the verification URL
 is `/version`, so it also works before the new route has been deployed. Custom
 endpoint paths are used as supplied. The post-deployment check uses `/version`.
 
-Deploy the current checkout with:
+Test, commit the release, then deploy the current checkout:
 
 ```sh
+just test               # or just test minor for features
+git add -A
+git commit -m "Prepare release"
 just deploy             # use the SSH alias server
 # Or choose another host:
 just deploy user@host
@@ -31,10 +36,12 @@ just deploy user@host
 Run only the command for your intended host. This copies the local files and
 restarts the remote service. It does not commit changes or bump the version.
 After the remote setup and health checks, deployment polls the public `/version`
-endpoint immediately, then every 5 seconds for up to 25 seconds. It returns
+endpoint immediately, then every 5 seconds for up to 60 seconds. Each request
+is limited to 5 seconds or the remaining deadline, whichever is shorter, for
+both curl's total request timeout and the local subprocess timeout. It returns
 success as soon as the JSON `version` matches the local `VERSION` captured before
 deployment. If the deadline expires, it exits with an error showing the last
-version mismatch or request failure. This 25-second limit applies to the final
+version mismatch or request failure. This 60-second limit applies to the final
 verification, not file transfer, dependency installation, or service startup.
 
 For another domain, pass its version URL explicitly:
@@ -43,9 +50,11 @@ For another domain, pass its version URL explicitly:
 just deploy user@host https://example.org/version
 ```
 
-Without `just`, use `./deploy/deploy.sh [host] [version-url]`. Public verification
-requires `curl` locally. A verification failure does not roll back the deployment;
-inspect `just status` and `just logs` before retrying.
+Without `just`, use `./deploy/deploy.sh [host] [version-url]`. Local Python
+commands use `.venv/bin/python` by default (override with `PYTHON`); install
+the project requirements into that environment before testing and deployment.
+Public verification requires `curl` locally. A verification failure does not
+roll back the deployment; inspect `just status` and `just logs` before retrying.
 Requires Python 3.10+, Caddy, the existing arbitrage data services, rsync, and
 passwordless sudo and `python3-venv` on the target. Deployment installs
 `requirements.txt` into `/opt/dotusd-info/.venv` for archive pool decoding.

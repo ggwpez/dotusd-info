@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bump and verify the version of the shipped application."""
+"""Prepare changed application versions before tests and validate releases for deployment."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -37,8 +37,7 @@ def check(root=ROOT):
     version = read_version(root)
     actual = source_hash(read_sources(root))
     if version.split('+')[1] != actual:
-        raise ValueError('Release hash is stale. After finishing code changes, run '
-                         '`python3 release.py --bump patch` (or --bump minor), then rerun tests.')
+        raise ValueError('Release hash is stale. Run `just test`, then commit VERSION with the changes.')
     return version
 
 
@@ -58,14 +57,23 @@ def bump(part, root=ROOT):
     return updated
 
 
+def prepare(part='patch', root=ROOT):
+    """Leave unchanged releases alone; version changed sources before testing."""
+    version = read_version(root)
+    if version.split('+')[1] == source_hash(read_sources(root)):
+        return version
+    return bump(part, root)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--check', action='store_true', help='fail if the release hash is stale')
-    action.add_argument('--bump', choices=('minor', 'patch'), help='bump the number and refresh the hash')
+    action.add_argument('--prepare', choices=('minor', 'patch'),
+                        help='bump changed sources before tests; leave unchanged releases alone')
     args = parser.parse_args()
     try:
-        print(bump(args.bump) if args.bump else check())
+        print(prepare(args.prepare) if args.prepare else check())
     except (ValueError, OSError) as error:
         parser.exit(1, f'{error}\n')
 
