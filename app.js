@@ -530,7 +530,8 @@ function drawIssuance({right, top, bottom, x}) {
     ctx.fillText(issuanceNumber(value), right + 10, y(value) + 3);
   }
   ctx.strokeStyle = issuanceColor;
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
   ctx.beginPath();
   let previous;
   for (const row of visible) {
@@ -539,6 +540,7 @@ function drawIssuance({right, top, bottom, x}) {
     previous = row;
   }
   ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function drawOverlay({left, right, top, bottom, x, y}, width, height) {
