@@ -179,6 +179,17 @@ The tests run locally and do not need access to the live data collector.
 JavaScript checks use Node.js, or JavaScriptCore on macOS. If neither is
 available, those checks are skipped.
 
+Gitea Actions runs `.gitea/workflows/lint.yaml` on pushes and pull requests.
+This minimal CI checks Python syntax and critical errors with Ruff; any violation
+fails the job. It does not run tests, enforce formatting, or deploy. Enable Actions
+in Gitea and register a runner with the `ubuntu-latest` label and access to GitHub
+and PyPI. To run the same check locally:
+
+```sh
+.venv/bin/python -m pip install ruff==0.14.2
+.venv/bin/python -m ruff check --select E9,F63,F7,F82 .
+```
+
 ## Common commands
 
 Run `just` to list the commands. Run `just setup` once before local development.
