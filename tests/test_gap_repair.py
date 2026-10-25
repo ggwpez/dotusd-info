@@ -130,17 +130,19 @@ class GapRepairTests(unittest.TestCase):
         self.cache.merge([(self.start + (number - 100) * 2, 1., number)
                           for number in range(100, 121)], self.now, replace=True)
 
-    def test_issuance_backfills_complete_price_history_latest_first(self):
+    def test_issuance_backfills_complete_price_history_by_midpoints(self):
         issuance = self.enable_issuance()
         self.complete_prices()
         prices = self.cache.rows
         with patch.object(gap_repair, 'read_sample') as price_read, \
                 patch.object(gap_repair, 'read_issuance', side_effect=self.issuance_sample) as ti_read:
             self.assertEqual(self.worker.poll(self.db), 8)
-            self.assertEqual([call.args[1] for call in ti_read.call_args_list], list(range(120, 112, -1)))
+            self.assertEqual([call.args[1] for call in ti_read.call_args_list],
+                             [112, 119, 105, 116, 108, 101, 117, 114])
             ti_read.reset_mock()
             self.assertEqual(self.worker.poll(self.db), 8)
-            self.assertEqual([call.args[1] for call in ti_read.call_args_list], list(range(112, 104, -1)))
+            self.assertEqual([call.args[1] for call in ti_read.call_args_list],
+                             [110, 107, 103, 100, 120, 118, 115, 113])
             self.assertEqual(self.worker.poll(self.db), 5)
             self.assertEqual(self.worker.poll(self.db), 0)
             price_read.assert_not_called()
@@ -152,7 +154,7 @@ class GapRepairTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM issuance').fetchone()[0], 21)
         self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 0)
 
-    def test_coarse_grid_precedes_dense_fill_and_survives_restart_and_tip_growth(self):
+    def test_coarse_grid_precedes_midpoints_and_survives_restart_and_tip_growth(self):
         issuance = self.enable_issuance()
         upper = 18005
         self.chain.finalized.return_value = upper + 1
@@ -171,7 +173,15 @@ class GapRepairTests(unittest.TestCase):
         with patch.object(gap_repair, 'read_issuance', side_effect=sample) as read:
             self.assertEqual(self.worker.poll(self.db), 8)
             self.assertEqual([call.args[1] for call in read.call_args_list],
-                             [1800, 18006, 18005, 18004, 18003, 18002, 18001, 17999])
+                             [1800, 17100, 15300, 13500, 11700, 9900, 8100, 6300])
+
+    def test_bisection_levels_cover_odd_intervals_and_partial_boundaries(self):
+        numbers = list(dict.fromkeys(gap_repair._issuance_numbers(0, 1800)))
+        self.assertEqual(numbers[:9], [1800, 0, 900, 1350, 450, 1575, 1125, 675, 225])
+        self.assertEqual(numbers[9:17], [1687, 1462, 1237, 1012, 787, 562, 337, 112])
+        self.assertEqual(sorted(numbers), list(range(1801)))
+        partial = list(dict.fromkeys(gap_repair._issuance_numbers(101, 1799)))
+        self.assertEqual(partial, [n for n in numbers if 101 <= n <= 1799])
 
     def test_shared_batch_reserves_price_work_and_reuses_pinned_blocks(self):
         issuance = self.enable_issuance()
@@ -180,7 +190,7 @@ class GapRepairTests(unittest.TestCase):
             self.assertEqual(self.worker.poll(self.db), 8)
         self.assertEqual([call.args[1] for call in price_read.call_args_list], [101, 102, 103, 104])
         self.assertEqual([call.args[1] for call in ti_read.call_args_list],
-                         [101, 102, 103, 104, 120, 119, 118, 117])
+                         [101, 102, 103, 104, 112, 119, 105, 116])
         for request in ti_read.call_args_list[:4]:
             number = request.args[1]
             self.assertEqual(request.kwargs, {'at': f'h{number}', 'timestamp': self.sample(None, number)[2]})
@@ -214,7 +224,7 @@ class GapRepairTests(unittest.TestCase):
                 self.worker.poll(self.db)
         self.assertEqual(self.cache.rows, before)
         self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 0)
-        self.assertEqual([row[2] for row in issuance.snapshot()['rows']], [101, 117, 118, 119, 120])
+        self.assertEqual([row[2] for row in issuance.snapshot()['rows']], [101, 105, 112, 116, 119])
 
     def test_missing_pool_price_does_not_discard_issuance(self):
         issuance = self.enable_issuance()
@@ -230,14 +240,14 @@ class GapRepairTests(unittest.TestCase):
     def test_one_failed_issuance_read_preserves_other_points_and_prices(self):
         issuance = self.enable_issuance()
         def read(rpc, number, **kwargs):
-            if number == 120:
+            if number == 112:
                 raise OSError('TI state unavailable')
             return self.issuance_sample(rpc, number, **kwargs)
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample), \
                 patch.object(gap_repair, 'read_issuance', side_effect=read):
             with self.assertRaisesRegex(OSError, 'TI state unavailable'):
                 self.worker.poll(self.db)
-        self.assertEqual([row[2] for row in issuance.snapshot()['rows']], [101, 102, 103, 104, 117, 118, 119])
+        self.assertEqual([row[2] for row in issuance.snapshot()['rows']], [101, 102, 103, 104, 105, 116, 119])
         self.assertEqual([row[2] for row in self.cache.rows], [100, 101, 102, 103, 104, 120])
         self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 4)
         restarted = IssuanceCache(self.worker.path)
@@ -247,7 +257,7 @@ class GapRepairTests(unittest.TestCase):
     def test_unfinalized_issuance_boundary_never_fetches_or_inserts(self):
         issuance = self.enable_issuance()
         self.complete_prices()
-        self.chain.finalized.return_value = 119
+        self.chain.finalized.return_value = 118
         with patch.object(gap_repair, 'read_issuance') as ti_read:
             with self.assertRaisesRegex(ValueError, 'finalized'):
                 self.worker.poll(self.db)

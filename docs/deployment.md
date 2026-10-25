@@ -156,8 +156,10 @@ The repair worker queries the Parity archive independently of the live collector
 Price repair and issuance backfill share a limit of eight archive blocks per pass,
 at most ten sequential RPC requests per second and a one-second pause after each successful
 pass. Missing issuance first fills a fixed grid at block numbers divisible by
-1,800 throughout the retained price block range, newest-first, then fills remaining
-blocks newest-first. This produces a coarse graph even where prices are already
+1,800 throughout the retained price block range, newest-first, then fills midpoint
+levels at 900, 450, 225, and progressively halved intervals down to single blocks.
+Each level runs newest-first; odd intervals split into floor/ceiling halves.
+This produces a coarse graph even where prices are already
 complete; seven-day coverage grows gradually and may remain incomplete.
 Restarting the website resumes saved progress without resetting the coarse grid.
 RPC failures back off up to fifteen minutes and do not interrupt live collection

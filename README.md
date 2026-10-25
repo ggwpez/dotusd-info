@@ -14,8 +14,10 @@ blocks appear as gaps in the chart. Production gradually repairs internal price
 gaps and backfills total issuance from the Parity archive: both share a limit of
 eight archive blocks per pass, with a one-second pause between passes. Missing
 issuance first fills a fixed 1,800-block grid, newest-first, for a coarse graph
-across the retained price history. It then fills remaining blocks newest-first,
-even where price history is already complete. Saved samples are reused on restart.
+across the retained price history. It then fills midpoints at 900-block spacing,
+then 450, 225, and progressively halves each interval down to individual blocks.
+Each level is newest-first; odd intervals split into floor/ceiling halves.
+This also fills issuance where price history is already complete. Saved samples are reused on restart.
 Open charts pick up repairs automatically.
 
 The retired CoinGecko comparison implementation is preserved on the

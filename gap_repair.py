@@ -1,5 +1,4 @@
 """Persistent pool-gap and total-issuance recovery from Parity archive."""
-from itertools import chain, islice
 import logging
 import sqlite3
 import threading
@@ -13,6 +12,19 @@ RPC = 'https://polkadot-asset-hub-rpc.polkadot.io'
 BATCH = 8
 PAUSE = 1
 ISSUANCE_STRIDE = 1800
+
+
+def _issuance_numbers(lower, upper):
+    """Stable, newest-first levels of a recursively bisected block grid."""
+    yield from range(upper - upper % ISSUANCE_STRIDE, lower - 1, -ISSUANCE_STRIDE)
+    for level in range(1, (ISSUANCE_STRIDE - 1).bit_length() + 1):
+        divisions = 1 << level
+        first = (lower * divisions + ISSUANCE_STRIDE - 1) // ISSUANCE_STRIDE
+        last = ((upper + 1) * divisions - 1) // ISSUANCE_STRIDE
+        # Even indices belong to earlier levels. Integer rounding splits odd
+        # intervals into floor/ceiling halves without shifting existing points.
+        yield from (index * ISSUANCE_STRIDE // divisions
+                    for index in range(last if last % 2 else last - 1, first - 1, -2))
 
 
 class GapRepair:
@@ -78,12 +90,13 @@ class GapRepair:
                     upper = number if upper is None else max(upper, number)
         missing = []
         if lower is not None:
-            # Fixed block multiples keep the coarse grid stable as the live tip
-            # advances and across restarts. Finish that grid before dense filling.
-            coarse = range(upper - upper % ISSUANCE_STRIDE, lower - 1, -ISSUANCE_STRIDE)
-            dense = (n for n in range(upper, lower - 1, -1) if n % ISSUANCE_STRIDE)
-            missing = list(islice((n for n in chain(coarse, dense) if n not in known),
-                                  BATCH + BATCH // 2))
+            # Saved and already-selected blocks also deduplicate rounded
+            # midpoints at the final, single-block resolution.
+            for number in _issuance_numbers(lower, upper):
+                if number not in known and number not in missing:
+                    missing.append(number)
+                    if len(missing) == BATCH + BATCH // 2:
+                        break
         # A TI backlog must not starve price repair, or vice versa. Shared blocks
         # occupy one slot even though both independent decoders read their state.
         if missing:

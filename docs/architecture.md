@@ -325,8 +325,12 @@ block numbers are not price gaps. It does not extend the live price tip.
 Each pass visits at most eight archive blocks shared between price repair and
 issuance backfill, rather than granting each series its own budget. Issuance first
 fills missing block numbers divisible by 1,800 across the retained price range,
-newest-first, then fills all remaining blocks newest-first. The fixed grid remains
-stable as the live tip advances and after restart; saved samples are skipped.
+newest-first, then recursively bisects those fixed intervals: 900-block spacing,
+then 450, 225, and onward to individual blocks. Each level precedes finer levels
+and runs newest-first. Midpoints round down, splitting odd intervals into
+floor/ceiling halves while preserving all earlier grid points. The fixed grid
+remains stable as the live tip advances and after restart; saved samples and
+duplicate rounded midpoints are skipped.
 Price gaps retain a share of the batch when both need work.
 All RPC requests are sequential and spaced at least 100 ms apart, followed by a
 one-second pause between successful passes. Failures back off from two minutes up to fifteen
