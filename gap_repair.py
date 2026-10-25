@@ -1,4 +1,4 @@
-"""Persistent pool-gap and total-issuance recovery from Parity archive."""
+"""Persistent pool-gap, total-issuance and Treasury recovery from Parity archive."""
 import logging
 import sqlite3
 import threading
@@ -7,6 +7,7 @@ import time
 from archive_reader import read_sample
 from hub_quotes import HubChain
 from issuance import RETENTION, read_issuance
+from treasury import read_history
 
 RPC = 'https://polkadot-asset-hub-rpc.polkadot.io'
 BATCH = 8
@@ -28,10 +29,11 @@ def _issuance_numbers(lower, upper):
 
 
 class GapRepair:
-    def __init__(self, cache, path, chain=None, issuance=None):
+    def __init__(self, cache, path, chain=None, issuance=None, treasury=None):
         self.cache = cache
         self.path = path
         self.issuance = issuance
+        self.treasury = treasury
         self.chain = chain or HubChain(RPC)
         # Sequential calls, at most ten RPC requests per second, including
         # genesis/finality checks. No JSON-RPC batches or concurrent requests.
@@ -52,8 +54,9 @@ class GapRepair:
         return db
 
     def restore(self, db):
-        if self.issuance is not None:
-            self.issuance.restore()
+        for history in (self.issuance, self.treasury):
+            if history is not None:
+                history.restore()
         cursor = db.execute(
             'SELECT sample_time,price,number FROM repairs WHERE sample_time>? ORDER BY number',
             (time.time() - RETENTION,))
@@ -67,9 +70,14 @@ class GapRepair:
 
     def poll(self, db):
         now = time.time()
-        if self.issuance is not None:
-            # Expire only in-memory rows, including during RPC outages.
-            self.issuance.merge((), now=now)
+        histories = [(history, name, set(), [])
+                     for history, name in ((self.issuance, 'issuance'),
+                                           (self.treasury, 'treasury'))
+                     if history is not None]
+        for history, _, known, _ in histories:
+            # Expire only memory, never persisted history.
+            history.merge((), now=now)
+            known.update(row[2] for row in history.snapshot()['rows'])
         with self.cache.lock:
             if not self.cache.history_ready:
                 return 0
@@ -80,10 +88,8 @@ class GapRepair:
                     if a[2] is not None and b[2] is not None and
                     b[2] > a[2] + 1 and b[0] < cutoff), None)
         price_numbers = list(range(gap[0][2] + 1, min(gap[1][2], gap[0][2] + BATCH + 1))) if gap else []
-        known = set()
         lower, upper = None, None
-        if self.issuance is not None:
-            known = {row[2] for row in self.issuance.snapshot()['rows']}
+        if histories:
             for stamp, _, number in rows:
                 if number is not None and stamp > now - RETENTION:
                     lower = number if lower is None else min(lower, number)
@@ -93,12 +99,12 @@ class GapRepair:
             # Saved and already-selected blocks also deduplicate rounded
             # midpoints at the final, single-block resolution.
             for number in _issuance_numbers(lower, upper):
-                if number not in known and number not in missing:
+                if any(number not in known for _, _, known, _ in histories) and number not in missing:
                     missing.append(number)
                     if len(missing) == BATCH + BATCH // 2:
                         break
-        # A TI backlog must not starve price repair, or vice versa. Shared blocks
-        # occupy one slot even though both independent decoders read their state.
+        # Balance price repair against the shared state-history backlog.
+        # A block occupies one slot even when multiple decoders read its state.
         if missing:
             price_numbers = price_numbers[:BATCH // 2]
             missing = [n for n in missing if n not in price_numbers][:BATCH - len(price_numbers)]
@@ -108,8 +114,30 @@ class GapRepair:
         if self.chain.finalized() < boundary:
             raise ValueError('Archive has not finalized the repair boundary')
 
-        prices, issuance = [], []
-        price_error = issuance_error = None
+        prices = []
+        price_error = history_error = None
+
+        def read_histories(number, at=None, timestamp=None):
+            nonlocal history_error
+            needed = {name: samples for _, name, known, samples in histories
+                      if number not in known}
+            if not needed:
+                return
+            try:
+                if self.treasury is None:
+                    result = {'issuance': read_issuance(
+                        self.chain.rpc, number, at=at, timestamp=timestamp)}
+                else:
+                    result = read_history(
+                        self.chain.rpc, number, issuance='issuance' in needed,
+                        treasury='treasury' in needed, at=at, timestamp=timestamp)
+                for name, value in result.items():
+                    if isinstance(value, Exception):
+                        history_error = value
+                    else:
+                        needed[name].append(value)
+            except Exception as error:
+                history_error = error
         attempted = 0
         previous = gap[0][0] if price_numbers else None
         for number in price_numbers:
@@ -131,42 +159,34 @@ class GapRepair:
                 previous = stamp
             except Exception as error:
                 price_error = error
-            if self.issuance is not None and number not in known:
-                try:
-                    issuance.append(read_issuance(self.chain.rpc, number,
-                                                 at=sample[1] if sample else None,
-                                                 timestamp=sample[2] if sample else None))
-                except Exception as error:
-                    issuance_error = error
+            read_histories(number, at=sample[1] if sample else None,
+                           timestamp=sample[2] if sample else None)
             if price_error is not None:
                 break
         for number in missing:
             if self.stop.is_set():
                 return 0
             attempted += 1
-            try:
-                # Old price-only repairs also need TI; reuse their pinned hash.
-                saved = db.execute('SELECT hash,timestamp FROM repairs WHERE number=?', (number,)).fetchone()
-                issuance.append(read_issuance(self.chain.rpc, number,
-                                             at=saved[0] if saved else None,
-                                             timestamp=saved[1] if saved else None))
-            except Exception as error:
-                issuance_error = error
-        # Price batches keep their original atomicity. Valid TI remains useful
-        # even if a pool is absent, a price boundary fails, or another TI read fails.
+            # Old price repairs can supply the pinned hash and chain timestamp.
+            saved = db.execute('SELECT hash,timestamp FROM repairs WHERE number=?', (number,)).fetchone()
+            read_histories(number, at=saved[0] if saved else None,
+                           timestamp=saved[1] if saved else None)
+        # Preserve successful state samples independently of decoder failures.
         if prices and price_error is None:
             with db:
                 db.executemany('INSERT OR REPLACE INTO repairs VALUES(?,?,?,?,?,?)', prices)
             self.cache.merge([(r[3], r[4], r[0]) for r in prices], time.time(),
                              mark_fresh=False, missing_only=True)
-        if issuance:
-            self.issuance.merge(issuance)
+        for history, _, _, samples in histories:
+            if samples:
+                history.merge(samples)
         if price_error is not None:
             raise price_error
-        if issuance_error is not None:
-            raise issuance_error
-        logging.info('Archive history repair: %s blocks (%s prices, %s issuance)',
-                     attempted, len(prices), len(issuance))
+        if history_error is not None:
+            raise history_error
+        counts = {type(history).__name__: len(samples) for history, _, _, samples in histories}
+        logging.info('Archive history repair: %s blocks (%s prices, %s)',
+                     attempted, len(prices), counts)
         return attempted
 
     def run(self):

@@ -143,32 +143,38 @@ not start a comparison worker. Existing comparison history files are left
 untouched; `/var/lib/dotusd-quotes` remains the state directory for price repairs
 and total issuance history.
 
-## Automatic price gap recovery and issuance history
+## Automatic price gap recovery, issuance and Treasury history
 
 The supplied service enables `--gap-repair-history
 /var/lib/dotusd-quotes/pool-repairs.sqlite3`. This uses the existing writable
 state directory and needs no additional service or timer. The same SQLite file
-stores price-repair evidence and total issuance indefinitely, including
-successful samples from the independent recent 15-block live issuance poll.
+stores price-repair evidence, total issuance and Treasury holdings indefinitely,
+including successful samples from the independent recent 15-block live issuance poll.
 Startup restores the latest seven days of saved history before new RPC samples arrive.
 
 The repair worker queries the Parity archive independently of the live collector.
-Price repair and issuance backfill share a limit of eight archive blocks per pass,
+Price repair, issuance and Treasury backfill share a limit of eight archive blocks per pass,
 at most ten sequential RPC requests per second and a one-second pause after each successful
-pass. Missing issuance first fills a fixed grid at block numbers divisible by
+pass. Missing state first fills a fixed grid at block numbers divisible by
 1,800 throughout the retained price block range, newest-first, then fills midpoint
 levels at 900, 450, 225, and progressively halved intervals down to single blocks.
 Each level runs newest-first; odd intervals split into floor/ceiling halves.
 This produces a coarse graph even where prices are already
 complete; seven-day coverage grows gradually and may remain incomplete.
 Restarting the website resumes saved progress without resetting the coarse grid.
+For each selected block, one `state_queryStorageAt` call requests whichever of
+TI and Treasury holdings is missing; saved series are not requested again.
+The `treasury(number, timestamp, balance)` table stores dotUSD units and actual
+chain timestamps. Treasury collection is historical-only, with no separate live
+poll, chart series or API. Missing Treasury accounts record zero; RPC failures
+and unsupported layouts leave a gap for retry.
 RPC failures back off up to fifteen minutes and do not interrupt live collection
 or the independent issuance poll. Inspect `Archive gap repair` messages in
 `journalctl -u dotusd-info`.
 
-Omit the option to disable automatic repair and disk-backed issuance history;
-issuance then remains a recent-only, in-memory preview. The server never
-automatically prunes repaired history, saved evidence, or persisted issuance;
+Omit the option to disable automatic repair and disk-backed state history;
+issuance then remains a recent-only, in-memory preview and Treasury is not collected.
+The server never automatically prunes repaired history, saved evidence, issuance or Treasury;
 allow for ongoing SQLite disk growth. Only in-memory caches and chart windows
 are bounded to seven days. Previously deleted history is not recovered by this
 policy. The original chain timestamps are used for issuance rather than the

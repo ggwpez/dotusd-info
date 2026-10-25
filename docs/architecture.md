@@ -166,6 +166,30 @@ layout (three balances, a boolean, three `u32` counters and status after those
 accounts) and valid boolean/status discriminants, failing closed on unexpected
 layouts. Asset metadata decimals use the existing shared decoder.
 
+## Treasury holdings
+
+`treasury.py` tracks asset 7873 in the Polkadot Treasury account
+`13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB`. The
+[Treasury runtime configuration](https://github.com/polkadot-fellows/runtimes/blob/main/system-parachains/asset-hubs/asset-hub-polkadot/src/treasury.rs)
+uses `PalletId(*b"py/trsry")`, yielding `b"modlpy/trsry"` padded to AccountId32.
+[`Assets.Account`](https://paritytech.github.io/polkadot-sdk/master/pallet_assets/pallet/type.Account.html)
+uses `Blake2_128Concat` for both the SCALE u32 asset ID and AccountId32.
+The [account layout](https://github.com/paritytech/polkadot-sdk/blob/master/substrate/frame/assets/src/types.rs)
+starts with the u128 balance, followed by account status and existence reason.
+The decoder validates the complete reason-dependent layout, including deposits;
+a missing account means zero, while unsupported data leaves a retryable gap.
+
+The archive worker uses the same 1,800-block recursive grid for both series,
+selecting blocks missing either series. `read_history` requests missing supply
+and/or account keys in one pinned `state_queryStorageAt` call, sharing metadata
+and timestamp decoding. It omits saved series and skips fully populated blocks.
+Independent decoder failures preserve the other series' valid sample.
+Price repair and both state series share the existing eight-block pass limit.
+`TreasuryHistory` stores `(number, timestamp, balance)` in the repair database's
+`treasury` table indefinitely and restores seven days into memory. This is data
+collection only: there is no Treasury live worker, chart series or history API.
+
+
 ## Browser loading
 
 The white center (peg) reference is interrupted only where the price stroke

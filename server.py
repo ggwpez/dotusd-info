@@ -826,8 +826,10 @@ def main():
             issuance.thread.start()
             if args.gap_repair_history:
                 from gap_repair import GapRepair
+                from treasury import TreasuryHistory
                 repair = GapRepair(server.cache, args.gap_repair_history,
-                                   chain=HubChain(args.hub_rpc), issuance=server.issuance)
+                                   chain=HubChain(args.hub_rpc), issuance=server.issuance,
+                                   treasury=TreasuryHistory(args.gap_repair_history))
                 repair.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
             url = f'http://{browser_host}:{server.server_port}'

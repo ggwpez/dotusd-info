@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import gap_repair
 from issuance import IssuanceCache
 from server import HistoryCache
+from treasury import TreasuryHistory
 
 
 class GapRepairTests(unittest.TestCase):
@@ -305,4 +306,52 @@ class GapRepairTests(unittest.TestCase):
         issuance.merge([saved], live=True)
         self.assertEqual(issuance.snapshot()['rows'], (saved,))
         self.assertEqual(cursor.fetchone()[0], 102)
+
+    def history_sample(self, rpc, number, issuance=False, treasury=False, **kwargs):
+        row = self.issuance_sample(rpc, number, **kwargs)
+        return {name: row for name, requested in (('issuance', issuance), ('treasury', treasury))
+                if requested}
+
+    def test_treasury_fills_grid_even_when_issuance_is_complete(self):
+        issuance = self.enable_issuance()
+        self.complete_prices()
+        issuance.merge([self.issuance_sample(None, n) for n in range(100, 121)])
+        self.worker.treasury = TreasuryHistory(self.worker.path)
+        with patch.object(gap_repair, 'read_history', side_effect=self.history_sample) as read, \
+                patch.object(gap_repair, 'read_issuance') as ti_read:
+            self.assertEqual(self.worker.poll(self.db), 8)
+            self.assertEqual([call.args[1] for call in read.call_args_list],
+                             [112, 119, 105, 116, 108, 101, 117, 114])
+            self.worker.treasury = TreasuryHistory(self.worker.path)
+            self.worker.treasury.restore()
+            self.assertEqual(self.worker.poll(self.db), 8)
+            self.assertEqual(self.worker.poll(self.db), 5)
+            self.assertEqual(self.worker.poll(self.db), 0)
+            ti_read.assert_not_called()
+            self.assertEqual(sorted(call.args[1] for call in read.call_args_list),
+                             list(range(100, 121)))
+            self.assertTrue(all(not call.kwargs['issuance'] and call.kwargs['treasury']
+                                for call in read.call_args_list))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM treasury').fetchone()[0], 21)
+
+    def test_failed_treasury_decode_preserves_issuance_and_retries_only_missing(self):
+        issuance = self.enable_issuance()
+        self.complete_prices()
+        self.worker.treasury = TreasuryHistory(self.worker.path)
+        def treasury_read(rpc, number, **kwargs):
+            result = self.history_sample(rpc, number, **kwargs)
+            if number == 112:
+                result['treasury'] = OSError('Treasury state unavailable')
+            return result
+        with patch.object(gap_repair, 'read_history', side_effect=treasury_read):
+            with self.assertRaisesRegex(OSError, 'Treasury state unavailable'):
+                self.worker.poll(self.db)
+        self.assertEqual(len(issuance.snapshot()['rows']), 8)
+        self.assertEqual([r[2] for r in self.worker.treasury.snapshot()['rows']],
+                         [101, 105, 108, 114, 116, 117, 119])
+        with patch.object(gap_repair, 'read_history', side_effect=self.history_sample) as read:
+            self.worker.poll(self.db)
+        self.assertEqual(read.call_args_list[0].args[1], 112)
+        self.assertFalse(read.call_args_list[0].kwargs['issuance'])
+        self.assertTrue(read.call_args_list[0].kwargs['treasury'])
 

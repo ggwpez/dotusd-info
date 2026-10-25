@@ -11,14 +11,19 @@ particular period.
 Prices come from the dotUSD → DOT → USDT pools. They are quoted against USDT and
 do not include trading fees or slippage. Timestamps are estimated, and missing
 blocks appear as gaps in the chart. Production gradually repairs internal price
-gaps and backfills total issuance from the Parity archive: both share a limit of
-eight archive blocks per pass, with a one-second pause between passes. Missing
-issuance first fills a fixed 1,800-block grid, newest-first, for a coarse graph
+gaps and backfills total issuance and Treasury dotUSD holdings from the Parity
+archive: all share a limit of eight archive blocks per pass, with a one-second
+pause between passes. Missing state first fills a fixed 1,800-block grid, newest-first, for a coarse graph
 across the retained price history. It then fills midpoints at 900-block spacing,
 then 450, 225, and progressively halves each interval down to individual blocks.
 Each level is newest-first; odd intervals split into floor/ceiling halves.
-This also fills issuance where price history is already complete. Saved samples are reused on restart.
-Open charts pick up repairs automatically.
+This also fills state where price history is already complete. Saved samples are
+reused on restart. TI and Treasury balances missing at the same block use one
+storage query; already saved series are omitted. Open charts pick up TI and price
+repairs automatically. Treasury holdings are collected in the `treasury` table
+of the same repair database, not yet exposed through the chart or history API.
+The account is the Polkadot Treasury
+`13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB`; balances are in dotUSD units.
 
 The retired CoinGecko comparison implementation is preserved on the
 `preserve-coingecko` branch. Production serves only the pool-price chart;
