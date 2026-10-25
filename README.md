@@ -69,7 +69,8 @@ and restore at startup. Historical filling follows the retained price block
 range; it is gradual, not a guarantee of complete seven-day coverage.
 Without that flag, issuance remains a recent-only, in-memory preview.
 
-Issuance uses actual chain timestamps and leaves missing blocks disconnected.
+Issuance uses actual chain timestamps and renders as a line without sample dots;
+missing blocks stay disconnected, so isolated samples are not drawn.
 Use **Zoom to issuance samples** to fit all available samples, whether a short
 preview or accumulated history; range buttons return to the normal live chart.
 The legend identifies the latest cached value, block and age (not necessarily a

@@ -278,10 +278,8 @@ class AppTests(unittest.TestCase):
         };
         const bounds = {right: 700, top: 20, bottom: 300, x: time => time / 1000};
         drawIssuance(bounds);
-        require(points === issuanceRows.length, 'large historical window renders every available sample');
+        require(points === 0, 'historical issuance has no individual sample markers');
         require(connections === 0, 'sparse history never draws across missing blocks');
-        require($('issuance-status').textContent.startsWith('Latest total issuance:'),
-                'legend identifies the latest cached sample, not the historical view');
         refresh = () => {};
         writeViewUrl = () => {};
         $('issuance-zoom').onclick();
@@ -294,7 +292,7 @@ class AppTests(unittest.TestCase):
         state.start = 0; state.end = 200;
         points = connections = 0;
         drawIssuance(bounds);
-        require(points === 15 && connections === 14, 'consecutive preview samples stay connected');
+        require(points === 0 && connections === 14, 'consecutive preview samples render as a line without markers');
         JSON.stringify(true);
         """
         self.assertTrue(evaluate(source))

@@ -539,12 +539,6 @@ function drawIssuance({right, top, bottom, x}) {
     previous = row;
   }
   ctx.stroke();
-  // Points keep a constant supply and a narrow recent window discoverable.
-  for (const row of visible) {
-    ctx.beginPath();
-    ctx.arc(x(row[0]), y(row[1]), 2.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
 }
 
 function drawOverlay({left, right, top, bottom, x, y}, width, height) {
