@@ -30,7 +30,8 @@ function linkedView() {
   const scale = params.get('scale'), axis = params.get('axis');
   return {range, zoom: valid ? [start, end] : null,
     scale: ['bps', 'percent', 'dollars'].includes(scale) ? scale : null,
-    axis: ['linear', 'log'].includes(axis) ? axis : null};
+    axis: ['linear', 'log'].includes(axis) ? axis : null,
+    issuance: params.get('ti') === '1' ? true : params.get('ti') === '0' ? false : null};
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
@@ -70,6 +71,8 @@ try {
 } catch {}
 let showIssuance = false;
 try { showIssuance = localStorage.getItem('dotusd-issuance-axis') === 'true'; } catch {}
+const preferredIssuance = showIssuance;
+showIssuance = initialView.issuance ?? preferredIssuance;
 let issuanceRows = [], issuanceCursor = null, issuanceCoverage = null;
 const issuanceColor = '#82b7ff';
 const issuanceFormat = new Intl.NumberFormat('en-US', {notation: 'compact', maximumSignificantDigits: 3});
@@ -108,10 +111,10 @@ function applyScale() {
   $('metric-label').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Price deviation';
   $('metric-unit').textContent = displayScale === 'bps' ? 'bps' : displayScale === 'percent' ? '%' : '';
   $('range-unit').textContent = displayScale === 'bps' ? 'Basis points' : displayScale === 'percent' ? 'Percent' : 'Dollar price (USDT)';
-  $('chart-unit').textContent = $('range-unit').textContent.toLowerCase() +
+  const chartUnit = $('range-unit').textContent.toLowerCase() +
     (axisScale === 'log' ? ' · symmetric log axis' : '');
   $('chart-title').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Peg deviation';
-  canvas.setAttribute('aria-label', 'dotUSD chart in ' + $('chart-unit').textContent +
+  canvas.setAttribute('aria-label', 'dotUSD chart in ' + chartUnit +
     (showIssuance ? '. Total dotUSD issuance on the right linear axis' : '') +
     '. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples.');
   document.querySelectorAll('[data-rating]').forEach(segment => {
@@ -718,6 +721,7 @@ function writeViewUrl() {
   url.searchParams.set('resolution', resolution);
   url.searchParams.set('scale', displayScale);
   url.searchParams.set('axis', axisScale);
+  url.searchParams.set('ti', showIssuance ? '1' : '0');
   if (state.zoom) {
     url.searchParams.set('start', String(state.zoom[0]));
     url.searchParams.set('end', String(state.zoom[1]));
@@ -788,9 +792,18 @@ window.addEventListener('popstate', () => {
     state.zoom?.[0] !== view.zoom?.[0] || state.zoom?.[1] !== view.zoom?.[1];
   displayScale = view.scale ?? preferredScale;
   axisScale = view.axis ?? preferredAxis;
+  const issuance = view.issuance ?? preferredIssuance;
+  const issuanceChanged = showIssuance !== issuance;
+  showIssuance = issuance;
+  $('issuance-axis').checked = showIssuance;
+  if (issuanceChanged && showIssuance) {
+    issuanceCursor = null;
+    issuanceCoverage = null;
+  }
   applyScale();
   if (!rangeChanged) {
     updateViewControls();
+    if (issuanceChanged) refresh(true);
     return;
   }
   state.range = view.range;
@@ -800,7 +813,7 @@ window.addEventListener('popstate', () => {
   state.end = 0;
   updateRangeButtons();
   updateViewControls();
-  refresh(false, true);
+  refresh(issuanceChanged, true);
 });
 $('display-scale').addEventListener('change', event => {
   displayScale = event.target.value;
@@ -825,6 +838,7 @@ $('issuance-axis').addEventListener('change', event => {
   }
   try { localStorage.setItem('dotusd-issuance-axis', String(showIssuance)); } catch {}
   applyScale();
+  writeViewUrl();
   refresh(true);
 });
 const settings = document.querySelector('.settings');

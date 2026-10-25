@@ -296,6 +296,7 @@ class AppTests(unittest.TestCase):
         let pending;
         const originalRefresh = refresh;
         refresh = (...args) => pending = originalRefresh(...args);
+        writeViewUrl = () => {};
         (async () => {
             reloading = false;
             state.range = 3600; state.live = true; state.zoom = null;

@@ -63,6 +63,11 @@ The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environme
 In **Settings**, enable **Total dotUSD issuance** to show a blue series on a
 separate right-hand, linear axis in dotUSD units. Values use three significant
 digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
+Chart links encode this setting as `ti=1` (shown) or `ti=0` (hidden), alongside
+the range and scale. Explicit URL values override the local preference without
+changing it; links without a valid `ti` value use the saved preference.
+Browser Back/Forward restores the linked visibility.
+The chart toolbar shows only the title and controls, without a duplicate legend.
 An independent server-side live poll reads the latest 15 finalized blocks from the public
 Asset Hub RPC and refreshes every six seconds after each fetch. With
 `--gap-repair-history PATH` (enabled in production), successful live samples and
