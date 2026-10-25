@@ -1,9 +1,9 @@
-name: Python lint
+name: Python CI
 
 on: [push, pull_request]
 
 jobs:
-  lint:
+  checks:
     runs-on: ubuntu-latest
     container: docker.gitea.com/runner-images:ubuntu-24.04
     steps:
@@ -12,3 +12,9 @@ jobs:
         uses: docker://ghcr.io/astral-sh/ruff:0.14.2
         with:
           args: check --select E9,F63,F7,F82 .
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+      - name: Run tests
+        run: .venv/bin/python -m unittest discover -s tests -v

@@ -179,8 +179,8 @@ The tests run locally and do not need access to the live data collector.
 JavaScript checks use Node.js, or JavaScriptCore on macOS. If neither is
 available, those checks are skipped.
 
-Gitea CI runs Ruff's critical-error checks on pushes and pull requests using
-prebuilt Gitea Ubuntu 24.04 and Ruff images. It does not run tests or deploy.
+Gitea CI runs Ruff's critical-error checks and the full unittest suite on pushes
+and pull requests, including Node-backed JavaScript checks. It does not deploy.
 
 ## Common commands
 
