@@ -51,6 +51,69 @@ The collector and Prometheus are managed by the arbitrage repository.
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
+## Recent total issuance
+
+`GET /api/issuance` returns `{"rows": [[timestamp_seconds, issuance_dotusd, block_number], ...], "error": null}`.
+Rows are ordered by finalized block number, with nondecreasing timestamps, and
+cover at most the latest 15 finalized Polkadot Hub blocks, not the seven-day price
+window. This is total issued dotUSD (asset ID 7873), not circulating supply or a
+pool reserve. Timestamps come from `Timestamp.Now` in each block, unlike the
+estimated clock used by pool-price history. The Hub runtime's timestamp
+`MinimumPeriod` is zero, so consecutive blocks can legitimately share a timestamp;
+all such blocks remain in the response without synthetic time offsets. Values
+are JSON numbers in whole dotUSD units; integer base-unit supply is divided by
+the decimals decoded from that block's `Assets.Metadata`.
+
+An independent `issuance.py` background worker starts with the server. It uses
+`--hub-rpc`, whose default is the public Parity archive endpoint
+`https://polkadot-asset-hub-rpc.polkadot.io`; issuance needs neither a private node
+nor archive backfill. The existing price source remains unchanged. A local run
+with an existing Prometheus source is:
+
+```sh
+.venv/bin/python server.py --upstream http://127.0.0.1:9090/api/v1 --no-browser
+```
+
+Open <http://127.0.0.1:3001> and enable issuance in Settings. The cached endpoint
+is also readable directly at <http://127.0.0.1:3001/api/issuance>. Install
+`requirements.txt` first; the storage-key hash uses the existing `xxhash`
+dependency. `--hub-rpc URL` overrides the RPC for both issuance and optional
+pool-history gap repair.
+
+The worker reuses the bounded `HubRpc`/`archive_reader.Rpc` storage reader,
+verifies the Hub genesis before accepting finality, and pins timestamp, asset
+details and metadata reads to each finalized block hash. Calls are sequential
+with a 100 ms pause, a ten-second request timeout and a 16 MiB response limit.
+Each refresh fetches at most 15 blocks; already cached finalized blocks are
+reused. It waits six seconds between passes and after failures. A reconnect
+skips older blocks rather than backfilling. The immutable cache retains one
+15-row window, published only when the entire refresh succeeds.
+
+Requests read only that cache and never trigger RPC work. Startup returns an
+empty `rows` array and a loading `error` string with HTTP 200. On RPC or decoding
+failure, the last successful rows remain available with a non-null `error`;
+recovery clears it. No synthetic values, zero replacements for missing state,
+or extrapolated timestamps are generated. `Cache-Control: no-store` and
+`X-App-Version` follow the existing API conventions. Shutdown signals and joins
+the issuance worker alongside the price and repair workers.
+
+### Storage decoding evidence
+
+The SDK's [`Assets.Asset` storage declaration](https://github.com/paritytech/polkadot-sdk/blob/master/substrate/frame/assets/src/lib.rs)
+uses `Blake2_128Concat` over the SCALE `u32` asset ID. Its
+[`AssetDetails` definition](https://github.com/paritytech/polkadot-sdk/blob/master/substrate/frame/assets/src/types.rs)
+places owner, issuer, admin and freezer before `supply`. The
+[Polkadot Hub runtime configuration](https://github.com/polkadot-fellows/runtimes/blob/main/system-parachains/asset-hubs/asset-hub-polkadot/src/lib.rs)
+uses the shared `AccountId`, `Balance` and trust-backed asset ID types from
+[`parachains-common` primitives](https://github.com/paritytech/polkadot-sdk/blob/master/cumulus/parachains/common/types/src/lib.rs):
+`u128` balances and `u32` asset IDs; `MultiSignature`'s signer maps to
+[`AccountId32`](https://github.com/paritytech/polkadot-sdk/blob/master/substrate/primitives/runtime/src/lib.rs).
+Thus supply is the little-endian `u128` at bytes 128–143 after four 32-byte
+accounts, not the first 16 bytes. The decoder requires the complete 190-byte
+layout (three balances, a boolean, three `u32` counters and status after those
+accounts) and valid boolean/status discriminants, failing closed on unexpected
+layouts. Asset metadata decimals use the existing shared decoder.
+
 ## Browser loading
 
 The white center (peg) reference is interrupted only where the price stroke

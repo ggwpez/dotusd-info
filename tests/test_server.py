@@ -23,6 +23,38 @@ spec.loader.exec_module(page)
 
 
 class PageTests(unittest.TestCase):
+    def test_issuance_endpoint_reads_cached_loading_success_and_failure_states(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
+                with urlopen(base + '/api/issuance') as response:
+                    body = json.load(response)
+                    self.assertEqual(body['rows'], [])
+                    self.assertIn('Loading', body['error'])
+                    self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                    self.assertEqual(response.headers['X-App-Version'], server.version)
+                rows = ((1700000000.001, 123456.789, 100), (1700000006.001, 123456.789, 101))
+                for error in (None, 'Issuance refresh failed: RPC unavailable'):
+                    with server.issuance.lock:
+                        server.issuance.rows = rows
+                        server.issuance.error = error
+                    with urlopen(base + '/api/issuance') as response:
+                        self.assertEqual(json.load(response),
+                                         {'rows': [list(row) for row in rows], 'error': error})
+                # Issuance remains available independently of price-history startup.
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(base + '/api/prices')
+                self.assertEqual(error.exception.code, 503)
+                error.exception.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_startpoint_uses_blocks_and_live_requests_have_no_client_cutoff(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()

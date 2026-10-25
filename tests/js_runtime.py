@@ -12,7 +12,7 @@ def evaluate(source, asynchronous=False):
         command = f'console.log(eval({json.dumps(source)}))'
         if asynchronous:
             command = f'Promise.resolve(eval({json.dumps(source)})).then(value => console.log(JSON.stringify(value)), error => {{ console.error(error); process.exitCode = 1; }});'
-        result = subprocess.run(['node', '-e', command],
+        result = subprocess.run(['node'], input=command,
                                 capture_output=True, text=True, check=True)
         return json.loads(result.stdout)
     if sys.platform != 'darwin':

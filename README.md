@@ -43,7 +43,19 @@ just run --upstream http://127.0.0.1:9090/api/v1 --no-browser
 ```
 
 Then open <http://127.0.0.1:3001>. Give the server a moment to load the price
-history. It needs a working data source before it can show the chart.
+history. Price history requires a working Prometheus data source.
+
+In **Settings**, enable **Total dotUSD issuance** to show a blue series on a
+separate right-hand, linear axis in dotUSD units. Values use three significant
+digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
+The server reads only the latest 15 finalized blocks from the public Asset Hub
+RPC, independently of Prometheus, and refreshes the window every six seconds
+after each fetch. No issuance history is backfilled or stored on disk.
+Use **Zoom to issuance samples** to inspect this short window; range buttons
+return to the normal live chart. The legend shows the latest value, block and age,
+and reports RPC failures without discarding the last successful window.
+`--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
+command above even without local Prometheus; only price history remains unavailable.
 
 If Prometheus is on another machine, connect through SSH:
 

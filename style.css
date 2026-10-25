@@ -45,3 +45,6 @@ body[data-display-scale=dollars] .spot-price{visibility:hidden}
 .app-version{color:#9ba5b5}.app-version code{font-size:11px}
 .site-footer .disclaimer{max-width:none;margin:0;text-align:left;font-size:11px;color:#9ba5b5}
 @media(max-width:800px){.site-footer{flex-direction:column;gap:18px}.footer-links{flex-wrap:wrap;gap:16px 24px}}
+#issuance-legend{padding:8px 20px;color:#82b7ff;font-size:12px;line-height:1.8}
+#issuance-legend[hidden]{display:none}
+#issuance-zoom{margin-left:8px}

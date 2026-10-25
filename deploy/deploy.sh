@@ -8,7 +8,7 @@ python3 deploy/check_version.py --before-deploy "$expected_version" "$version_ur
 printf 'Deploying %s\n' "$expected_version"
 python3 -m unittest discover -s tests -v
 ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
-rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' VERSION release.py server.py gap_repair.py archive_reader.py hub_quotes.py requirements.txt backfill.py publish_archive.py about-dotusd.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
+rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' VERSION release.py server.py gap_repair.py archive_reader.py hub_quotes.py issuance.py requirements.txt backfill.py publish_archive.py about-dotusd.html index.html app.js ranges.js style.css favicon.svg social-preview.png "$host:/opt/dotusd-info/"
 rsync -rt --chmod=u=rwX,go=rX --rsync-path='sudo -n rsync' deploy/dotusd-info.service deploy/dotusd-info.caddy "$host:/opt/dotusd-info/deploy/"
 ssh "$host" 'sudo -n sh -s' <<'REMOTE'
 set -eu

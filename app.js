@@ -68,6 +68,29 @@ let axisScale = 'linear';
 try {
   if (localStorage.getItem('dotusd-axis-scale') === 'log') axisScale = 'log';
 } catch {}
+let showIssuance = false;
+try { showIssuance = localStorage.getItem('dotusd-issuance-axis') === 'true'; } catch {}
+let issuanceRows = [], issuanceError = null, issuanceLoading = false;
+const issuanceColor = '#82b7ff';
+const issuanceFormat = new Intl.NumberFormat('en-US', {notation: 'compact', maximumSignificantDigits: 3});
+const issuanceNumber = value => issuanceFormat.format(value);
+async function refreshIssuance() {
+  if (!showIssuance || issuanceLoading || reloading) return;
+  issuanceLoading = true;
+  try {
+    const response = await fetch('/api/issuance');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    issuanceRows = data.rows;
+    issuanceError = data.error;
+  } catch (error) {
+    issuanceError = `Issuance unavailable: ${error.message}`;
+  } finally {
+    issuanceLoading = false;
+    chartDirty = true;
+    scheduleDraw();
+  }
+}
 const preferredScale = displayScale, preferredAxis = axisScale;
 displayScale = initialView.scale ?? preferredScale;
 axisScale = initialView.axis ?? preferredAxis;
@@ -106,6 +129,7 @@ function applyScale() {
     (axisScale === 'log' ? ' · symmetric log axis' : '');
   $('chart-title').textContent = displayScale === 'dollars' ? 'dotUSD price' : 'Peg deviation';
   canvas.setAttribute('aria-label', 'dotUSD chart in ' + $('chart-unit').textContent +
+    (showIssuance ? '. Total dotUSD issuance on the right linear axis' : '') +
     '. Drag to zoom; double-click to toggle fullscreen. Select a time range to reset zoom; Escape exits fullscreen. Arrow keys inspect samples.');
   document.querySelectorAll('[data-rating]').forEach(segment => {
     const index = Number(segment.dataset.rating);
@@ -373,7 +397,9 @@ function drawGrid({left, right, top, bottom, x, y}, width, yTicks) {
     ctx.stroke();
     ctx.fillStyle = '#8792a3';
     ctx.textAlign = i === 0 ? 'left' : i === ticks ? 'right' : 'center';
-    const label = state.end - state.start > 86400 ? date(time).slice(5, 16) : clock(time).slice(0, 5);
+    const duration = state.end - state.start;
+    const label = duration > 86400 ? date(time).slice(5, 16) :
+      duration < 120 ? clock(time) : clock(time).slice(0, 5);
     ctx.fillText(label, px, bottom + 23);
   }
 
@@ -473,6 +499,51 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
   return peg;
 }
 
+function drawIssuance({right, top, bottom, x}) {
+  $('issuance-legend').hidden = !showIssuance;
+  if (!showIssuance) return;
+  const visible = issuanceRows.filter(row => row[0] >= state.start && row[0] <= state.end);
+  const last = issuanceRows.at(-1);
+  $('issuance-zoom').disabled = !last;
+  const age = last ? Math.max(0, Math.round(Date.now()/1000 - last[0])) : 0;
+  $('issuance-status').textContent = (last ?
+    `Total issuance: ${issuanceNumber(last[1])} dotUSD · block ${last[2].toLocaleString()} · ${age}s ago` :
+    'Loading dotUSD issuance…') +
+    (issuanceError ? ` · ${issuanceError}` : '') +
+    (last && !visible.length ? ' · No issuance samples in this window' : '');
+  ctx.fillStyle = issuanceColor;
+  ctx.font = '10px ui-monospace, monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('dotUSD', right + 10, top - 6);
+  if (!visible.length) return;
+  const low = Math.min(...visible.map(row => row[1]));
+  const high = Math.max(...visible.map(row => row[1]));
+  // Leave enough separation for three-significant-digit compact tick labels.
+  const padding = Math.max((high - low) * .1, high * .02, .000001);
+  const min = Math.max(0, low - padding), max = high + padding;
+  const y = value => bottom - (value - min) / (max - min) * (bottom - top);
+  for (let i = 0; i <= 4; i++) {
+    const value = min + (max - min) * i / 4;
+    ctx.fillText(issuanceNumber(value), right + 10, y(value) + 3);
+  }
+  ctx.strokeStyle = issuanceColor;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let previous;
+  for (const row of visible) {
+    if (!previous || row[2] !== previous[2] + 1) ctx.moveTo(x(row[0]), y(row[1]));
+    else ctx.lineTo(x(row[0]), y(row[1]));
+    previous = row;
+  }
+  ctx.stroke();
+  // Points keep a constant supply and a narrow recent window discoverable.
+  for (const row of visible) {
+    ctx.beginPath();
+    ctx.arc(x(row[0]), y(row[1]), 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function drawOverlay({left, right, top, bottom, x, y}, width, height) {
   ctx.save();
   ctx.beginPath();
@@ -549,7 +620,11 @@ function draw() {
       if (!low || row[1] < low[1]) low = row;
     }
     const {extent, ticks} = chartScale(peak);
-    const left = displayScale === 'dollars' ? 82 : 65, right = rect.width - 20, top = 18, bottom = rect.height - 35;
+    const left = displayScale === 'dollars' ? 82 : 65;
+    ctx.font = '10px ui-monospace, monospace';
+    const issuanceWidth = showIssuance ? Math.max(90, ...issuanceRows.map(row =>
+      ctx.measureText(issuanceNumber(row[1] * 1.00001)).width + 25)) : 20;
+    const right = rect.width - issuanceWidth, top = 18, bottom = rect.height - 35;
     const x = time => left + (time - state.start) / (state.end - state.start || 1) * (right - left);
     const y = value => top + axisPosition(value, extent) * (bottom - top);
     geometry = {left, right, top, bottom, x, y};
@@ -559,6 +634,7 @@ function draw() {
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 0.6;
     ctx.stroke(peg);
+    drawIssuance(geometry);
 
     if (backing.width !== width || backing.height !== height) {
       backing.width = width;
@@ -730,6 +806,21 @@ $('axis-scale').addEventListener('change', event => {
   writeViewUrl();
   updateViewControls();
 });
+$('issuance-axis').checked = showIssuance;
+$('issuance-axis').addEventListener('change', event => {
+  showIssuance = event.target.checked;
+  try { localStorage.setItem('dotusd-issuance-axis', String(showIssuance)); } catch {}
+  applyScale();
+  refreshIssuance();
+});
+$('issuance-zoom').onclick = () => {
+  if (!issuanceRows.length) return;
+  state.zoom = [issuanceRows[0][0] - 2, issuanceRows.at(-1)[0] + 2];
+  state.live = false;
+  writeViewUrl();
+  updateViewControls();
+  refresh(false, true);
+};
 const settings = document.querySelector('.settings');
 document.addEventListener('click', event => {
   if (settings.open && !settings.contains(event.target)) settings.open = false;
@@ -755,6 +846,7 @@ function needsRefresh() {
 }
 setInterval(() => {
   if (needsRefresh() && !document.hidden && !loading) refresh();
+  if (!document.hidden) refreshIssuance();
 }, source.pollSeconds * 1000);
 // Age the last received timestamps independently of network requests or chart redraws.
 setInterval(updateFreshness, 1000);
@@ -770,4 +862,5 @@ document.addEventListener('visibilitychange', () => {
 if (acceptVersion(document.querySelector('meta[name="app-version"]')?.content)) {
   // Every price response checks the version, including when live updates resume.
   refresh();
+  refreshIssuance();
 }

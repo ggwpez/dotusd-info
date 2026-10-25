@@ -23,6 +23,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from issuance import IssuanceCache, IssuanceWorker
 from release import read_sources, read_version, source_hash
 
 ROOT = Path(__file__).resolve().parent
@@ -500,6 +501,7 @@ class CacheServer(HTTPServer):
         self.work_ready = threading.Condition()
         self.closing = False
         self.workers = []
+        self.issuance = IssuanceCache()
         super().__init__(address, handler)
         self.workers = [threading.Thread(target=self.process_requests, name=f'price-http-{i}', daemon=True)
                         for i in range(self.handler_count)]
@@ -570,6 +572,9 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         if url.path in ('/version', '/api/version'):
             self.respond(200, {'version': self.server.version})
+            return
+        if url.path == '/api/issuance':
+            self.respond(200, self.server.issuance.snapshot())
             return
         if url.path == '/api/prices':
             try:
@@ -676,20 +681,23 @@ def main():
     parser.add_argument('--gap-repair-history', type=Path,
                         help='Enable gradual Parity archive gap recovery, persisted in this SQLite file')
     parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
-                        help='Polkadot Hub HTTP archive RPC for pool-history gap repair')
+                        help='Polkadot Hub HTTP archive RPC for recent issuance and pool-history gap repair')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache()
     worker = None
     repair = None
+    issuance = None
     try:
         with price_source(args.upstream, args.ssh_host) as upstream:
             worker = HistoryWorker(server.cache, upstream, archive=args.archive)
             worker.thread.start()
+            from hub_quotes import HubChain
+            issuance = IssuanceWorker(server.issuance, chain=HubChain(args.hub_rpc))
+            issuance.thread.start()
             if args.gap_repair_history:
                 from gap_repair import GapRepair
-                from hub_quotes import HubChain
                 repair = GapRepair(server.cache, args.gap_repair_history, chain=HubChain(args.hub_rpc))
                 repair.thread.start()
             browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
@@ -701,6 +709,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if issuance is not None:
+            issuance.stop.set()
         if repair is not None:
             repair.stop.set()
         if worker is not None:
@@ -708,6 +718,8 @@ def main():
             worker.thread.join(timeout=25)
         if repair is not None:
             repair.thread.join(timeout=15)
+        if issuance is not None:
+            issuance.thread.join(timeout=35)
         server.server_close()
 
 

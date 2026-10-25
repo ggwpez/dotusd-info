@@ -3,6 +3,7 @@ const drawing = [];
 function context(name) {
   return new Proxy({}, {
     get(target, key) {
+      if (key === 'measureText') return text => ({width: text.length * 6});
       if (key === 'createLinearGradient') {
         return (...args) => {
           drawing.push([name, key, ...args]);
@@ -149,6 +150,31 @@ function checkApp() {
   const beforeScaleRefreshes = refreshes;
   elements.get('axis-scale').events.change({target: {checked: false}});
   assert(state.rows === prices && refreshes === beforeScaleRefreshes, 'axis changes preserve prices without fetching');
+  showIssuance = true;
+  assert(issuanceNumber(1760000000) === '1.76B' && issuanceNumber(1307938.731358) === '1.31M',
+    'issuance uses three significant digits with compact suffixes');
+  issuanceRows = [[110, 1000000, 1], [120, 1000000, 2], [180, 1000000, 5]];
+  state.start = 100;
+  state.end = 200;
+  chartDirty = true;
+  drawing.length = 0;
+  draw();
+  assert(geometry.right < 780, 'issuance reserves a separate right axis');
+  const blueStart = drawing.findIndex(call => call[1] === 'strokeStyle' && call[2] === issuanceColor);
+  const supplyPath = drawing.slice(blueStart).filter(call => ['moveTo', 'lineTo'].includes(call[1]));
+  assert(supplyPath.length === 3 && supplyPath[0][1] === 'moveTo' &&
+    supplyPath[1][1] === 'lineTo' && supplyPath[2][1] === 'moveTo',
+    'issuance connects consecutive blocks but not gaps');
+  assert(supplyPath.every(call => Number.isFinite(call[3]) && call[3] === supplyPath[0][3]),
+    'constant issuance has a finite horizontal line');
+  state.start = 300;
+  state.end = 400;
+  drawing.length = 0;
+  drawIssuance(geometry);
+  assert(!drawing.some(call => call[1] === 'arc'), 'issuance is not extrapolated into missing history');
+  assert(elements.get('issuance-status').textContent.includes('No issuance samples'),
+    'historical windows explain absent issuance');
+  showIssuance = false;
   // Returning traces also supports comparisons against the pre-refactor renderer.
   return {initialDraw, hoverDraw, zoom: state.zoom};
 }

@@ -8,7 +8,7 @@ import re
 ROOT = Path(__file__).resolve().parent
 RELEASE_FILES = (
     'release.py', 'requirements.txt', 'server.py', 'gap_repair.py',
-    'archive_reader.py', 'hub_quotes.py',
+    'archive_reader.py', 'hub_quotes.py', 'issuance.py',
     'about-dotusd.html', 'index.html', 'app.js',
     'ranges.js', 'style.css', 'favicon.svg', 'social-preview.png',
 )
