@@ -90,37 +90,10 @@ without following the stream. Run `just` to list all common commands.
 
 ## Container deployment (archive-only)
 
-Coolify manages the private instance at `https://dotusd.vpn.selenio-software.ltd`
-under **dotUSD → production → dotusd-info**. The Python server serves both the
-frontend and API on port 3001, as UID/GID `10001:10001`, with a **512 MiB** limit.
-The existing public `dotusd.info` deployment is unchanged.
-
-Push a tested release to `master` to deploy: the existing CI checks must pass,
-then CI builds and publishes SHA and `master` image tags to Gitea and calls
-Coolify's restart endpoint with `latest=true`. Prepare and commit `VERSION`
-with source changes as described above; the image embeds the full commit SHA
-as `DEPLOY_COMMIT` and validates the source checksum at startup.
-Repository secrets: `REGISTRY_USERNAME`, `REGISTRY_TOKEN`,
-`COOLIFY_DEPLOY_WEBHOOK`, `COOLIFY_DEPLOY_TOKEN`. Pull-request jobs never deploy.
-
-The default `--archive-only` mode skips SSH and Prometheus. Missing archives
-produce empty price history, not sample data. Existing RPC issuance/repair
-workers remain enabled, but there is **no live pool-price collector**.
-The `/version` healthcheck verifies HTTP availability, not data coverage.
-
-Persistent host directory `/opt/dotusd-info/data` mounts at `/data`:
-- `archive.sqlite3`: published price archive, using the existing `samples`
-  schema—not a Prometheus database.
-- `pool-repairs.sqlite3`: writable repairs, issuance and Treasury history.
-
-Upload a consistent SQLite backup under a temporary filename in that directory,
-make it readable by UID 10001, then atomically rename it to `archive.sqlite3`.
-Do not copy an active database without its required WAL state. First uploads
-and compatible extensions load automatically; replacements with changed sequence
-IDs require a restart. Stop the service before replacing the writable repairs
-database. Preserve directory ownership `10001:10001` and back up both databases;
-container redeployments retain this directory.
-
+- Private URL: `https://dotusd.vpn.selenio-software.ltd`; Coolify **dotUSD / production / dotusd-info**, 512 MiB. Public production is unchanged.
+- Push a release with updated `VERSION` to `master`: checks → image build/push → Coolify redeploy. PRs do not deploy. CI secrets: `REGISTRY_USERNAME`, `REGISTRY_TOKEN`, `COOLIFY_DEPLOY_WEBHOOK`, `COOLIFY_DEPLOY_TOKEN`. Coolify API must stay enabled; its deploy token is team-wide.
+- `/opt/dotusd-info/data` → `/data`, UID/GID `10001:10001`: `archive.sqlite3` for price history, `pool-repairs.sqlite3` for repairs/state. `--archive-only` skips Prometheus/SSH; RPC workers remain enabled, but no live price collector runs.
+- Import a consistent SQLite backup via temporary file + atomic rename. First archive uploads load automatically; changed sequence IDs require restart. Stop the service before replacing writable repairs/state. Source databases remain on SSH alias `server`; none were imported.
 
 ## Archive backfill
 
