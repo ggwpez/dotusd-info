@@ -504,10 +504,8 @@ function drawIssuance({right, top, bottom, x}) {
   if (!showIssuance) return;
   const visible = issuanceRows.filter(row => row[0] >= state.start && row[0] <= state.end);
   const last = issuanceRows.at(-1);
-  $('issuance-zoom').disabled = !last;
-  const age = last ? Math.max(0, Math.round(Date.now()/1000 - last[0])) : 0;
   $('issuance-status').textContent = (last ?
-    `Latest total issuance: ${issuanceNumber(last[1])} dotUSD · block ${last[2].toLocaleString()} · ${age}s ago` :
+    `Total issuance · ${issuanceNumber(last[1])} dotUSD` :
     'Loading dotUSD issuance…') +
     (issuanceError ? ` · ${issuanceError}` : '') +
     (last && !visible.length ? ' · No issuance samples in this window' : '');
@@ -810,14 +808,6 @@ $('issuance-axis').addEventListener('change', event => {
   applyScale();
   refreshIssuance();
 });
-$('issuance-zoom').onclick = () => {
-  if (!issuanceRows.length) return;
-  state.zoom = [issuanceRows[0][0] - 2, issuanceRows.at(-1)[0] + 2];
-  state.live = false;
-  writeViewUrl();
-  updateViewControls();
-  refresh(false, true);
-};
 const settings = document.querySelector('.settings');
 document.addEventListener('click', event => {
   if (settings.open && !settings.contains(event.target)) settings.open = false;

@@ -258,7 +258,7 @@ class AppTests(unittest.TestCase):
         """
         self.assertTrue(evaluate(source))
 
-    def test_large_sparse_issuance_history_and_sample_zoom(self):
+    def test_large_sparse_issuance_history(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
         source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
@@ -280,15 +280,7 @@ class AppTests(unittest.TestCase):
         drawIssuance(bounds);
         require(points === 0, 'historical issuance has no individual sample markers');
         require(connections === 0, 'sparse history never draws across missing blocks');
-        refresh = () => {};
-        writeViewUrl = () => {};
-        $('issuance-zoom').onclick();
-        require(state.zoom[0] === -2 && state.zoom[1] === 600000 && !state.live,
-                'sample zoom includes all retained history');
-        // Without repair, exactly the same control still fits the recent preview.
         issuanceRows = Array.from({length: 15}, (_, i) => [100 + i * 2, 1000000, i]);
-        $('issuance-zoom').onclick();
-        require(state.zoom[0] === 98 && state.zoom[1] === 130, 'recent preview zoom stays narrow');
         state.start = 0; state.end = 200;
         points = connections = 0;
         drawIssuance(bounds);

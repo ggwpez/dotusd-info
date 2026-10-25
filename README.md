@@ -72,10 +72,9 @@ Without that flag, issuance remains a recent-only, in-memory preview.
 Issuance uses actual chain timestamps and renders as a thicker, solid blue line
 without sample dots;
 missing blocks stay disconnected, so isolated samples are not drawn.
-Use **Zoom to issuance samples** to fit all available samples, whether a short
-preview or accumulated history; range buttons return to the normal live chart.
-The legend identifies the latest cached value, block and age (not necessarily a
-sample in the displayed window), and reports RPC failures while retaining data.
+Use the normal range buttons and drag-to-zoom controls for both series.
+The issuance legend shows the latest cached value and reports RPC failures
+while retaining data.
 `--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
 command above even without local Prometheus; only price history remains unavailable.
 

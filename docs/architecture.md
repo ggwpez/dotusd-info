@@ -108,10 +108,10 @@ replacements for missing state, or extrapolated timestamps are generated.
 the issuance worker alongside the price and repair workers.
 
 The chart uses an independent linear right axis. It connects only consecutive
-issuance blocks and does not interpolate across missing blocks. **Zoom to issuance
-samples** fits all available samples, preserving the narrow preview without the
-repair flag. The legend labels the latest cached sample, which may be outside the
-displayed historical window; missing samples in that window are called out.
+issuance blocks and does not interpolate across missing blocks. Both series use
+the normal range buttons and drag-to-zoom controls. The compact issuance legend
+shows the latest cached value, which may be outside the displayed historical
+window; missing samples in that window are called out.
 
 ### Storage decoding evidence
 
