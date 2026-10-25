@@ -70,7 +70,7 @@ try {
 } catch {}
 let showIssuance = false;
 try { showIssuance = localStorage.getItem('dotusd-issuance-axis') === 'true'; } catch {}
-let issuanceRows = [], issuanceError = null, issuanceLoading = false;
+let issuanceRows = [], issuanceLoading = false;
 const issuanceColor = '#82b7ff';
 const issuanceFormat = new Intl.NumberFormat('en-US', {notation: 'compact', maximumSignificantDigits: 3});
 const issuanceNumber = value => issuanceFormat.format(value);
@@ -82,9 +82,8 @@ async function refreshIssuance() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     issuanceRows = data.rows;
-    issuanceError = data.error;
-  } catch (error) {
-    issuanceError = `Issuance unavailable: ${error.message}`;
+  } catch {
+    // Keep the last successful series until the next refresh.
   } finally {
     issuanceLoading = false;
     chartDirty = true;
@@ -500,15 +499,8 @@ function drawPrices({left, right, top, bottom, x, y}, extent, high, low) {
 }
 
 function drawIssuance({right, top, bottom, x}) {
-  $('issuance-legend').hidden = !showIssuance;
   if (!showIssuance) return;
   const visible = issuanceRows.filter(row => row[0] >= state.start && row[0] <= state.end);
-  const last = issuanceRows.at(-1);
-  $('issuance-status').textContent = (last ?
-    `Total issuance · ${issuanceNumber(last[1])} dotUSD` :
-    'Loading dotUSD issuance…') +
-    (issuanceError ? ` · ${issuanceError}` : '') +
-    (last && !visible.length ? ' · No issuance samples in this window' : '');
   ctx.fillStyle = issuanceColor;
   ctx.font = '10px ui-monospace, monospace';
   ctx.textAlign = 'left';

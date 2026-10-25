@@ -73,8 +73,8 @@ Issuance uses actual chain timestamps and renders as a thicker, solid blue line
 without sample dots;
 missing blocks stay disconnected, so isolated samples are not drawn.
 Use the normal range buttons and drag-to-zoom controls for both series.
-The issuance legend shows the latest cached value and reports RPC failures
-while retaining data.
+Issuance appears only in the graph and on its right-hand axis, with no separate
+value label. Failed refreshes retain the last successful data.
 `--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
 command above even without local Prometheus; only price history remains unavailable.
 

@@ -109,9 +109,8 @@ the issuance worker alongside the price and repair workers.
 
 The chart uses an independent linear right axis. It connects only consecutive
 issuance blocks and does not interpolate across missing blocks. Both series use
-the normal range buttons and drag-to-zoom controls. The compact issuance legend
-shows the latest cached value, which may be outside the displayed historical
-window; missing samples in that window are called out.
+the normal range buttons and drag-to-zoom controls. Issuance appears only in the
+graph and on its right-hand axis, without a separate legend or status readout.
 
 ### Storage decoding evidence
 

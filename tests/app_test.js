@@ -172,8 +172,6 @@ function checkApp() {
   drawing.length = 0;
   drawIssuance(geometry);
   assert(!drawing.some(call => call[1] === 'arc'), 'issuance is not extrapolated into missing history');
-  assert(elements.get('issuance-status').textContent.includes('No issuance samples'),
-    'historical windows explain absent issuance');
   showIssuance = false;
   // Returning traces also supports comparisons against the pre-refactor renderer.
   return {initialDraw, hoverDraw, zoom: state.zoom};
