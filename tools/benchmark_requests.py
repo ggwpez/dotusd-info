@@ -45,9 +45,9 @@ def serve(pipe, source, fixture, backlog):
     end = rows[-1][0] + 1
     start = max(0, end - 604800)
     common = {'start': start, 'end': end, 'windowStart': start,
-              'windowEnd': end, 'format': 'stream'}
-    paths = {'page': '/', 'history': '/api/prices?' + urlencode(common),
-             'poll': '/api/prices?' + urlencode(dict(common, afterBlock=rows[-1][2] - 3))}
+              'windowEnd': end, 'format': 'stream', 'series': 'price'}
+    paths = {'page': '/', 'history': '/api/historic?' + urlencode(common),
+             'poll': '/api/historic?' + urlencode(dict(common, afterBlock=rows[-1][2] - 3))}
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     pipe.send((server.server_port, paths, len(rows)))
@@ -112,7 +112,7 @@ def run(port, paths, concurrency, count, rounds):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--fixture', type=Path, required=True, help='Raw /api/prices JSON captured once')
+    parser.add_argument('--fixture', type=Path, required=True, help='Raw /api/historic?series=price JSON captured once')
     parser.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1] / 'server.py')
     parser.add_argument('--backlog', type=int, help='Override TCP backlog for a controlled comparison')
     parser.add_argument('--rounds', type=int, default=3)

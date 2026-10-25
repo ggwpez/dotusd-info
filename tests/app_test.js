@@ -35,6 +35,7 @@ function element(name) {
 }
 const elements = new Map();
 const document = {
+  events: {},
   getElementById(id) {
     if (!elements.has(id)) elements.set(id, element(id));
     return elements.get(id);
@@ -42,10 +43,13 @@ const document = {
   createElement: tag => element(`${tag}-${elementCount++}`),
   querySelector: selector => selector.includes('icon') ? {href: 'icon.svg'} : {content: 'old-version'},
   querySelectorAll: () => [],
-  addEventListener() {},
+  addEventListener(type, handler) { this.events[type] = handler; },
   body: element('body'),
 };
-const window = {devicePixelRatio: 1, addEventListener() {}};
+const window = {
+  devicePixelRatio: 1, events: {},
+  addEventListener(type, handler) { this.events[type] = handler; },
+};
 const navigator = {onLine: true};
 const location = {search: '', reload() {}};
 class URLSearchParams {
@@ -61,7 +65,41 @@ class Path2D {
 }
 const requestAnimationFrame = () => 1;
 const cancelAnimationFrame = () => {};
-const setInterval = () => {};
+const intervals = [];
+const setInterval = (callback, delay) => intervals.push({callback, delay});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return {promise, resolve};
+}
+
+function historicStream(ti, end, ranges = []) {
+  const started = deferred(), finished = deferred();
+  let first = true;
+  const reader = {
+    async read() {
+      if (first) {
+        first = false;
+        return {done: false, value: JSON.stringify({
+          encoding: 'ranges-stream-v1', fetchedAt: end, historyReady: true, extremes: null, ti,
+        }) + '\n' + JSON.stringify({ranges}) + '\n'};
+      }
+      started.resolve();
+      return finished.promise;
+    },
+    async cancel() {},
+    releaseLock() {},
+  };
+  return {
+    started: started.promise,
+    response: {ok: true, headers: {get: key => key === 'X-History-End' ? String(end) : APP_VERSION},
+      body: {getReader: () => reader}},
+    finish(messages = [{done: true}]) {
+      finished.resolve({done: true, value: messages.map(message => JSON.stringify(message) + '\n').join('')});
+    },
+  };
+}
 
 function checkApp() {
   displayScale = 'bps';

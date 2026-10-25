@@ -84,4 +84,18 @@ function checkCache() {
   assert(partial.rows.length === 350000 && partial.rows.runs.length === 1, 'bounded cache without unrolling');
   equal(partial.missing(0, 800010), [[0, 100008]], 'evicted samples lose coverage');
   assert([...large.points()].length === 2, '400000 flat samples draw as two points');
+  const issuance = [[100, 1000, 10], [110, 1200, 12], [110, 1300, 13]];
+  const repaired = mergeIssuanceRows(issuance, {reset: false, rows: [
+    [105, 1100, 11], [109, 1250, 12], [120, 1400, 14],
+  ]}, 604800);
+  equal(repaired, [[100, 1000, 10], [105, 1100, 11], [109, 1250, 12],
+    [110, 1300, 13], [120, 1400, 14]], 'TI repairs older blocks and replaces by block, not timestamp');
+  equal(issuance, [[100, 1000, 10], [110, 1200, 12], [110, 1300, 13]],
+    'TI merge leaves the prior completed snapshot intact');
+  equal(mergeIssuanceRows(repaired, {reset: false, rows: [[110, 1300, 13]]}, 604910),
+    [[120, 1400, 14]], 'TI retention prunes old blocks even on an otherwise unchanged delta');
+  equal(mergeIssuanceRows(repaired, {reset: true, rows: [[115, 1500, 15]]}, 604800),
+    [[115, 1500, 15]], 'TI reset replaces the entire prior selected-window cache');
+  equal(mergeIssuanceRows(repaired, {reset: true, rows: []}, 604800),
+    [], 'an empty TI reset clears the cache');
 }

@@ -59,7 +59,8 @@ class AppTests(unittest.TestCase):
             historyCache.merge(RangeSeries.fromWire([[stamp, 10, 1]]),
                                now - 3600, now - .05, now, true);
             const pending = refresh();
-            require(requests[0].includes('startpoint=10') && !requests[0].includes('?start='), 'block cursor replaces timestamp start');
+            require(requests[0].startsWith('/api/historic?series=price&'), 'one historic price subscription');
+            require(requests[0].includes('startpoint=10') && !requests[0].includes('&start='), 'block cursor replaces timestamp start');
             require(!requests[0].includes('&end=') && !requests[0].includes('windowEnd='), 'live requests are open-ended');
             require(!requests[0].includes('windowStart='), 'incremental polls request no full-window statistics');
             respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 1) : APP_VERSION}, messages: [
@@ -215,48 +216,346 @@ class AppTests(unittest.TestCase):
         source += r"""
         function require(value, message) { if (!value) throw new Error(message); }
         class AbortController { constructor() { this.signal = {}; } abort() {} }
-        const setTimeout = () => 1;
-        const clearTimeout = () => {};
+        const setTimeout = () => 1, clearTimeout = () => {};
+        const performance = {now: () => 100};
         const requests = [];
-        const fetch = url => { requests.push(url); return new Promise(() => {}); };
-        reloading = false;
         const now = Date.now()/1000;
-        state.start = now - 3600; state.end = now;
-        state.range = 3600; state.live = true; state.zoom = null;
-        state.serverWarming = false;
-        historyCache.merge(RangeSeries.fromWire([[now - 20, 10, 1], [0, now - 10, 15, 1]]),
-                           now - 3600, now, now, true);
-        nextHistoryRefresh = Date.now() + 60000;
-        refresh();
-        require(requests.length === 1 && requests[0].includes('startpoint=15'), 'normal live cursor');
-        nextHistoryRefresh = 0;
-        refresh();
-        require(requests.length === 2 && !requests[1].includes('startpoint'), 'repair refresh includes old blocks');
-        state.live = false;
-        require(needsRefresh(), 'fixed views also discover repairs');
-        nextHistoryRefresh = Date.now() + 60000;
-        state.historyLoading = false;
-        require(!needsRefresh(), 'fixed views rest between refreshes');
-        // Once repairs close the gap, an elapsed deadline must not refetch history.
-        historyCache.merge(RangeSeries.fromWire([[now - 20, 10, 1], [5, 2, 1]]),
-                           now - 3600, now, now, true);
-        state.start = now - 3600; state.end = now;
-        state.rows = historyCache.rows;
-        nextHistoryRefresh = 0;
-        require(!needsRefresh(), 'complete fixed history needs no periodic refresh');
-        refresh();
-        require(requests.length === 2, 'complete fixed history makes no request');
-        state.live = true;
-        refresh();
-        require(requests.length === 3 && requests[2].includes('startpoint=15'),
-                'complete live history keeps its cursor after the deadline');
-        require(!hasHistoryGaps(RangeSeries.fromWire([[now - 1000, 1, 1], [0, now, 2, 1]])),
-                'timestamp pauses alone are not missing pool blocks');
-        require(hasHistoryGaps(RangeSeries.fromWire([[now - 20, 1, 1], [4, 2, 2]])),
-                'detect missing blocks inside compressed runs');
-        JSON.stringify(true);
+        const fetch = async url => {
+            requests.push(url);
+            return {ok: true, headers: {get: key => key === 'X-History-End' ? String(now) : APP_VERSION}, messages: [
+                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                {ranges: url.includes('startpoint=') ? [] : [[now - 20, 10, 1], [0, now - 10, 15, 1]]},
+                {done: true},
+            ]};
+        };
+        readPriceStream = async function* (response) {
+            for (const message of response.messages) yield message;
+        };
+        (async () => {
+            reloading = false;
+            state.start = now - 3600; state.end = now;
+            state.range = 3600; state.live = true; state.zoom = null;
+            state.serverWarming = false;
+            historyCache.merge(RangeSeries.fromWire([[now - 20, 10, 1], [0, now - 10, 15, 1]]),
+                               now - 3600, now, now, true);
+            nextHistoryRefresh = Date.now() + 60000;
+            await refresh();
+            require(requests.length === 1 && requests[0].includes('startpoint=15'), 'normal live cursor');
+            nextHistoryRefresh = 0;
+            await refresh();
+            require(requests.length === 2 && !requests[1].includes('startpoint'), 'repair refresh includes old blocks');
+            state.live = false;
+            nextHistoryRefresh = 0;
+            require(needsRefresh(), 'fixed views also discover repairs');
+            nextHistoryRefresh = Date.now() + 60000;
+            state.historyLoading = false;
+            require(!needsRefresh(), 'fixed views rest between refreshes');
+            // Once repairs close the gap, an elapsed deadline must not refetch history.
+            historyCache.merge(RangeSeries.fromWire([[now - 20, 10, 1], [5, 2, 1]]),
+                               now - 3600, now, now, true);
+            state.start = now - 3600; state.end = now;
+            state.rows = historyCache.rows;
+            nextHistoryRefresh = 0;
+            require(!needsRefresh(), 'complete fixed history needs no periodic refresh');
+            await refresh();
+            require(requests.length === 2, 'complete fixed history makes no request');
+            state.live = true;
+            await refresh();
+            require(requests.length === 3 && requests[2].includes('startpoint=15'),
+                    'complete live history keeps its cursor after the deadline');
+            require(!hasHistoryGaps(RangeSeries.fromWire([[now - 1000, 1, 1], [0, now, 2, 1]])),
+                    'timestamp pauses alone are not missing pool blocks');
+            require(hasHistoryGaps(RangeSeries.fromWire([[now - 20, 1, 1], [4, 2, 2]])),
+                    'detect missing blocks inside compressed runs');
+            return true;
+        })();
         """
-        self.assertTrue(evaluate(source))
+        self.assertTrue(evaluate(source, asynchronous=True))
+
+    def test_combined_subscription_toggles_and_ignores_stale_streams(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController {
+            constructor() { this.signal = {aborted: false}; }
+            abort() { this.signal.aborted = true; }
+        }
+        class TextDecoder { decode(value) { return value ?? ''; } }
+        const setTimeout = () => 1, clearTimeout = () => {};
+        const performance = {now: () => 100};
+        const now = Date.now()/1000;
+        Date.now = () => now * 1000;
+        const requests = [];
+        const fetch = (url, {signal}) => {
+            const result = deferred();
+            requests.push({url, signal, respond: result.resolve});
+            return result.promise;
+        };
+        let pending;
+        const originalRefresh = refresh;
+        refresh = (...args) => pending = originalRefresh(...args);
+        (async () => {
+            reloading = false;
+            state.range = 3600; state.live = true; state.zoom = null;
+            const price = refresh();
+            require(requests.length === 1 && requests[0].url.startsWith('/api/historic?series=price&'),
+                'one price-only historic subscription');
+            window.events.online();
+            document.events.visibilitychange();
+            intervals[0].callback();
+            await refresh();
+            require(requests.length === 1 && !requests[0].signal.aborted,
+                'online, visibility, and poll triggers share the in-flight request');
+
+            elements.get('issuance-axis').events.change({target: {checked: true}});
+            const combined = pending;
+            require(requests.length === 2 && requests[0].signal.aborted,
+                'TI enable cancels and reconfigures the existing request exactly once');
+            require(requests[1].url.startsWith('/api/historic?series=price,ti&') &&
+                requests[1].url.includes('&tiStart=' + (now - 3600)) &&
+                !requests[1].url.includes('tiEnd=') && !requests[1].url.includes('tiCursor='),
+                'enabled live subscription requests the full TI viewport without an end or cursor');
+            requests[0].respond({headers: {get: () => 'obsolete-release'}});
+            await price;
+            require(!reloading, 'cancelled price response cannot trigger a version reload');
+            const stale = historicStream({rows: [[now - 10, 1000, 10]],
+                reset: true, cursor: 'stale', error: null}, now);
+            requests[1].respond(stale.response);
+            await stale.started;
+            require(issuanceCursor === null && !issuanceRows.length,
+                'TI header alone never publishes samples or advances the cursor');
+
+            elements.get('issuance-axis').events.change({target: {checked: false}});
+            const disabled = pending;
+            require(requests.length === 3 && requests[1].signal.aborted &&
+                requests[2].url.startsWith('/api/historic?series=price&') &&
+                !requests[2].url.includes('&ti'), 'TI disable reconfigures one request back to price only');
+            const priceOnly = historicStream(undefined, now);
+            requests[2].respond(priceOnly.response);
+            await priceOnly.started;
+            priceOnly.finish();
+            await disabled;
+            stale.finish();
+            await combined;
+            require(issuanceCursor === null && !issuanceRows.length && !loading,
+                'a stale combined stream cannot overwrite the new subscription');
+
+            issuanceCursor = 'previous-enable';
+            elements.get('issuance-axis').events.change({target: {checked: true}});
+            const enabled = pending;
+            require(requests.length === 4 && !requests[3].url.includes('tiCursor='),
+                'each TI enable resets the revision cursor');
+            const fresh = historicStream({rows: [[now - 5, 1100, 11]],
+                reset: true, cursor: 'fresh', error: null}, now);
+            requests[3].respond(fresh.response);
+            await fresh.started;
+            fresh.finish();
+            await enabled;
+            require(issuanceCursor === 'fresh' && issuanceRows[0][2] === 11 && !loading,
+                'the active completed stream publishes TI');
+            require(requests.every(request => request.url.startsWith('/api/historic?')),
+                'there is no second issuance fetch or legacy endpoint');
+            return true;
+        })();
+        """
+        self.assertTrue(evaluate(source, asynchronous=True))
+
+    def test_ti_repairs_commit_only_after_a_complete_stream(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        class TextDecoder { decode(value) { return value ?? ''; } }
+        const setTimeout = () => 1, clearTimeout = () => {};
+        const performance = {now: () => 100};
+        const now = Date.now()/1000;
+        Date.now = () => now * 1000;
+        const requests = [];
+        const fetch = url => {
+            const result = deferred();
+            requests.push({url, respond: result.resolve});
+            return result.promise;
+        };
+        (async () => {
+            reloading = false; showIssuance = true;
+            state.range = 3600; state.live = true; state.zoom = null;
+            const initialRows = [[now - 120, 1000, 10], [now - 90, 1200, 12]];
+            const firstCursor = 'revision:1 /+';
+            let pending = refresh();
+            const first = historicStream({rows: initialRows, reset: true, cursor: firstCursor, error: null},
+                now, [[now - 90, 12, 1]]);
+            requests.at(-1).respond(first.response);
+            await first.started;
+            require(issuanceCursor === null && !issuanceRows.length, 'reset remains staged until completion');
+            first.finish();
+            await pending;
+            require(issuanceCursor === firstCursor && issuanceRows.length === 2, 'completed reset is committed');
+            const initialSnapshot = issuanceRows;
+            const update = {rows: [[now - 100, 1100, 11], [now - 95, 1250, 12], [now - 80, 1300, 13]],
+                reset: false, cursor: 'revision:2', error: null};
+            pending = refresh();
+            require(requests.at(-1).url.includes('startpoint=12') &&
+                requests.at(-1).url.includes('&tiStart=' + (now - 3600)) &&
+                requests.at(-1).url.includes('&tiCursor=' + encodeURIComponent(firstCursor)),
+                'price cursor and opaque TI revision use independent bounds in one URL');
+            const interrupted = historicStream(update, now);
+            requests.at(-1).respond(interrupted.response);
+            await interrupted.started;
+            interrupted.finish([]);
+            await pending;
+            require(state.error && issuanceRows === initialSnapshot && issuanceCursor === firstCursor,
+                'truncated response cannot publish TI or consume its revision');
+
+            pending = refresh();
+            require(requests.at(-1).url.includes('&tiCursor=' + encodeURIComponent(firstCursor)),
+                'retry resumes from the last completed revision');
+            const repaired = historicStream(update, now);
+            requests.at(-1).respond(repaired.response);
+            await repaired.started;
+            require(issuanceRows === initialSnapshot && issuanceCursor === firstCursor,
+                'repair metadata stays staged during the price stream');
+            repaired.finish();
+            await pending;
+            require(!state.error && issuanceCursor === 'revision:2' &&
+                JSON.stringify(issuanceRows) === JSON.stringify([
+                    initialRows[0], update.rows[0], update.rows[1], update.rows[2],
+                ]), 'delta merges older repairs, replaces the exact block, and retains untouched samples');
+            const repairedSnapshot = issuanceRows;
+            for (const ti of [
+                undefined,
+                {error: 'TI unavailable'},
+            ]) {
+                pending = refresh();
+                const unavailable = historicStream(ti, now);
+                requests.at(-1).respond(unavailable.response);
+                await unavailable.started;
+                unavailable.finish();
+                await pending;
+                require(issuanceCursor === 'revision:2' && issuanceRows === repairedSnapshot,
+                    'omitted or incomplete TI metadata preserves the last completed cursor and cache');
+            }
+            pending = refresh();
+            const trailing = historicStream({rows: [], reset: true, cursor: 'trailing', error: null}, now);
+            requests.at(-1).respond(trailing.response);
+            await trailing.started;
+            trailing.finish([{done: true}, {ranges: []}]);
+            await pending;
+            require(state.error && issuanceCursor === 'revision:2' && issuanceRows === repairedSnapshot,
+                'even a done marker cannot commit TI when trailing stream data is invalid');
+            issuanceRows = []; issuanceCursor = null; issuanceCoverage = null;
+            pending = refresh();
+            const retained = historicStream({rows: [[now - 70, 1400, 14]], reset: true,
+                cursor: 'retained', error: 'Live RPC unavailable'}, now);
+            requests.at(-1).respond(retained.response);
+            await retained.started;
+            retained.finish();
+            await pending;
+            require(!state.error && issuanceCursor === 'retained' && issuanceRows[0][2] === 14,
+                'cold clients accept retained TI samples despite a live RPC error status');
+            pending = refresh();
+            const backfill = historicStream({rows: [[now - 80, 1300, 13]], reset: false,
+                cursor: 'backfilled', error: 'Live RPC unavailable'}, now);
+            requests.at(-1).respond(backfill.response);
+            await backfill.started;
+            backfill.finish();
+            await pending;
+            require(issuanceCursor === 'backfilled' && issuanceRows.length === 2 && issuanceRows[0][2] === 13,
+                'completed backfill revisions remain usable while live RPC status reports an error');
+            pending = refresh();
+            const replacement = historicStream({rows: [], reset: true, cursor: 'replacement', error: null}, now);
+            requests.at(-1).respond(replacement.response);
+            await replacement.started;
+            replacement.finish();
+            await pending;
+            require(!state.error && issuanceCursor === 'replacement' && !issuanceRows.length,
+                'a completed empty reset removes the previous cache');
+            return true;
+        })();
+        """
+        self.assertTrue(evaluate(source, asynchronous=True))
+
+    def test_ti_viewport_coverage_and_fixed_history_polling(self):
+        source = (ROOT / 'tests/app_test.js').read_text()
+        source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
+        source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        source += r"""
+        function require(value, message) { if (!value) throw new Error(message); }
+        class AbortController { constructor() { this.signal = {}; } abort() {} }
+        class TextDecoder { decode(value) { return value ?? ''; } }
+        const setTimeout = () => 1, clearTimeout = () => {};
+        const performance = {now: () => 100};
+        let now = Date.now()/1000;
+        Date.now = () => now * 1000;
+        const requests = [];
+        const fetch = url => {
+            const result = deferred();
+            requests.push({url, respond: result.resolve});
+            return result.promise;
+        };
+        async function finishRequest(pending, cursor, reset = false, rows = []) {
+            const stream = historicStream({rows, cursor, reset, error: null}, now);
+            requests.at(-1).respond(stream.response);
+            await stream.started;
+            stream.finish();
+            await pending;
+        }
+        (async () => {
+            reloading = false; showIssuance = true;
+            state.range = 3600; state.live = true; state.zoom = null;
+            await finishRequest(refresh(), 'live-1', true);
+            now += 6;
+            let pending = refresh();
+            require(requests.at(-1).url.includes('&tiCursor=live-1') &&
+                requests.at(-1).url.includes('&tiStart=' + (now - 3600)) &&
+                !requests.at(-1).url.includes('&tiEnd='),
+                'forward live motion keeps the TI cursor and moves its viewport lower bound');
+            await finishRequest(pending, 'live-2');
+            state.live = false;
+            state.zoom = [now - 100, now - 50];
+            const beforeNavigation = requests.length;
+            await refresh(false, true);
+            require(requests.length === beforeNavigation && issuanceCursor === 'live-2',
+                'a covered narrower viewport can render locally until the shared poll');
+            require(needsRefresh(), 'TI keeps complete fixed-history views subscribed for repairs');
+            pending = refresh();
+            require(requests.at(-1).url.includes('&tiStart=' + (now - 100)) &&
+                requests.at(-1).url.includes('&tiEnd=' + (now - 50)) &&
+                requests.at(-1).url.includes('&tiCursor=live-2'),
+                'fixed history requests explicit TI viewport bounds on the same subscription');
+            await finishRequest(pending, 'fixed-1', false, [[now - 80, 1000, 10]]);
+            pending = refresh();
+            require(requests.length === beforeNavigation + 2 &&
+                requests.at(-1).url.includes('&tiCursor=fixed-1'),
+                'every fixed-history TI poll runs despite complete price coverage');
+            await finishRequest(pending, 'fixed-2', false, [[now - 75, 1100, 11]]);
+            require(issuanceRows.length === 2, 'fixed-history polling discovers repaired TI blocks');
+
+            state.zoom = [now - 200, now - 50];
+            pending = refresh(false, true);
+            require(!requests.at(-1).url.includes('tiCursor=') && issuanceCursor === null,
+                'extending left beyond the completed TI viewport resets its cursor even with cached prices');
+            await finishRequest(pending, 'wider', true, [[now - 150, 900, 9]]);
+            require(issuanceRows.length === 1 && issuanceRows[0][2] === 9,
+                'a wider-window reset replaces the narrow cache');
+            state.zoom = [now - 150, now - 10];
+            pending = refresh(false, true);
+            require(!requests.at(-1).url.includes('tiCursor='),
+                'extending the fixed upper bound also resets the cursor');
+            await finishRequest(pending, 'later', true);
+            state.live = true; state.zoom = null; state.range = 7200;
+            pending = refresh(false, true);
+            require(!requests.at(-1).url.includes('tiCursor=') && !requests.at(-1).url.includes('tiEnd=') &&
+                requests.at(-1).url.includes('&tiStart=' + (now - 7200)),
+                'returning to a wider live window resets TI independently of the price cache');
+            await finishRequest(pending, 'wide-live', true);
+            return true;
+        })();
+        """
+        self.assertTrue(evaluate(source, asynchronous=True))
 
     def test_large_sparse_issuance_history(self):
         source = (ROOT / 'tests/app_test.js').read_text()

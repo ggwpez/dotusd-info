@@ -26,6 +26,14 @@ export async function* readPriceStream(response) {
   }
 }
 
+export function mergeIssuanceRows(previous, update, now) {
+  const rows = new Map(update.reset ? [] : previous.map(row => [row[2], row]));
+  // Revisions can repair or replace blocks older than the latest sample.
+  for (const row of update.rows) rows.set(row[2], row);
+  const cutoff = now - 604800;
+  return [...rows.values()].filter(row => row[0] > cutoff).sort((a, b) => a[2] - b[2]);
+}
+
 // Internal runs retain an absolute start, so clipping and cache merges never
 // depend on another response. Individual samples are generated only on demand.
 const sample = (run, i) => [run.t + i * run.dt, run.price, run.block === null ? null : run.block + i * run.db];

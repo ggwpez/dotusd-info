@@ -23,33 +23,173 @@ spec.loader.exec_module(page)
 
 
 class PageTests(unittest.TestCase):
-    def test_issuance_endpoint_reads_cached_loading_success_and_failure_states(self):
+    def test_historic_series_selection_formats_and_fresh_issuance_deltas(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        now = time.time()
+        prices = [[now - 20, 1.01, 40]]
+        server.cache.merge(prices, now)
+        server.cache.history_ready = True
+        directory = tempfile.TemporaryDirectory()
+        server.issuance = page.IssuanceCache(Path(directory.name) / 'issuance.db')
+        rows = [[now - 50, 100., 10], [now - 30, 120., 30], [now - 10, 140., 50]]
+        server.issuance.merge(rows, live=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}/api/historic?'
+        bounds = f'&start={now-60}&end={now}&tiStart={now-50}&tiEnd={now-10}'
+        try:
+            for series in ('price', 'ti', 'price,ti'):
+                for encoding in ('raw', 'ranges-v1', 'stream'):
+                    with self.subTest(series=series, encoding=encoding):
+                        with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
+                            if encoding == 'stream':
+                                messages = [json.loads(line) for line in response]
+                                body = messages[0]
+                                self.assertEqual(body['encoding'], 'ranges-stream-v1')
+                                self.assertEqual(messages[-1], {'done': True})
+                                self.assertEqual(messages[1:-1], [{'ranges': list(page.pack_ranges(prices))}]
+                                                 if 'price' in series else [])
+                            else:
+                                body = json.load(response)
+                                if 'price' in series:
+                                    self.assertEqual(body['samples' if encoding == 'raw' else 'ranges'],
+                                                     prices if encoding == 'raw' else list(page.pack_ranges(prices)))
+                                else:
+                                    self.assertEqual(set(body), {'ti'})
+                            if 'price' in series:
+                                self.assertTrue(body['historyReady'])
+                                self.assertEqual(body['fetchedAt'], now)
+                            else:
+                                for key in ('fetchedAt', 'historyReady', 'extremes', 'ranges', 'samples'):
+                                    self.assertNotIn(key, body)
+                            if 'ti' in series:
+                                self.assertEqual(body['ti']['rows'], rows[1:])
+                                self.assertTrue(body['ti']['reset'])
+                                self.assertIsNone(body['ti']['error'])
+                            else:
+                                self.assertNotIn('ti', body)
+            route = base + 'series=price,ti&format=stream&startpoint=50' + bounds
+            with urlopen(route) as response:
+                initial, done = [json.loads(line) for line in response]
+            cursor = initial['ti']['cursor']
+            self.assertEqual(done, {'done': True})
+            with urlopen(route + '&tiCursor=' + cursor) as response:
+                unchanged, done = [json.loads(line) for line in response]
+            self.assertEqual(unchanged['ti']['rows'], [])
+            self.assertFalse(unchanged['ti']['reset'])
+            # Older archive repairs and corrected supply are independent of the price cursor.
+            server.issuance.merge([(now - 40, 110., 20), (now - 30, 121., 30),
+                                   (now - 5, 150., 60)])
+            with urlopen(route + '&tiCursor=' + cursor) as response:
+                changed, done = [json.loads(line) for line in response]
+            self.assertEqual(changed['ti']['rows'], [[now - 40, 110., 20], [now - 30, 121., 30]])
+            self.assertFalse(changed['ti']['reset'])
+            self.assertNotEqual(changed['ti']['cursor'], cursor)
+            self.assertEqual(done, {'done': True})
+            with urlopen(route + '&tiCursor=expired') as response:
+                reset, done = [json.loads(line) for line in response]
+            self.assertTrue(reset['ti']['reset'])
+            self.assertEqual(reset['ti']['rows'],
+                             [[now - 40, 110., 20], [now - 30, 121., 30], rows[2]])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+            directory.cleanup()
+
+    def test_historic_requires_valid_series_and_removes_old_endpoints(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
+        now = time.time()
+        invalid = ('', 'series=', 'series=issuance', 'series=price,unknown',
+                   'series=price,price', 'series=price&series=ti', 'series=price,',
+                   'series=ti&tiStart=nan', 'series=ti&tiStart=0&tiEnd=604801',
+                   f'series=ti&tiStart={now}&tiEnd={now-1}',
+                   f'series=ti&tiStart={now-10}&tiStart={now-20}',
+                   f'series=ti&tiStart={now-10}&tiEnd={now}&tiEnd={now}',
+                   f'series=ti&tiStart={now-10}&tiCursor=a&tiCursor=b')
+        try:
+            for query in invalid:
+                with self.subTest(query=query), self.assertRaises(HTTPError) as error:
+                    urlopen(base + '/api/historic?' + query)
+                self.assertEqual(error.exception.code, 400)
+                error.exception.close()
+            for removed in ('/api/prices', '/api/issuance'):
+                with self.subTest(removed=removed), self.assertRaises(HTTPError) as error:
+                    urlopen(base + removed)
+                self.assertEqual(error.exception.code, 404)
+                error.exception.close()
+            # The live seven-day lower bound can age while a request is in transit.
+            with urlopen(base + f'/api/historic?series=ti&tiStart={now-604800}') as response:
+                self.assertEqual(json.load(response)['ti']['rows'], [])
+            rows = [[now - 4000, 1., 1], [now - 100, 2., 2], [now - 10, 3., 3]]
+            server.issuance.merge(rows, live=True)
+            for series in ('ti', 'price,ti'):
+                with urlopen(base + f'/api/historic?series={series}') as response:
+                    self.assertEqual(json.load(response)['ti']['rows'], rows[1:])
+                with urlopen(base + f'/api/historic?series={series}&start={now-200}&end={now-50}') as response:
+                    self.assertEqual(json.load(response)['ti']['rows'], [rows[1]])
+                # Explicit issuance bounds override generic price bounds.
+                with urlopen(base + f'/api/historic?series={series}&start={now-200}&end={now-50}'
+                             f'&tiStart={now-20}&tiEnd={now}') as response:
+                    self.assertEqual(json.load(response)['ti']['rows'], [rows[2]])
+                with urlopen(base + f'/api/historic?series={series}&end={now-50}') as response:
+                    self.assertEqual(json.load(response)['ti']['rows'], [rows[1]])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_historic_issuance_reads_cached_loading_success_and_failure_states(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        now = time.time()
+        route = f'/api/historic?series=ti&tiStart={now-60}'
         try:
             with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
-                with urlopen(base + '/api/issuance') as response:
-                    body = json.load(response)
+                with urlopen(base + route) as response:
+                    body = json.load(response)['ti']
                     self.assertEqual(body['rows'], [])
                     self.assertIn('Loading', body['error'])
                     self.assertEqual(response.headers['Cache-Control'], 'no-store')
                     self.assertEqual(response.headers['X-App-Version'], server.version)
-                rows = ((1700000000.001, 123456.789, 100), (1700000006.001, 123456.789, 101))
+                rows = ((now - 10, 123456.789, 100), (now - 4, 123456.789, 101))
+                server.issuance.merge(rows, live=True)
                 for error in (None, 'Issuance refresh failed: RPC unavailable'):
                     with server.issuance.lock:
-                        server.issuance.rows = rows
+                        self.assertEqual(server.issuance.rows, rows)
                         server.issuance.error = error
-                    with urlopen(base + '/api/issuance') as response:
-                        self.assertEqual(json.load(response),
-                                         {'rows': [list(row) for row in rows], 'error': error})
+                    with urlopen(base + route) as response:
+                        ti = json.load(response)['ti']
+                        self.assertEqual(ti['rows'], [list(row) for row in rows])
+                        self.assertEqual(ti['error'], error)
+                        self.assertTrue(ti['reset'])
+                        self.assertIsInstance(ti['cursor'], str)
                 # Issuance remains available independently of price-history startup.
                 with self.assertRaises(HTTPError) as error:
-                    urlopen(base + '/api/prices')
+                    urlopen(base + '/api/historic?series=price')
                 self.assertEqual(error.exception.code, 503)
                 error.exception.close()
+                for encoding in ('raw', 'ranges-v1', 'stream'):
+                    with urlopen(base + route.replace('series=ti', 'series=price,ti') +
+                                 f'&format={encoding}') as response:
+                        if encoding == 'stream':
+                            metadata, done = [json.loads(line) for line in response]
+                            self.assertEqual(done, {'done': True})
+                        else:
+                            metadata = json.load(response)
+                            self.assertEqual(metadata['samples' if encoding == 'raw' else 'ranges'], [])
+                        self.assertEqual(metadata['ti']['rows'], [list(row) for row in rows])
+                        self.assertIn('RPC unavailable', metadata['ti']['error'])
+                        self.assertIsNone(metadata['fetchedAt'])
+                        self.assertFalse(metadata['historyReady'])
         finally:
             server.shutdown()
             server.server_close()
@@ -68,9 +208,9 @@ class PageTests(unittest.TestCase):
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         try:
-            route = '/api/prices'
+            route = '/api/historic'
             for encoding in ('raw', 'ranges-v1', 'stream'):
-                query = f'?startpoint=10&windowStart={now-604800}&format={encoding}'
+                query = f'?series=price&startpoint=10&windowStart={now-604800}&format={encoding}'
                 with urlopen(base + route + query) as response:
                     self.assertGreaterEqual(float(response.headers['X-History-End']), rows[-1][0])
                     if encoding == 'stream':
@@ -83,13 +223,13 @@ class PageTests(unittest.TestCase):
                                          rows[1:] if encoding == 'raw' else list(page.pack_ranges(rows[1:])))
                     self.assertEqual(metadata['extremes'], {'low': rows[0], 'high': rows[1]})
             # A rounded timestamp start must not cut off a newer block.
-            with urlopen(base + route + f'?startpoint=10&start={now}&end={now+2}&format=raw') as response:
+            with urlopen(base + route + f'?series=price&startpoint=10&start={now}&end={now+2}&format=raw') as response:
                 self.assertEqual(json.load(response)['samples'], rows[1:])
-            with urlopen(base + route + f'?startpoint=11&end={now}&format=raw') as response:
+            with urlopen(base + route + f'?series=price&startpoint=11&end={now}&format=raw') as response:
                 self.assertEqual(json.load(response)['samples'], [])
             for value in ('', '-1', '1.5', 'NaN', '9007199254740992', '10&startpoint=11', '10&afterBlock=10'):
                 with self.assertRaises(HTTPError) as error:
-                    urlopen(base + route + '?startpoint=' + value)
+                    urlopen(base + route + '?series=price&startpoint=' + value)
                 self.assertEqual(error.exception.code, 400)
                 error.exception.close()
             for removed in ('/coingecko', '/coingecko/', '/api/coingecko/prices'):
@@ -142,7 +282,7 @@ class PageTests(unittest.TestCase):
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         try:
-            with urlopen(base + f'/api/prices?start={now-20001}&end={now}&windowStart={now-20001}&windowEnd={now}&format=stream') as response:
+            with urlopen(base + f'/api/historic?series=price&start={now-20001}&end={now}&windowStart={now-20001}&windowEnd={now}&format=stream') as response:
                 self.assertEqual(response.headers['Content-Type'], 'application/x-ndjson')
                 messages = [json.loads(line) for line in response]
             self.assertEqual(messages[0]['encoding'], 'ranges-stream-v1')
@@ -151,7 +291,7 @@ class PageTests(unittest.TestCase):
             self.assertEqual(messages[1]['ranges'], list(page.pack_ranges(rows[:8192])))
             self.assertEqual(messages[2]['ranges'], list(page.pack_ranges(rows[8192:])))
             self.assertEqual(messages[3:], [{'done': True}])
-            with urlopen(base + f'/api/prices?start={now-1}&end={now}&format=stream') as response:
+            with urlopen(base + f'/api/historic?series=price&start={now-1}&end={now}&format=stream') as response:
                 messages = [json.loads(line) for line in response]
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[-1], {'done': True})
@@ -176,7 +316,7 @@ class PageTests(unittest.TestCase):
         server.cache.history_ready = True
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        base = (f'http://127.0.0.1:{server.server_port}/api/prices?'
+        base = (f'http://127.0.0.1:{server.server_port}/api/historic?series=price&'
                 f'start={now-1000}&end={now}&windowStart={now-1000}&windowEnd={now}')
         try:
             for format in ('raw', 'ranges-v1', 'stream'):
@@ -271,19 +411,19 @@ class PageTests(unittest.TestCase):
                 self.assertEqual(response.read(), server.assets['social-preview.png'])
             self.assertIn(b'name="twitter:card" content="summary_large_image"', server.assets['index.html'])
             self.assertIn(b'https://dotusd.info/social-preview.png', server.assets['index.html'])
-            for path, code in [('/api/prices?start=nan', 400), ('/../../.envrc', 404), ('/api/v1/query', 404)]:
+            for path, code in [('/api/historic?series=price&start=nan', 400), ('/../../.envrc', 404), ('/api/v1/query', 404)]:
                 with self.assertRaises(HTTPError) as error:
                     urlopen(base + path)
                 self.assertEqual(error.exception.code, code)
                 error.exception.close()
             with self.assertRaises(HTTPError) as error:
-                urlopen(base + '/api/prices')
+                urlopen(base + '/api/historic?series=price')
             self.assertEqual(error.exception.code, 503)
             self.assertEqual(error.exception.headers['X-App-Version'], server.version)
             error.exception.close()
             now = time.time()
             server.cache.merge([[now - 10, 1.001, 50]], now)
-            with urlopen(base + '/api/prices') as response:
+            with urlopen(base + '/api/historic?series=price') as response:
                 packed = json.load(response)
                 self.assertEqual(packed['encoding'], 'ranges-v1')
                 self.assertEqual(packed['ranges'], [[now - 10, 50, 1.001]])
@@ -292,7 +432,7 @@ class PageTests(unittest.TestCase):
                 self.assertIn(b'export class RangeSeries', response.read())
             # There is no upstream client on the server. Concurrent reads still work.
             def read():
-                with urlopen(base + '/api/prices?format=raw') as response:
+                with urlopen(base + '/api/historic?series=price&format=raw') as response:
                     self.assertEqual(response.headers['X-App-Version'], server.version)
                     return json.load(response)
             with ThreadPoolExecutor(max_workers=3) as pool:

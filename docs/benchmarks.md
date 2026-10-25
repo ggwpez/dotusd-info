@@ -7,7 +7,7 @@ Run the commands below from the repository root.
 ## Concurrent requests and bursts
 
 Run `python3 tools/benchmark_requests.py --fixture /tmp/prices.json --output /tmp/results.json`
-with a saved raw `/api/prices?format=raw` response. The tool starts an isolated
+with a saved raw `/api/historic?series=price&format=raw` response. The tool starts an isolated
 backend process, rebases the fixture timestamps to the present, and runs three
 rounds each at 1, 4, 8, 16, 32, and 64 concurrent clients. Steady clients each
 issue eight requests; burst clients each issue one. The workload mixes 70% live

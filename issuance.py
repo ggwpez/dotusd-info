@@ -1,7 +1,9 @@
 """Finalized dotUSD issuance, with optional persistent seven-day history."""
 import hashlib
+from collections import deque
 from contextlib import closing
 import logging
+import secrets
 import sqlite3
 import threading
 import time
@@ -12,6 +14,7 @@ from hub_quotes import HubChain
 ASSET = 7873
 BLOCKS = 15
 RETENTION = 7 * 86400
+MAX_CHANGES = 4096
 
 
 def asset_key(asset):
@@ -66,6 +69,9 @@ class IssuanceCache:
         self.error = 'Loading recent finalized dotUSD issuance.'
         self.history_path = history_path
         self.restored = history_path is None
+        self.instance = secrets.token_hex(16)
+        self.revision = 0
+        self.changes = deque(maxlen=MAX_CHANGES)
 
     def database(self):
         # Never share a SQLite connection between the live and archive threads.
@@ -90,7 +96,7 @@ class IssuanceCache:
 
     def _merge(self, rows, now):
         if self.history_path is None:
-            self.rows = tuple(rows)
+            self._publish(tuple(tuple(row) for row in rows))
             return
         cutoff = now - RETENTION
         with closing(self.database()) as db:
@@ -100,17 +106,50 @@ class IssuanceCache:
                 if not self.restored:
                     for row in db.execute('SELECT timestamp,supply,number FROM issuance ORDER BY number'):
                         retained.setdefault(row[2], row)
-                incoming = [row for row in rows if row[0] > cutoff]
+                incoming = [tuple(row) for row in rows if row[0] > cutoff]
                 retained.update((row[2], row) for row in incoming)
                 merged = tuple(retained[number] for number in sorted(retained))
                 if any(a[0] > b[0] for a, b in zip(merged, merged[1:])):
                     raise ValueError('Issuance timestamps moved backwards')
                 db.executemany('INSERT OR REPLACE INTO issuance VALUES(?,?,?)',
                                [(row[2], row[0], row[1]) for row in incoming])
-            self.rows = merged
+            self._publish(merged)
             self.restored = True
             if self.rows and self.error and self.error.startswith('Loading'):
                 self.error = None
+
+    def _publish(self, rows):
+        previous = {row[2]: row for row in self.rows}
+        for row in rows:
+            if previous.get(row[2]) != row:
+                self.revision += 1
+                self.changes.append((self.revision, row))
+        self.rows = rows
+
+    def selection(self, start, end, cursor=None):
+        """Return a bounded revision delta, or a full window after cursor loss."""
+        with self.lock:
+            revision = None
+            if isinstance(cursor, str):
+                instance, separator, value = cursor.partition(':')
+                if separator and instance == self.instance and value.isascii() and value.isdigit():
+                    # Cursors are opaque to callers; reject oversized or future revisions.
+                    if len(value) <= 20:
+                        revision = int(value)
+            oldest = self.changes[0][0] - 1 if self.changes else self.revision
+            reset = revision is None or not oldest <= revision <= self.revision
+            if reset:
+                rows = self.rows
+            else:
+                changed = {row[2]: row for version, row in self.changes if version > revision}
+                rows = (changed[number] for number in sorted(changed))
+            cutoff = max(start, time.time() - RETENTION) if self.history_path is not None else start
+            return {
+                'rows': tuple(row for row in rows if cutoff < row[0] <= end),
+                'cursor': f'{self.instance}:{self.revision}',
+                'reset': reset,
+                'error': self.error,
+            }
 
     def snapshot(self):
         with self.lock:

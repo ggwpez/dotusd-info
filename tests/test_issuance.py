@@ -229,3 +229,75 @@ class IssuanceTests(unittest.TestCase):
             self.assertEqual(restarted.snapshot()['rows'], (kept,))
             with closing(restarted.database()) as db:
                 self.assertEqual(db.execute('SELECT number FROM issuance').fetchall(), [(2,)])
+
+    def test_revision_deltas_include_repairs_and_coalesce_corrections(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([(now - 20, 100., 20), (now - 10, 110., 30)], live=True)
+            initial = cache.selection(now - 100, now)
+            self.assertTrue(initial['reset'])
+            self.assertIsNone(initial['error'])
+            cursor = initial['cursor']
+            cache.merge(cache.rows, live=True)
+            unchanged = cache.selection(now - 100, now, cursor)
+            self.assertEqual(unchanged['rows'], ())
+            self.assertEqual(unchanged['cursor'], cursor)
+            self.assertFalse(unchanged['reset'])
+            cache.merge([(now - 50, 80., 10), (now - 20, 101., 20)])
+            cache.merge([(now - 20, 102., 20), (now - 5, 120., 40)], live=True)
+            delta = cache.selection(now - 100, now, cursor)
+            self.assertFalse(delta['reset'])
+            self.assertEqual(delta['rows'], (
+                (now - 50, 80., 10), (now - 20, 102., 20), (now - 5, 120., 40)))
+            self.assertNotEqual(delta['cursor'], cursor)
+            with cache.lock:
+                cache.error = 'Issuance refresh failed: RPC unavailable'
+            failed = cache.selection(now - 100, now, delta['cursor'])
+            self.assertEqual(failed['rows'], ())
+            self.assertEqual(failed['cursor'], delta['cursor'])
+            self.assertIn('RPC unavailable', failed['error'])
+            self.assertEqual(cache.selection(now - 100, now)['rows'], cache.rows)
+
+    def test_revision_windows_exclude_lower_and_include_upper_bound(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([(now - 50, 1., 1), (now - 40, 2., 2),
+                         (now - 30, 3., 3), (now - 20, 4., 4)], live=True)
+            initial = cache.selection(now - 50, now - 30)
+            self.assertEqual(initial['rows'], ((now - 40, 2., 2), (now - 30, 3., 3)))
+            cache.merge([(now - 50, 11., 1), (now - 40, 12., 2),
+                         (now - 30, 13., 3), (now - 20, 14., 4)])
+            delta = cache.selection(now - 50, now - 30, initial['cursor'])
+            self.assertEqual(delta['rows'], ((now - 40, 12., 2), (now - 30, 13., 3)))
+            self.assertFalse(delta['reset'])
+            # Retention clips even a caller's wider selected window.
+            with patch('issuance.time.time', return_value=now + RETENTION - 35):
+                retained = cache.selection(now - 100, now)
+            self.assertEqual(retained['rows'], ((now - 30, 13., 3), (now - 20, 14., 4)))
+
+    def test_bounded_revision_journal_resets_expired_and_restart_cursors(self):
+        now = 1_700_001_000
+        with patch('issuance.MAX_CHANGES', 2):
+            cache = self.persistent_cache()
+        with patch('issuance.time.time', return_value=now):
+            empty = cache.selection(now - 100, now)
+            cache.merge([(now - 30, 1., 1)], live=True)
+            first = cache.selection(now - 100, now)
+            cache.merge([(now - 20, 2., 2)])
+            cache.merge([(now - 10, 3., 3)])
+            self.assertEqual(len(cache.changes), 2)
+            self.assertFalse(cache.selection(now - 100, now, first['cursor'])['reset'])
+            expired = cache.selection(now - 100, now, empty['cursor'])
+            self.assertTrue(expired['reset'])
+            self.assertEqual(expired['rows'], cache.rows)
+            restarted = IssuanceCache(cache.history_path)
+            restarted.restore()
+            for cursor in (None, '', 'malformed', first['cursor'],
+                           f'{restarted.instance}:999999', f'{restarted.instance}:-1'):
+                with self.subTest(cursor=cursor):
+                    reset = restarted.selection(now - 25, now, cursor)
+                    self.assertTrue(reset['reset'])
+                    self.assertEqual(reset['rows'], ((now - 20, 2., 2), (now - 10, 3., 3)))
+            self.assertNotEqual(restarted.selection(now - 100, now)['cursor'], expired['cursor'])

@@ -290,6 +290,26 @@ def encode_response(rows, fetched_at, history_ready, extremes, raw=False, stream
                b',"extremes":' + encode(extremes) + b'}')
 
 
+def historic_response(chunks, ti, streaming):
+    """Attach fresh issuance without caching it with the reusable price chunks."""
+    if ti is None:
+        yield from chunks
+        return
+    encoded = json.dumps(ti, allow_nan=False, separators=(',', ':')).encode()
+    if chunks is None:
+        if streaming:
+            yield b'{"encoding":"ranges-stream-v1","ti":' + encoded + b'}\n'
+            yield b'{"done":true}\n'
+        else:
+            yield b'{"ti":' + encoded + b'}'
+        return
+    chunks = iter(chunks)
+    first = next(chunks)
+    # Both price formats begin with one object; only its first chunk changes.
+    yield b'{"ti":' + encoded + b',' + first[1:]
+    yield from chunks
+
+
 class HistoryCache:
     """One writer fetches history; HTTP readers never access the upstream."""
     def __init__(self):
@@ -573,58 +593,77 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in ('/version', '/api/version'):
             self.respond(200, {'version': self.server.version})
             return
-        if url.path == '/api/issuance':
-            self.respond(200, self.server.issuance.snapshot())
-            return
-        if url.path == '/api/prices':
+        if url.path == '/api/historic':
             try:
-                params = urllib.parse.parse_qs(url.query, max_num_fields=8, keep_blank_values=True)
+                params = urllib.parse.parse_qs(url.query, max_num_fields=12, keep_blank_values=True)
+                selected = params.get('series', [])
+                if len(selected) != 1 or selected[0] not in ('price', 'ti', 'price,ti', 'ti,price'):
+                    raise ValueError('Choose series=price, ti, or price,ti.')
+                series = selected[0].split(',')
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
-                live = 'end' not in params
-                cache = self.server.cache
-                with cache.lock:
-                    latest = cache.rows[-1][0] if cache.rows else 0
-                time_params = {**params, 'end': params.get('end', [max(time.time(), latest)])}
-                if live and 'start' in params:
-                    time_params['start'] = [max(float(params['start'][0]), float(time_params['end'][0]) - HISTORY_SECONDS)]
-                if 'startpoint' in params:
-                    # A block cursor replaces the timestamp lower bound. Keep
-                    # time bounds for the viewport, retention and upper limit.
-                    time_params['start'] = [float(time_params['end'][0]) - HISTORY_SECONDS]
-                start, end = time_window(time_params)
-                after_block = None
-                cursor_name = 'startpoint' if 'startpoint' in params else 'afterBlock'
-                if cursor_name in params:
-                    value = params[cursor_name]
-                    if len(value) != 1 or not value[0].isascii() or not value[0].isdigit():
-                        raise ValueError('Invalid block cursor')
-                    after_block = int(value[0])
-                    if after_block > 9007199254740991:
-                        raise ValueError('Invalid block cursor')
-                    if 'startpoint' in params and 'afterBlock' in params:
-                        raise ValueError('Choose one block cursor')
-                window = None
-                if 'windowStart' in params or 'windowEnd' in params:
-                    if 'windowStart' not in params or ('windowEnd' not in params and not live):
-                        raise ValueError('Both window bounds are required')
-                    window_start = float(params['windowStart'][0])
-                    if live:
-                        window_start = max(window_start, end - HISTORY_SECONDS)
-                    window = time_window({'start': [window_start], 'end': params.get('windowEnd', [end])})
-                    if (not window[0] < end <= window[1] or
-                            ('startpoint' not in params and start < window[0])):
-                        raise ValueError('Chunk must lie within the window')
-            except (ValueError, OverflowError):
-                self.respond(400, {'error': 'Invalid time window (maximum seven days).'})
+                ti = None
+                if 'ti' in series:
+                    if any(len(params.get(name, [])) > 1 for name in ('tiStart', 'tiEnd', 'tiCursor')):
+                        raise ValueError('Choose one issuance window and cursor.')
+                    ti_end = float(params.get('tiEnd', params.get('end', [time.time()]))[0])
+                    ti_start = float(params.get('tiStart', params.get('start', [ti_end - 3600]))[0])
+                    if 'tiEnd' not in params and 'end' not in params:
+                        ti_start = max(ti_start, ti_end - HISTORY_SECONDS)
+                    ti_start, ti_end = time_window({'start': [ti_start], 'end': [ti_end]})
+                    ti = self.server.issuance.selection(
+                        ti_start, ti_end, params.get('tiCursor', [None])[0])
+                end = ti_end if ti is not None else None
+                if 'price' in series:
+                    live = 'end' not in params
+                    cache = self.server.cache
+                    with cache.lock:
+                        latest = cache.rows[-1][0] if cache.rows else 0
+                    time_params = {**params, 'end': params.get('end', [max(time.time(), latest)])}
+                    if live and 'start' in params:
+                        time_params['start'] = [max(float(params['start'][0]), float(time_params['end'][0]) - HISTORY_SECONDS)]
+                    if 'startpoint' in params:
+                        # A block cursor replaces the timestamp lower bound. Keep
+                        # time bounds for the viewport, retention and upper limit.
+                        time_params['start'] = [float(time_params['end'][0]) - HISTORY_SECONDS]
+                    start, end = time_window(time_params)
+                    after_block = None
+                    cursor_name = 'startpoint' if 'startpoint' in params else 'afterBlock'
+                    if cursor_name in params:
+                        value = params[cursor_name]
+                        if len(value) != 1 or not value[0].isascii() or not value[0].isdigit():
+                            raise ValueError('Invalid block cursor')
+                        after_block = int(value[0])
+                        if after_block > 9007199254740991:
+                            raise ValueError('Invalid block cursor')
+                        if 'startpoint' in params and 'afterBlock' in params:
+                            raise ValueError('Choose one block cursor')
+                    window = None
+                    if 'windowStart' in params or 'windowEnd' in params:
+                        if 'windowStart' not in params or ('windowEnd' not in params and not live):
+                            raise ValueError('Both window bounds are required')
+                        window_start = float(params['windowStart'][0])
+                        if live:
+                            window_start = max(window_start, end - HISTORY_SECONDS)
+                        window = time_window({'start': [window_start], 'end': params.get('windowEnd', [end])})
+                        if (not window[0] < end <= window[1] or
+                                ('startpoint' not in params and start < window[0])):
+                            raise ValueError('Chunk must lie within the window')
+            except (ValueError, OverflowError) as error:
+                self.respond(400, {'error': str(error)})
                 return
-            try:
-                # Do not clip a block cursor by a floating-point start time.
-                selection_start = time.time() - HISTORY_SECONDS if 'startpoint' in params else start
-                chunks = cache.response(selection_start, end, window, after_block, raw, streaming)
-            except RuntimeError:
-                self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
-                return
+            chunks = None
+            if 'price' in series:
+                try:
+                    # Do not clip a block cursor by a floating-point start time.
+                    selection_start = time.time() - HISTORY_SECONDS if 'startpoint' in params else start
+                    chunks = cache.response(selection_start, end, window, after_block, raw, streaming)
+                except RuntimeError:
+                    if ti is None:
+                        self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
+                        return
+                    chunks = encode_response((), None, False, None, raw=raw, streaming=streaming)
+            chunks = historic_response(chunks, ti, streaming)
             self.send_headers(200, 'application/x-ndjson' if streaming else 'application/json', history_end=end)
             try:
                 for chunk in chunks:

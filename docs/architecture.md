@@ -7,7 +7,7 @@
 The server's existing `arb-peg.service` collects finalized pool prices from the
 arbitrage Asset Hub RPC at `http://127.0.0.1:9944` and writes history into
 `arb-prometheus.service` at `127.0.0.1:9090`. This app reads that history through
-a bounded `/api/prices` endpoint backed entirely by an in-process cache.
+a bounded `/api/historic?series=price` endpoint backed entirely by an in-process cache.
 One background worker fetches recent prices at startup, then refreshes every six
 seconds with a five-minute overlap before the last received sample (or the last
 query boundary, if earlier), so collector outages do not skip delayed ingestion.
@@ -53,13 +53,24 @@ remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
 ## Total issuance
 
-`GET /api/issuance` returns `{"rows": [[timestamp_seconds, issuance_dotusd, block_number], ...], "error": null}`.
-Rows are ordered by finalized block number, with nondecreasing timestamps. With
-`--gap-repair-history PATH`, they expose all retained issuance samples from the
-seven-day history, including restored, live and backfilled samples; missing
-blocks are omitted, so this is not a promise of complete coverage. Without that
-flag, they cover at most the latest 15 finalized Polkadot Hub blocks. This is
-total issued dotUSD (asset ID 7873), not circulating supply or a pool reserve.
+`GET /api/historic` selects `series=price`, `series=ti`, or `series=price,ti`.
+TI is returned under `ti` as `{rows, cursor, reset, error}`; each row is
+`[timestamp_seconds, issuance_dotusd, block_number]`. Generic `start`/`end`
+select the window (default: last hour); `tiStart`/`tiEnd` override the TI bounds
+when price polls use a block cursor. Omitting `tiEnd` in live chart requests
+allows the server to advance the window.
+
+The opaque `tiCursor` returns only changed samples, including older backfill
+and corrections, rather than downloading the full history on every poll.
+A bounded 4,096-change journal tracks revisions without per-client server state.
+Missing, expired, or previous-server cursors return `reset: true` with a fresh
+selected-window snapshot. Unchanged polls return no TI rows. Rows are ordered
+by finalized block number, with nondecreasing timestamps.
+With `--gap-repair-history PATH`, the retained seven-day history includes
+restored, live and backfilled samples; missing blocks are omitted, so this is
+not a promise of complete coverage. Without that flag, the server retains at
+most the latest 15 finalized Polkadot Hub blocks. This is total issued dotUSD
+(asset ID 7873), not circulating supply or a pool reserve.
 Timestamps come from `Timestamp.Now` in each block, unlike the
 estimated clock used by pool-price history. The Hub runtime's timestamp
 `MinimumPeriod` is zero, so consecutive blocks can legitimately share a timestamp;
@@ -78,7 +89,7 @@ with an existing Prometheus source is:
 ```
 
 Open <http://127.0.0.1:3001> and enable issuance in Settings. The cached endpoint
-is also readable directly at <http://127.0.0.1:3001/api/issuance>. Install
+is also readable directly at <http://127.0.0.1:3001/api/historic?series=ti>. Install
 `requirements.txt` first; the storage-key hash uses the existing `xxhash`
 dependency. `--hub-rpc URL` overrides the RPC for both issuance and optional
 price/issuance history repair.
@@ -99,10 +110,13 @@ price block bounds, even when no price gaps remain; it does not enlarge the live
 worker's 15-block fetch window.
 
 Requests read only cached rows and never trigger RPC work. Without restored
-history, startup returns an empty `rows` array and a loading `error` string with
-HTTP 200. On live RPC or decoding failure, retained rows remain available with a
-non-null `error`; a successful live refresh clears it. No synthetic values, zero
-replacements for missing state, or extrapolated timestamps are generated.
+history, TI starts with an empty `ti.rows` array and a loading `ti.error`.
+TI-only and combined requests return HTTP 200 even while price history warms;
+combined responses then include empty prices with `historyReady: false`.
+Price-only requests return HTTP 503 until prices are ready. On live RPC or
+decoding failure, retained TI remains available with a non-null `ti.error`;
+a successful live refresh clears it. No synthetic values, zero replacements
+for missing state, or extrapolated timestamps are generated.
 `Cache-Control: no-store` and
 `X-App-Version` follow the existing API conventions. Shutdown signals and joins
 the issuance worker alongside the price and repair workers.
@@ -163,6 +177,15 @@ views, including zoomed and shared fixed ranges. Rating hover/focus previews are
 also suppressed there. These metrics resume in live view; range low/high remains
 available in either view.
 
+The chart has one history subscription: one six-second polling loop and one
+abort controller for `/api/historic`. The TI setting selects `series=price`
+or `series=price,ti`; it does not start another fetch loop. Navigation and
+setting changes cancel the old request before replacing it. Hidden pages do
+not poll. With TI enabled, fixed historical views also poll for repair deltas.
+TI cursors advance only after a complete response; stale or interrupted
+responses cannot overwrite the current selection. TI deltas merge by block,
+and expanding the selected window requests a fresh TI snapshot.
+
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a
 `ranges-stream-v1` metadata line (including full-window extrema), independently
@@ -185,9 +208,10 @@ Initial history loads use timestamp ranges until a block cursor is available.
 Empty responses retain the cursor, and reconnects catch up without a fixed overlap.
 An in-memory browser cache holds at most seven days / 350,000 samples, retaining completed historical coverage
 until those samples expire or are evicted. Incomplete history continues retrying;
-both charts retry the displayed history once per minute only while it contains known gaps
-(missing pool block numbers or quote timestamp gaps over 900 seconds). Complete history
-does not periodically reload; live polls continue fetching new samples.
+price history retries the displayed window once per minute only while it contains
+known missing pool block numbers. Complete price history does not periodically
+reload; live polls continue fetching new samples. TI repair deltas share those
+requests, without requiring a full-history reload.
 Switching views reuses already fetched data. No samples are downsampled.
 Live navigation reuses a completed cache endpoint only when it is within the
 source's fetch-freshness threshold. Older or absent coverage triggers an immediate
@@ -198,9 +222,9 @@ Hover redraws are coalesced per animation frame and reuse canvas buffers.
 Caddy flushes upstream responses immediately.
 Caddy compresses even streamed JSON responses with unknown lengths. Static files
 use ETags for cache revalidation. The server embeds CSS and both JavaScript modules
-in the HTML at startup, so initial loading needs only the document and price stream.
+in the HTML at startup, so initial loading needs only the document and history stream.
 CSP hashes authorize exactly those embedded scripts and styles. Source files remain
-separate for development. The price request also checks the release version,
+separate for development. The history request also checks the release version,
 avoiding a separate startup version request.
 
 `VERSION` records a release such as `1.0.0+abcdef123456`. Before running the suite,
@@ -227,7 +251,7 @@ this feature was deployed need one manual reload to enable automatic updates.
 
 ### Packed history and rendering
 
-`/api/prices` returns `encoding: "ranges-v1"` and a `ranges` array. The first
+`/api/historic?series=price` returns `encoding: "ranges-v1"` and a `ranges` array. The first
 record is `[timestamp, block, price]`. Subsequent records are
 `[count, secondsPerStep, blocksPerStep, optionalNewPrice]`, with omitted prices
 reused from the previous record. A `[0, timestamp, block, price]` record resets

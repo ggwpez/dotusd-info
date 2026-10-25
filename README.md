@@ -61,7 +61,7 @@ The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environme
 In **Settings**, enable **Total dotUSD issuance** to show a blue series on a
 separate right-hand, linear axis in dotUSD units. Values use three significant
 digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.
-An independent live poll reads the latest 15 finalized blocks from the public
+An independent server-side live poll reads the latest 15 finalized blocks from the public
 Asset Hub RPC and refreshes every six seconds after each fetch. With
 `--gap-repair-history PATH` (enabled in production), successful live samples and
 historical issuance share the price-repair SQLite database, retain seven days,
@@ -77,6 +77,11 @@ With issuance enabled, hovering a price point also shows TI for the same block
 (for example, `TI: 1.31M dotUSD`). Missing samples show `TI: unavailable`, never
 a nearby block's value. There is no separate issuance value label outside the
 graph. Failed refreshes retain the last successful data.
+The browser uses one history subscription for both series:
+`/api/historic?series=price` or `?series=price,ti`. It requests the selected
+window, then merges incremental TI updates, including historical repairs,
+through the same six-second refresh as prices. Enabling TI does not start
+a second request loop. The API also supports `?series=ti` for TI-only clients.
 `--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
 command above even without local Prometheus; only price history remains unavailable.
 

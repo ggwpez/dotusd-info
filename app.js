@@ -1,7 +1,7 @@
-import {RangeSeries, BrowserHistory, pixelRows, readPriceStream} from './ranges.js?v=__APP_VERSION__';
+import {RangeSeries, BrowserHistory, pixelRows, readPriceStream, mergeIssuanceRows} from './ranges.js?v=__APP_VERSION__';
 const $ = id => document.getElementById(id);
 const source = {
-  endpoint: '/api/prices', currency: 'USDT', pollSeconds: 6,
+  endpoint: '/api/historic', currency: 'USDT', pollSeconds: 6,
   staleFetch: 30, stalePrice: 180, sampleLabel: 'finalized',
   empty: 'No price samples in this window',
 };
@@ -70,26 +70,10 @@ try {
 } catch {}
 let showIssuance = false;
 try { showIssuance = localStorage.getItem('dotusd-issuance-axis') === 'true'; } catch {}
-let issuanceRows = [], issuanceLoading = false;
+let issuanceRows = [], issuanceCursor = null, issuanceCoverage = null;
 const issuanceColor = '#82b7ff';
 const issuanceFormat = new Intl.NumberFormat('en-US', {notation: 'compact', maximumSignificantDigits: 3});
 const issuanceNumber = value => issuanceFormat.format(value);
-async function refreshIssuance() {
-  if (!showIssuance || issuanceLoading || reloading) return;
-  issuanceLoading = true;
-  try {
-    const response = await fetch('/api/issuance');
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    issuanceRows = data.rows;
-  } catch {
-    // Keep the last successful series until the next refresh.
-  } finally {
-    issuanceLoading = false;
-    chartDirty = true;
-    scheduleDraw();
-  }
-}
 const preferredScale = displayScale, preferredAxis = axisScale;
 displayScale = initialView.scale ?? preferredScale;
 axisScale = initialView.axis ?? preferredAxis;
@@ -242,7 +226,7 @@ function hasHistoryGaps(rows) {
   return false;
 }
 async function refresh(force = false, preferCache = false) {
-  if (reloading) return;
+  if (reloading || (loading && !force && !preferCache)) return;
   controller?.abort();
   controller = new AbortController();
   const ticket = ++generation;
@@ -266,6 +250,12 @@ async function refresh(force = false, preferCache = false) {
   state.extremes = null;
   const missing = historyCache.missing(start, end);
   const live = state.live && !state.zoom;
+  const includeIssuance = showIssuance;
+  const tiStart = start, tiEnd = live ? null : end;
+  if (includeIssuance && (!issuanceCoverage || start < issuanceCoverage.start ||
+      (end > issuanceCoverage.end && !(live && issuanceCoverage.live)))) {
+    issuanceCursor = null;
+  }
   const cachedRows = historyCache.rows.window(start, end);
   const last = cachedRows.at(-1);
   // Advance only from a completed history snapshot; warming/backfills need the full window.
@@ -289,15 +279,18 @@ async function refresh(force = false, preferCache = false) {
   publish(historyCache.rows);
   let timeout;
   try {
-    if (preferCache && !force && !missing.length) return;
-    if (!force && !live && !missing.length && !refreshHistory) return;
+    if (preferCache && !force && !missing.length && (!includeIssuance || issuanceCursor !== null)) return;
+    if (!force && !live && !missing.length && !refreshHistory && !includeIssuance) return;
     timeout = setTimeout(() => requestController.abort(), 15000);
     const lowerBound = blockCursor === null ? `start=${start}` : `startpoint=${blockCursor}`;
     const upperBound = live ? '' : `&end=${end}`;
     // History streams need full-window extrema before all chunks arrive.
     // Incremental polls already have that history locally.
     const statisticsWindow = incremental ? '' : `&windowStart=${start}${live ? '' : `&windowEnd=${end}`}`;
-    const response = await fetch(`${source.endpoint}?${lowerBound}${upperBound}${statisticsWindow}&format=stream`, {signal: requestController.signal});
+    const selection = includeIssuance ? 'price,ti' : 'price';
+    const issuanceWindow = includeIssuance ? `&tiStart=${tiStart}${tiEnd === null ? '' : `&tiEnd=${tiEnd}`}` +
+      (issuanceCursor === null ? '' : `&tiCursor=${encodeURIComponent(issuanceCursor)}`) : '';
+    const response = await fetch(`${source.endpoint}?series=${selection}&${lowerBound}${upperBound}${statisticsWindow}${issuanceWindow}&format=stream`, {signal: requestController.signal});
     if (ticket !== generation) return;
     if (!acceptVersion(response.headers.get('X-App-Version'))) return;
     if (!response.ok) {
@@ -312,13 +305,14 @@ async function refresh(force = false, preferCache = false) {
       state.end = end;
     }
     const runs = [];
-    let lastDraw = -Infinity;
+    let lastDraw = -Infinity, pendingIssuance;
     for await (const message of readPriceStream(response)) {
       if (ticket !== generation) return;
       if (message.encoding) {
         state.extremes = message.extremes;
         state.serverWarming = message.historyReady === false;
         state.fetchedAt = message.fetchedAt;
+        if (includeIssuance) pendingIssuance = message.ti;
       } else if (message.ranges) {
         const batch = RangeSeries.fromWire(message.ranges);
         runs.push(...(blockCursor === null ? batch.window(left, end) : batch).runs);
@@ -333,6 +327,14 @@ async function refresh(force = false, preferCache = false) {
     if (ticket !== generation) return;
     if (!incremental) nextHistoryRefresh = Date.now() + 60000;
     historyCache.merge(new RangeSeries(runs), left, end, state.fetchedAt, !state.serverWarming);
+    if (Array.isArray(pendingIssuance?.rows) && typeof pendingIssuance.cursor === 'string' &&
+        typeof pendingIssuance.reset === 'boolean') {
+      // TI error reports live RPC status; retained samples and repairs remain usable.
+      issuanceRows = mergeIssuanceRows(issuanceRows, pendingIssuance, Date.now()/1000);
+      issuanceCursor = pendingIssuance.cursor;
+      // A narrowed subscription no longer observes repairs outside its window.
+      issuanceCoverage = {start: tiStart, end: tiEnd ?? end, live};
+    }
     state.historyLoading = historyCache.missing(start, end).length > 0;
     publish(historyCache.rows);
   } catch (error) {
@@ -342,6 +344,7 @@ async function refresh(force = false, preferCache = false) {
     clearTimeout(timeout);
     if (ticket === generation) {
       loading = false;
+      controller = null;
       state.liveLoading = false;
       state.historyLoading = historyCache.missing(start, end).length > 0;
       // A complete response can contain live prices while older history is still
@@ -624,8 +627,12 @@ function draw() {
     const {extent, ticks} = chartScale(peak);
     const left = displayScale === 'dollars' ? 82 : 65;
     ctx.font = '10px ui-monospace, monospace';
-    const issuanceWidth = showIssuance ? Math.max(90, ...issuanceRows.map(row =>
-      ctx.measureText(issuanceNumber(row[1] * 1.00001)).width + 25)) : 20;
+    let issuanceWidth = showIssuance ? 90 : 20;
+    if (showIssuance) {
+      for (const row of issuanceRows) {
+        issuanceWidth = Math.max(issuanceWidth, ctx.measureText(issuanceNumber(row[1] * 1.00001)).width + 25);
+      }
+    }
     const right = rect.width - issuanceWidth, top = 18, bottom = rect.height - 35;
     const x = time => left + (time - state.start) / (state.end - state.start || 1) * (right - left);
     const y = value => top + axisPosition(value, extent) * (bottom - top);
@@ -811,9 +818,13 @@ $('axis-scale').addEventListener('change', event => {
 $('issuance-axis').checked = showIssuance;
 $('issuance-axis').addEventListener('change', event => {
   showIssuance = event.target.checked;
+  if (showIssuance) {
+    issuanceCursor = null;
+    issuanceCoverage = null;
+  }
   try { localStorage.setItem('dotusd-issuance-axis', String(showIssuance)); } catch {}
   applyScale();
-  refreshIssuance();
+  refresh(true);
 });
 const settings = document.querySelector('.settings');
 document.addEventListener('click', event => {
@@ -835,12 +846,11 @@ document.querySelectorAll('[data-rating]').forEach(segment => {
 });
 new ResizeObserver(draw).observe($('plot'));
 function needsRefresh() {
-  return (state.live && !state.zoom) || state.historyLoading ||
+  return showIssuance || (state.live && !state.zoom) || state.historyLoading ||
     (Date.now() >= nextHistoryRefresh && hasHistoryGaps(state.rows));
 }
 setInterval(() => {
   if (needsRefresh() && !document.hidden && !loading) refresh();
-  if (!document.hidden) refreshIssuance();
 }, source.pollSeconds * 1000);
 // Age the last received timestamps independently of network requests or chart redraws.
 setInterval(updateFreshness, 1000);
@@ -854,7 +864,6 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && needsRefresh()) refresh();
 });
 if (acceptVersion(document.querySelector('meta[name="app-version"]')?.content)) {
-  // Every price response checks the version, including when live updates resume.
+  // Every historic response checks the version, including when updates resume.
   refresh();
-  refreshIssuance();
 }
