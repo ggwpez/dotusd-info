@@ -106,7 +106,7 @@ class GapRepairTests(unittest.TestCase):
                 worker.stop.set()
         with patch.object(worker.stop, 'wait', side_effect=wait), patch.object(gap_repair.logging, 'exception'):
             worker.run()
-        self.assertEqual(waits, [60, 120, 240, 60])
+        self.assertEqual(waits, [6, 120, 240, 6])
 
     def enable_issuance(self):
         self.worker.issuance = IssuanceCache(self.worker.path)

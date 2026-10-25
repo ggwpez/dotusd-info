@@ -11,7 +11,7 @@ from issuance import RETENTION, read_issuance
 
 RPC = 'https://polkadot-asset-hub-rpc.polkadot.io'
 BATCH = 8
-PAUSE = 60
+PAUSE = 6
 
 
 class GapRepair:
@@ -176,7 +176,8 @@ class GapRepair:
                     logging.exception('Archive gap repair paused; will retry')
                 with self.cache.lock:
                     ready = self.cache.history_ready
-                self.stop.wait(min(900, PAUSE * 2 ** failures) if ready or failures else 5)
+                delay = min(900, 60 * 2 ** failures) if failures else PAUSE
+                self.stop.wait(delay if ready or failures else 5)
         finally:
             if db is not None:
                 db.close()

@@ -263,7 +263,7 @@ Each pass visits at most eight archive blocks shared between price repair and
 issuance backfill, rather than granting each series its own budget. Issuance-only
 work fills recent-first; price gaps retain a share of the batch when both need work.
 All RPC requests are sequential and spaced at least 500 ms apart, followed by a
-60-second pause between passes. Failures back off from two minutes up to fifteen
+six-second pause between successful passes. Failures back off from two minutes up to fifteen
 minutes. The worker verifies the Hub genesis and finalized boundaries.
 It uses the shared pool reserve decoder and issuance storage decoder; missing
 on-chain state is not replaced with synthetic values. The independent live
