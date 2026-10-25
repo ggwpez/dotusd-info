@@ -140,8 +140,9 @@ for missing state, or extrapolated timestamps are generated.
 `X-App-Version` follow the existing API conventions. Shutdown signals and joins
 the issuance worker alongside the price and repair workers.
 
-The chart uses an independent linear right axis. It connects only consecutive
-issuance blocks and does not interpolate across missing blocks. Both series use
+The chart uses an independent linear right axis. It connects issuance samples
+up to 1,800 blocks apart, showing the coarse backfill before dense filling finishes.
+Larger gaps stay disconnected; interpolation does not create API or tooltip samples. Both series use
 the normal range buttons and drag-to-zoom controls. With issuance enabled, the
 price tooltip binary-searches issuance by block number, not estimated price
 timestamp. It shows the matching supply in compact dotUSD units, or
@@ -322,8 +323,11 @@ through the newest finalized price block without that grace period. Timestamp pa
 block numbers are not price gaps. It does not extend the live price tip.
 
 Each pass visits at most eight archive blocks shared between price repair and
-issuance backfill, rather than granting each series its own budget. Issuance-only
-work fills recent-first; price gaps retain a share of the batch when both need work.
+issuance backfill, rather than granting each series its own budget. Issuance first
+fills missing block numbers divisible by 1,800 across the retained price range,
+newest-first, then fills all remaining blocks newest-first. The fixed grid remains
+stable as the live tip advances and after restart; saved samples are skipped.
+Price gaps retain a share of the batch when both need work.
 All RPC requests are sequential and spaced at least 100 ms apart, followed by a
 one-second pause between successful passes. Failures back off from two minutes up to fifteen
 minutes. The worker verifies the Hub genesis and finalized boundaries.

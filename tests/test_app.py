@@ -578,7 +578,7 @@ class AppTests(unittest.TestCase):
         const bounds = {right: 700, top: 20, bottom: 300, x: time => time / 1000};
         drawIssuance(bounds);
         require(points === 0, 'historical issuance has no individual sample markers');
-        require(connections === 0, 'sparse history never draws across missing blocks');
+        require(connections === 299999, 'densifying coarse history remains connected');
         issuanceRows = Array.from({length: 15}, (_, i) => [100 + i * 2, 1000000, i]);
         state.start = 0; state.end = 200;
         points = connections = 0;

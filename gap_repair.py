@@ -1,5 +1,5 @@
 """Persistent pool-gap and total-issuance recovery from Parity archive."""
-from itertools import islice
+from itertools import chain, islice
 import logging
 import sqlite3
 import threading
@@ -12,6 +12,7 @@ from issuance import RETENTION, read_issuance
 RPC = 'https://polkadot-asset-hub-rpc.polkadot.io'
 BATCH = 8
 PAUSE = 1
+ISSUANCE_STRIDE = 1800
 
 
 class GapRepair:
@@ -77,14 +78,17 @@ class GapRepair:
                     upper = number if upper is None else max(upper, number)
         missing = []
         if lower is not None:
-            missing = list(islice((n for n in range(upper, lower - 1, -1) if n not in known), BATCH))
+            # Fixed block multiples keep the coarse grid stable as the live tip
+            # advances and across restarts. Finish that grid before dense filling.
+            coarse = range(upper - upper % ISSUANCE_STRIDE, lower - 1, -ISSUANCE_STRIDE)
+            dense = (n for n in range(upper, lower - 1, -1) if n % ISSUANCE_STRIDE)
+            missing = list(islice((n for n in chain(coarse, dense) if n not in known),
+                                  BATCH + BATCH // 2))
         # A TI backlog must not starve price repair, or vice versa. Shared blocks
         # occupy one slot even though both independent decoders read their state.
         if missing:
             price_numbers = price_numbers[:BATCH // 2]
-            missing = list(islice((n for n in range(upper, lower - 1, -1)
-                                  if n not in known and n not in price_numbers),
-                                 BATCH - len(price_numbers)))
+            missing = [n for n in missing if n not in price_numbers][:BATCH - len(price_numbers)]
         if not price_numbers and not missing:
             return 0
         boundary = max(([gap[1][2]] if price_numbers else []) + missing)

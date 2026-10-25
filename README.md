@@ -13,7 +13,9 @@ do not include trading fees or slippage. Timestamps are estimated, and missing
 blocks appear as gaps in the chart. Production gradually repairs internal price
 gaps and backfills total issuance from the Parity archive: both share a limit of
 eight archive blocks per pass, with a one-second pause between passes. Missing
-issuance is filled recent-first, even where price history is already complete.
+issuance first fills a fixed 1,800-block grid, newest-first, for a coarse graph
+across the retained price history. It then fills remaining blocks newest-first,
+even where price history is already complete. Saved samples are reused on restart.
 Open charts pick up repairs automatically.
 
 The retired CoinGecko comparison implementation is preserved on the
@@ -78,8 +80,9 @@ come from the published archive and saved repairs, not an on-demand Prometheus
 query. Missing history remains missing. This does not extend the chart's controls.
 
 Issuance uses actual chain timestamps and renders as a thicker, solid blue line
-without sample dots;
-missing blocks stay disconnected, so isolated samples are not drawn.
+without sample dots. Samples up to 1,800 blocks apart are connected to show the
+coarse history; larger gaps stay disconnected. Lines between samples are visual
+interpolation, not additional measured values.
 Use the normal range buttons and drag-to-zoom controls for both series.
 With issuance enabled, hovering a price point also shows TI for the same block
 (for example, `TI: 1.31M dotUSD`). Missing samples show `TI: unavailable`, never

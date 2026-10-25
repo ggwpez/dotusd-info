@@ -206,7 +206,7 @@ function checkApp() {
   showIssuance = true;
   assert(issuanceNumber(1760000000) === '1.76B' && issuanceNumber(1307938.731358) === '1.31M',
     'issuance uses three significant digits with compact suffixes');
-  issuanceRows = [[110, 1000000, 1], [120, 1000000, 2], [180, 1000000, 5]];
+  issuanceRows = [[110, 1000000, 1], [120, 1000000, 1801], [180, 1000000, 3602]];
   state.start = 100;
   state.end = 200;
   chartDirty = true;
@@ -217,7 +217,7 @@ function checkApp() {
   const supplyPath = drawing.slice(blueStart).filter(call => ['moveTo', 'lineTo'].includes(call[1]));
   assert(supplyPath.length === 3 && supplyPath[0][1] === 'moveTo' &&
     supplyPath[1][1] === 'lineTo' && supplyPath[2][1] === 'moveTo',
-    'issuance connects consecutive blocks but not gaps');
+    'issuance connects 1800-block samples but not wider gaps');
   assert(supplyPath.every(call => Number.isFinite(call[3]) && call[3] === supplyPath[0][3]),
     'constant issuance has a finite horizontal line');
   state.start = 300;

@@ -152,6 +152,27 @@ class GapRepairTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM issuance').fetchone()[0], 21)
         self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 0)
 
+    def test_coarse_grid_precedes_dense_fill_and_survives_restart_and_tip_growth(self):
+        issuance = self.enable_issuance()
+        upper = 18005
+        self.chain.finalized.return_value = upper + 1
+        def sample(rpc, number, **kwargs):
+            return self.now - (upper - number) * 2 - 200, 1_000_000 + number, number
+        self.cache.merge([(sample(None, n)[0], 1., n) for n in range(100, upper + 1)],
+                         self.now, replace=True)
+        issuance.merge([sample(None, 14400)])
+        with patch.object(gap_repair, 'read_issuance', side_effect=sample) as read:
+            self.assertEqual(self.worker.poll(self.db), 8)
+            self.assertEqual([call.args[1] for call in read.call_args_list],
+                             [18000, 16200, 12600, 10800, 9000, 7200, 5400, 3600])
+        self.worker.issuance = IssuanceCache(self.worker.path)
+        self.worker.issuance.restore()
+        self.cache.merge([(sample(None, upper + 1)[0], 1., upper + 1)], self.now)
+        with patch.object(gap_repair, 'read_issuance', side_effect=sample) as read:
+            self.assertEqual(self.worker.poll(self.db), 8)
+            self.assertEqual([call.args[1] for call in read.call_args_list],
+                             [1800, 18006, 18005, 18004, 18003, 18002, 18001, 17999])
+
     def test_shared_batch_reserves_price_work_and_reuses_pinned_blocks(self):
         issuance = self.enable_issuance()
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample) as price_read, \

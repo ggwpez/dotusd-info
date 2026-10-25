@@ -527,7 +527,8 @@ function drawIssuance({right, top, bottom, x}) {
   ctx.beginPath();
   let previous;
   for (const row of visible) {
-    if (!previous || row[2] !== previous[2] + 1) ctx.moveTo(x(row[0]), y(row[1]));
+    // Show the coarse backfill, but do not bridge an unfilled coarse interval.
+    if (!previous || row[2] <= previous[2] || row[2] - previous[2] > 1800) ctx.moveTo(x(row[0]), y(row[1]));
     else ctx.lineTo(x(row[0]), y(row[1]));
     previous = row;
   }
