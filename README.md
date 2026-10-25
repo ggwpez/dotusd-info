@@ -68,6 +68,13 @@ Issuance loads from the public Asset Hub RPC even if Prometheus is unavailable.
 Additional server flags are forwarded, for example `just preview --port 5138`.
 The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environment.
 
+In **Settings**, enable **Use browser fullscreen** to hide browser chrome when
+pressing **Fullscreen** or double-clicking the chart. Use **Exit fullscreen**,
+double-click again, or press Escape to restore the page. The preference is saved
+locally and defaults to off, preserving the in-page expanded chart. Browsers
+without Fullscreen API support disable this setting and retain in-page expansion.
+A rejected fullscreen request displays an error without changing the chart mode.
+
 In **Settings**, enable **Total dotUSD issuance** to show TI in blue and Treasury
 holdings in purple on a shared right-hand, linear axis in dotUSD units. Values
 use three significant digits with compact suffixes (for example, `1.31M` or `1.76B`). The setting is saved locally.

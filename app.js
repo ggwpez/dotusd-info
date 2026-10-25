@@ -775,6 +775,18 @@ function reset() {
 }
 const chartPanel = $('chart-panel');
 let chartFullscreen = false;
+let browserFullscreen = false, fullscreenPending = false;
+try { browserFullscreen = localStorage.getItem('dotusd-browser-fullscreen') === 'true'; } catch {}
+const browserFullscreenSupported = !!(document.fullscreenEnabled && chartPanel.requestFullscreen);
+$('browser-fullscreen').checked = browserFullscreen;
+$('browser-fullscreen').disabled = !browserFullscreenSupported;
+if (!browserFullscreenSupported) {
+  $('browser-fullscreen-help').textContent = 'Browser fullscreen is unavailable here. Fullscreen still expands the chart within the page.';
+}
+$('browser-fullscreen').addEventListener('change', event => {
+  browserFullscreen = event.target.checked;
+  try { localStorage.setItem('dotusd-browser-fullscreen', String(browserFullscreen)); } catch {}
+});
 function updateFullscreen() {
   const active = chartFullscreen;
   chartPanel.classList.toggle('is-fullscreen', active);
@@ -786,14 +798,36 @@ function updateFullscreen() {
   chartDirty = true;
   requestAnimationFrame(draw);
 }
-function toggleFullscreen() {
-  chartFullscreen = !chartFullscreen;
-  updateFullscreen();
+async function toggleFullscreen() {
+  if (fullscreenPending) return;
+  fullscreenPending = true;
+  try {
+    if (document.fullscreenElement === chartPanel) {
+      await document.exitFullscreen();
+    } else if (!chartFullscreen && browserFullscreen && browserFullscreenSupported) {
+      await chartPanel.requestFullscreen();
+    } else {
+      chartFullscreen = !chartFullscreen;
+      updateFullscreen();
+    }
+  } catch {
+    alert('The browser could not change fullscreen mode. Try again or turn off Use browser fullscreen in Settings.');
+  } finally {
+    fullscreenPending = false;
+  }
 }
+document.addEventListener('fullscreenchange', () => {
+  chartFullscreen = document.fullscreenElement === chartPanel;
+  updateFullscreen();
+});
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && chartFullscreen) {
-    chartFullscreen = false;
-    updateFullscreen();
+    if (document.fullscreenElement === chartPanel) {
+      toggleFullscreen();
+    } else {
+      chartFullscreen = false;
+      updateFullscreen();
+    }
   }
 });
 canvas.addEventListener('dblclick', toggleFullscreen);
