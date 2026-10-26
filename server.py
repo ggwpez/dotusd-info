@@ -3,27 +3,26 @@
 import argparse
 import base64
 import hashlib
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import deque, OrderedDict
 from concurrent.futures import Future
 from itertools import islice
 import logging
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing
 import json
 import math
 import os
 import re
-import socket
 import sqlite3
-import subprocess
 import threading
 import time
 import urllib.parse
-import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from archive_reader import price_time, read_sample
+from hub_quotes import HubChain, RPC
 from issuance import IssuanceCache, IssuanceWorker
 from release import read_sources, read_version, source_hash
 from treasury import TreasuryHistory
@@ -31,8 +30,7 @@ from treasury import TreasuryHistory
 ROOT = Path(__file__).resolve().parent
 HISTORY_SECONDS = 7 * 86400
 MAX_SAMPLES = 350000
-FETCH_SECONDS = 6 * 3600
-MAX_UPSTREAM_BYTES = 4 * 1024 * 1024
+LIVE_BLOCKS = 8
 SUMMARY_SAMPLES = 256
 
 
@@ -77,54 +75,6 @@ def load_release():
         b'<!-- INLINE_SCRIPT -->', b'<script type="module">' + assets['inline.js'] + b'</script>')
     return version, assets
 
-METRIC = '{__name__=~"arb_peg_dotusd_usdt|arb_peg_block_number",clock="estimated_2s"}'
-
-
-@contextmanager
-def price_source(upstream=None, ssh_host='server'):
-    """Own only the tunnel we launch; never replace another local listener."""
-    if upstream:
-        yield upstream.rstrip('/')
-        return
-    if not ssh_host or ssh_host.startswith('-'):
-        raise ValueError('Invalid SSH host')
-    with socket.socket() as listener:
-        listener.bind(('127.0.0.1', 0))
-        port = listener.getsockname()[1]
-    command = [
-        'ssh', '-N', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-        '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=15',
-        '-o', 'ServerAliveCountMax=3',
-        '-L', f'127.0.0.1:{port}:127.0.0.1:9090', ssh_host,
-    ]
-    tunnel = subprocess.Popen(command)
-    base = f'http://127.0.0.1:{port}'
-    http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            if tunnel.poll() is not None:
-                raise RuntimeError(f'SSH tunnel exited ({tunnel.returncode}); check ssh {ssh_host}')
-            try:
-                with http.open(base + '/-/ready', timeout=1) as response:
-                    if response.status == 200:
-                        break
-            except OSError:
-                pass
-            time.sleep(0.2)
-        else:
-            raise RuntimeError('Prometheus did not become reachable through SSH within 20 seconds')
-        print(f'Peg history connected through SSH to {ssh_host}.', flush=True)
-        yield base + '/api/v1'
-    finally:
-        if tunnel.poll() is None:
-            tunnel.terminate()
-            try:
-                tunnel.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                tunnel.kill()
-                tunnel.wait()
-
 
 def time_window(params):
     end = float(params.get('end', [time.time()])[0])
@@ -132,34 +82,6 @@ def time_window(params):
     if not all(map(math.isfinite, (start, end))) or not 1 <= end - start <= 604800 or start < 0 or end > time.time() + 60:
         raise ValueError('Choose a time window between one second and seven days.')
     return start, end
-
-
-def query_window(params):
-    start, end = time_window(params)
-    # An instant range-vector query returns original samples, with no step
-    # resampling or Prometheus lookback that could fill collection gaps.
-    return urllib.parse.urlencode({'query': f'{METRIC}[{math.ceil((end-start)*1000)}ms]', 'time': end, 'timeout': '15s'})
-
-
-def samples(payload):
-    if payload.get('status') != 'success' or payload.get('data', {}).get('resultType') != 'matrix':
-        raise ValueError('Price source returned an invalid response.')
-    series = payload['data']['result']
-    prices = [s for s in series if s.get('metric', {}).get('__name__') == 'arb_peg_dotusd_usdt']
-    blocks = [s for s in series if s.get('metric', {}).get('__name__') == 'arb_peg_block_number']
-    if len(prices) > 1 or len(blocks) > 1:
-        raise ValueError('Multiple price series returned; select a single market at the source.')
-    numbers = {}
-    for stamp, raw in blocks[0]['values'] if blocks else []:
-        number = float(raw)
-        if math.isfinite(number) and number.is_integer():
-            numbers[stamp] = int(number)
-    rows = []
-    for stamp, raw in prices[0]['values'] if prices else []:
-        price = float(raw)
-        if math.isfinite(price) and price > 0:
-            rows.append([stamp, price, numbers.get(stamp)])
-    return rows
 
 
 def pack_ranges(rows):
@@ -326,7 +248,7 @@ def historic_response(chunks, histories, streaming):
 
 
 class HistoryCache:
-    """One writer fetches history; HTTP readers never access the upstream."""
+    """Background writers publish history; HTTP readers never access the RPC."""
     def __init__(self, archive=None, history_path=None):
         self.lock = threading.Lock()
         self.writer_lock = threading.Lock()
@@ -356,6 +278,8 @@ class HistoryCache:
         if self.archive is not None and self.archive.exists():
             with closing(sqlite3.connect(
                     self.archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='samples'").fetchone():
+                    return rows
                 first = db.execute('SELECT number FROM samples ORDER BY number LIMIT 1').fetchone()
                 last = db.execute('SELECT number FROM samples ORDER BY number DESC LIMIT 1').fetchone()
                 if first:
@@ -402,8 +326,8 @@ class HistoryCache:
                     continue
                 if missing_only and (stamp in by_time or block in present):
                     continue
-                # Late collector data supersedes a repair even if its estimated
-                # timestamp differs; never keep two observations of one block.
+                # Live data supersedes restored evidence by block even when its
+                # estimated timestamp differs.
                 if missing_only:
                     repaired[block] = stamp
                     present.add(block)
@@ -433,7 +357,7 @@ class HistoryCache:
         query_start, query_end = window if window is not None else (start, end)
         if query_start < cutoff and (self.archive is not None or self.history_path is not None):
             saved = self._stored_rows(query_start, query_end)
-            # Collector samples supersede persisted prices by block, even when
+            # Cached samples supersede persisted prices by block, even when
             # a correction moves the timestamp outside the selected window.
             saved.update((row[2], row) for row in history if row[2] is not None and
                          (row[2] in saved or query_start < row[0] <= query_end))
@@ -499,87 +423,139 @@ class HistoryCache:
 
 
 class HistoryWorker:
-    def __init__(self, cache, upstream, http=None, archive=None):
+    def __init__(self, cache, chain=None, archive=None):
         self.cache = cache
-        self.upstream = upstream
-        self.http = http or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.chain = chain or HubChain()
+        self.chain.rpc.delay = 0.1
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='price-history', daemon=True)
-        self.cursor = None
-        self.backfill_end = None
-        self.archive = archive
+        self.archive = archive if archive is not None else cache.archive
         self.archive_seq = 0
         self.archive_ready = False
+        self.restore_before = None
+        self.restored = cache.history_path is None
+        self.head = None
 
-    def fetch(self, start, end):
-        query = query_window({'start': [start], 'end': [end]})
-        with self.http.open(self.upstream + '/query?' + query, timeout=20) as response:
-            body = response.read(MAX_UPSTREAM_BYTES + 1)
-        if len(body) > MAX_UPSTREAM_BYTES:
-            raise ValueError('History response exceeds size limit')
-        rows = samples(json.loads(body))
-        if len(rows) > MAX_SAMPLES:
-            raise ValueError('Too many history samples')
-        self.cache.merge(rows, time.time())
+    def recent_saved(self, head):
+        rows = {}
+        for path, table, divisor in ((self.cache.history_path, 'repairs', 1),
+                                     (self.archive, 'samples', 1000)):
+            if path is None or not path.exists():
+                continue
+            with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=1)) as db:
+                if not db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone():
+                    continue
+                for stamp, price, number in db.execute(
+                        f'SELECT sample_time,price,number FROM {table} '
+                        'WHERE number>? AND number<=? AND price IS NOT NULL',
+                        (head - LIVE_BLOCKS, head)):
+                    rows[number] = (stamp / divisor, price, number)
+        return rows
 
     def poll(self):
-        now = time.time()
-        if self.cursor is None:
-            # Make recent prices available first; seed older history in bounded chunks.
-            self.fetch(now - 3600, now)
-            self.cursor = now
-            self.backfill_end = now - 3600
-        elif now - self.cursor >= 6:
-            # A successful query can still contain only stale samples while the
-            # collector is offline. Keep querying from the last actual sample
-            # so delayed publication cannot fall behind the overlap window.
-            with self.cache.lock:
-                latest = self.cache.rows[-1][0] if self.cache.rows else self.cursor
-            start = max(min(self.cursor, latest) - 300, now - HISTORY_SECONDS)
-            while start < now and not self.stop.is_set():
-                end = min(now, start + FETCH_SECONDS)
-                self.fetch(start, end)
-                self.cursor = end
-                start = end
-        # Bounded startup chunks share the worker with live updates.
-        if self.backfill_end > now - HISTORY_SECONDS and not self.stop.is_set():
-            start = max(now - HISTORY_SECONDS, self.backfill_end - FETCH_SECONDS)
-            self.fetch(start, self.backfill_end)
-            self.backfill_end = start
+        head = self.chain.finalized()
+        with self.cache.lock:
+            existing = {row[2]: row for row in self.cache.rows if row[2] is not None}
+        restored = self.recent_saved(head)
+        restored.update((n, existing[n]) for n in restored if n in existing)
+        existing.update(restored)
+        numbers = sorted(existing)
+        if (numbers and head < numbers[-1]) or (self.head is not None and head < self.head):
+            raise ValueError('Hub finalized head moved backwards')
+        prices = []
+        try:
+            # Tip first, bounded work: an outage never becomes a blocking
+            # catch-up loop. Missing older blocks belong to the repair worker.
+            for number in range(head, max(0, head - LIVE_BLOCKS), -1):
+                if self.stop.is_set():
+                    return
+                if number in existing:
+                    continue
+                _, at, timestamp, price, reserves = read_sample(self.chain.rpc, number)
+                if price is None:
+                    continue
+                index = bisect_left(numbers, number)
+                lower = (numbers[index - 1], existing[numbers[index - 1]][0]) if index else None
+                upper = (numbers[index], existing[numbers[index]][0]) if index < len(numbers) else None
+                stamp = price_time(number, timestamp, lower, upper, now=time.time())
+                prices.append((number, at, timestamp, stamp, price, reserves))
+                existing[number] = (stamp, price, number)
+                numbers.insert(index, number)
+            self.head = head
+        finally:
+            # Commit successful samples even if a later RPC fails; publish once
+            # per batch, not eight full-cache rebuilds on a populated archive.
+            incoming = list(restored.values())
+            if prices and self.cache.history_path is not None:
+                from gap_repair import price_database
+                with closing(price_database(self.cache.history_path)) as db, db:
+                    db.executemany('INSERT OR IGNORE INTO repairs VALUES(?,?,?,?,?,?)', prices)
+                    for row in prices:
+                        incoming.append(db.execute(
+                            'SELECT sample_time,price,number FROM repairs WHERE number=?',
+                            (row[0],)).fetchone())
+            else:
+                incoming.extend((r[3], r[4], r[0]) for r in prices)
+            self.cache.merge(incoming, time.time(), mark_fresh=head in existing)
+
+    def load_history(self):
+        if self.restored:
+            return True
+        from gap_repair import price_database
+        with closing(price_database(self.cache.history_path)) as db:
+            rows = db.execute(
+                'SELECT sample_time,price,number FROM repairs WHERE sample_time>? '
+                'AND number<? ORDER BY number DESC LIMIT 2000',
+                (time.time() - HISTORY_SECONDS,
+                 self.restore_before if self.restore_before is not None else 2**63 - 1)).fetchall()
+        if rows:
+            self.cache.merge(rows, time.time(), mark_fresh=False, missing_only=True)
+            self.restore_before = rows[-1][2]
+        self.restored = len(rows) < 2000
+        return self.restored
 
     def load_archive(self):
         if self.archive is None or not self.archive.exists():
             return True
-        with closing(sqlite3.connect(f'file:{self.archive}?mode=ro', uri=True, timeout=1)) as db:
-            rows = db.execute('SELECT seq,sample_time,price,number FROM samples WHERE seq>? ORDER BY seq LIMIT 2000',
-                              (self.archive_seq,)).fetchall()
+        with closing(sqlite3.connect(self.archive.resolve().as_uri() + '?mode=ro',
+                                     uri=True, timeout=1)) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='samples'").fetchone():
+                return True
+            rows = db.execute(
+                'SELECT seq,sample_time,price,number FROM samples '
+                'WHERE seq>? AND sample_time>? ORDER BY seq LIMIT 2000',
+                (self.archive_seq, (time.time() - HISTORY_SECONDS) * 1000)).fetchall()
+            if len(rows) < 2000:
+                self.archive_seq = db.execute('SELECT COALESCE(MAX(seq),0) FROM samples').fetchone()[0]
+            else:
+                self.archive_seq = rows[-1][0]
         if rows:
             self.cache.merge([(stamp / 1000, price, number) for _, stamp, price, number in rows
-                              if price is not None], time.time(), mark_fresh=False)
-            self.archive_seq = rows[-1][0]
+                              if price is not None], time.time(), mark_fresh=False, missing_only=True)
         return len(rows) < 2000
 
     def run(self):
+        next_poll = 0
         while not self.stop.is_set():
-            failed = False
-            if self.upstream is not None:
+            if time.monotonic() >= next_poll:
                 try:
                     self.poll()
                 except Exception:
-                    failed = True
-                    logging.exception('Background price history refresh failed')
+                    logging.exception('Finalized Hub price refresh failed')
+                next_poll = time.monotonic() + 6
+            failed = False
             try:
+                self.load_history()
                 self.archive_ready = self.load_archive()
             except (sqlite3.Error, OSError):
                 failed = True
-                logging.exception('Archive history load failed')
-            ready = (self.archive_ready and
-                     (self.upstream is None or (self.backfill_end is not None and
-                                               self.backfill_end <= time.time() - HISTORY_SECONDS)))
+                logging.exception('Saved price history load failed')
             with self.cache.lock:
-                self.cache.history_ready = ready
-            # Stored history needs no six-second live polling delay during startup.
-            self.stop.wait(6 if ready or failed else 0.05)
+                self.cache.history_ready = self.archive_ready and self.restored
+            # Local pages drain promptly; network polling never depends on their
+            # completion. Previously restored data remains usable during failures.
+            self.stop.wait(6 if failed or (self.archive_ready and self.restored) else 0.05)
 
 
 class CacheServer(HTTPServer):
@@ -811,45 +787,42 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bind', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=3001)
-    parser.add_argument('--ssh-host', default='server', help='SSH config host or user@host (default: server)')
-    source = parser.add_mutually_exclusive_group()
-    source.add_argument('--upstream', help='Use an existing Prometheus API base instead of opening SSH')
-    source.add_argument('--archive-only', action='store_true',
-                        help='Read saved price history without SSH or Prometheus; RPC workers remain enabled')
+    parser.add_argument('--hub-rpc', default=RPC,
+                        help='Polkadot Asset Hub HTTP archive RPC for all finalized prices and state history')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--gap-repair-history', type=Path,
-                        help='Persist issuance, Treasury and price repairs indefinitely; gradually repair recent missing history')
-    parser.add_argument('--hub-rpc', default='https://polkadot-asset-hub-rpc.polkadot.io',
-                        help='Polkadot Hub HTTP archive RPC for recent issuance and pool-history gap repair')
+                        help='Persist live prices, issuance and Treasury indefinitely; gradually recover recent history')
     parser.add_argument('--no-browser', action='store_true', help='Serve without opening a browser')
     args = parser.parse_args()
     server = CacheServer((args.bind, args.port), Handler)
     server.cache = HistoryCache(archive=args.archive, history_path=args.gap_repair_history)
     server.issuance = IssuanceCache(history_path=args.gap_repair_history)
     server.treasury = TreasuryHistory(args.gap_repair_history)
+    if args.gap_repair_history:
+        from gap_repair import price_database
+        # Establish WAL before concurrent workers open a newly created database.
+        with closing(price_database(args.gap_repair_history)):
+            pass
     worker = None
     repair = None
     issuance = None
     try:
-        with (nullcontext(None) if args.archive_only else
-              price_source(args.upstream, args.ssh_host)) as upstream:
-            worker = HistoryWorker(server.cache, upstream, archive=args.archive)
-            worker.thread.start()
-            from hub_quotes import HubChain
-            issuance = IssuanceWorker(server.issuance, chain=HubChain(args.hub_rpc))
-            issuance.thread.start()
-            if args.gap_repair_history:
-                from gap_repair import GapRepair
-                repair = GapRepair(server.cache, args.gap_repair_history,
-                                   chain=HubChain(args.hub_rpc), issuance=server.issuance,
-                                   treasury=server.treasury)
-                repair.thread.start()
-            browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
-            url = f'http://{browser_host}:{server.server_port}'
-            print(f'dotUSD: {url}', flush=True)
-            if not args.no_browser:
-                threading.Thread(target=webbrowser.open, args=(url,), kwargs={'new': 2}, daemon=True).start()
-            server.serve_forever()
+        worker = HistoryWorker(server.cache, chain=HubChain(args.hub_rpc), archive=args.archive)
+        worker.thread.start()
+        issuance = IssuanceWorker(server.issuance, chain=HubChain(args.hub_rpc))
+        issuance.thread.start()
+        if args.gap_repair_history:
+            from gap_repair import GapRepair
+            repair = GapRepair(server.cache, args.gap_repair_history,
+                               chain=HubChain(args.hub_rpc), issuance=server.issuance,
+                               treasury=server.treasury)
+            repair.thread.start()
+        browser_host = '127.0.0.1' if args.bind == '0.0.0.0' else args.bind
+        url = f'http://{browser_host}:{server.server_port}'
+        print(f'dotUSD: {url}', flush=True)
+        if not args.no_browser:
+            threading.Thread(target=webbrowser.open, args=(url,), kwargs={'new': 2}, daemon=True).start()
+        server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

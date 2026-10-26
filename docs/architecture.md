@@ -4,23 +4,27 @@
 
 ## Data source
 
-The server's existing `arb-peg.service` collects finalized pool prices from the
-arbitrage Asset Hub RPC at `http://127.0.0.1:9944` and writes history into
-`arb-prometheus.service` at `127.0.0.1:9090`. This app reads that history through
-a bounded `/api/historic?series=price` endpoint backed entirely by an in-process cache.
-One background worker fetches recent prices at startup, then refreshes every six
-seconds with a five-minute overlap before the last received sample (or the last
-query boundary, if earlier), so collector outages do not skip delayed ingestion.
-Seven days of older
-history are seeded in six-hour chunks without waiting between polling cycles.
-The API flags incomplete startup history; browsers retry incomplete ranges, including
-fixed shared ranges, until history is complete.
-Visitor requests never query Prometheus. The cache retains at most seven days and
-350,000 samples, preserves raw timestamps and gaps, and remains readable during
-upstream outages. Restarts rebuild the cache; recent price requests return 503
-until the first successful fetch. Readers capture an immutable snapshot under a brief lock, then
-scan it without holding the lock. Writers build replacements separately and
-publish rows and freshness together, so ongoing reads retain a consistent view.
+The server reads finalized dotUSD pool prices directly from a normal Polkadot
+Asset Hub archive RPC, selected by `--hub-rpc` (default
+`https://polkadot-asset-hub-rpc.polkadot.io`). No external collector, Prometheus,
+private node or SSH tunnel is involved. A background worker verifies chain
+identity and reads pool reserves at finalized block hashes. Each live poll reads
+at most eight recent finalized blocks, then waits six seconds. Saved SQLite
+history is restored in bounded 2,000-row pages independently of live polling,
+so historical recovery does not hold up fresh prices. The estimated price clock
+uses up to two seconds per block, compresses spacing between close immutable
+boundaries, and never places the head in the future; evidence retains chain timestamps.
+The bounded `/api/historic?series=price` endpoint reads the in-process cache;
+visitor requests never query the chain. The cache retains at most seven days
+and 350,000 samples, preserves gaps, and remains readable during RPC outages.
+With `--gap-repair-history PATH`, new prices persist alongside existing repair
+evidence without rewriting imported history. `--archive PATH` continues to
+read the published SQLite archive. `historyReady` reports completion of local
+history restoration, not complete chain coverage. Browsers retry incomplete
+startup ranges, including fixed shared ranges.
+Readers capture an immutable snapshot under a brief lock, then scan it without
+holding the lock. Writers publish rows and freshness together, so ongoing reads
+retain a consistent view.
 Each snapshot caches min/max prices and the highest block number for groups of
 256 samples. Window extrema reuse fully covered groups and scan only partial
 groups at the edges; live cursors skip groups containing no newer blocks.
@@ -37,8 +41,8 @@ window; omitted ends retain the rolling live-window behavior.
 Windows crossing the live cache boundary also read persisted SQLite data.
 Price repairs use an indexed time-range query; the read-only published archive
 uses bounded seeks on its block-number index and validated monotonic clock.
-Collector cache rows override saved prices by block, and published archive
-prices override repair evidence. Historical reads do not query Prometheus or
+Live cache rows override saved prices by block, and published archive
+prices override repair evidence. Historical reads do not query
 the chain, expand the live cache, or recover data that was never saved.
 Absent samples remain gaps. Disk read failures return HTTP 503.
 Historical price responses bypass the live response cache so saved corrections
@@ -57,13 +61,12 @@ and oversized packed responses stream without retention. A cold cache buffers
 an eligible response before sending its batches; oversized responses fall back
 to streaming after the bounded cache attempt. The byte limit covers retained
 payloads, with additional bounded metadata, in-flight builds and active readers.
-Each upstream response is limited to 4 MiB. Four fixed HTTP workers
+Four fixed HTTP workers
 serve requests from a FIFO holding at most 32 waiting connections. A full queue
 returns 503 with `Retry-After: 6`. Requests waiting two seconds expire with the
 same response; idle-server expiry checks run every 0.5 seconds. The separate TCP
 listen backlog is 64 connections. Responses stream in batches
-and client sockets have a ten-second inactivity timeout. The node RPC and Prometheus remain private.
-The collector and Prometheus are managed by the arbitrage repository.
+and client sockets have a ten-second inactivity timeout.
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
 
@@ -100,18 +103,17 @@ the decimals decoded from that block's `Assets.Metadata`.
 An independent `issuance.py` background worker starts with the server. It uses
 `--hub-rpc`, whose default is the public Parity archive endpoint
 `https://polkadot-asset-hub-rpc.polkadot.io`; the recent issuance preview needs
-neither a private node nor archive backfill. The existing price source remains unchanged. A local run
-with an existing Prometheus source is:
+neither a private node nor a preloaded archive. A local run is:
 
 ```sh
-.venv/bin/python server.py --upstream http://127.0.0.1:9090/api/v1 --no-browser
+.venv/bin/python server.py --hub-rpc https://polkadot-asset-hub-rpc.polkadot.io --no-browser
 ```
 
 Open <http://127.0.0.1:3001> and enable issuance in Settings. The cached endpoint
 is also readable directly at <http://127.0.0.1:3001/api/historic?series=ti>. Install
 `requirements.txt` first; the storage-key hash uses the existing `xxhash`
-dependency. `--hub-rpc URL` overrides the RPC for both issuance and optional
-price/issuance history repair.
+dependency. `--hub-rpc URL` overrides the RPC for live prices, issuance and
+price/issuance/Treasury history repair.
 
 The worker reuses the bounded `HubRpc`/`archive_reader.Rpc` storage reader,
 verifies the Hub genesis before accepting finality, and pins timestamp, asset
@@ -372,7 +374,9 @@ and runs newest-first. Midpoints round down, splitting odd intervals into
 floor/ceiling halves while preserving all earlier grid points. The fixed grid
 remains stable as the live tip advances and after restart; saved samples and
 duplicate rounded midpoints are skipped.
-Price gaps retain a share of the batch when both need work.
+Price gaps retain a share of the batch when both need work. Unused batch slots
+extend the oldest saved price history backward toward the seven-day window;
+this gradual recovery does not delay the independent live price poll.
 All RPC requests are sequential and spaced at least 100 ms apart, followed by a
 one-second pause between successful passes. Failures back off from two minutes up to fifteen
 minutes. The worker verifies the Hub genesis and finalized boundaries.
@@ -387,8 +391,8 @@ two-second clock between them. Original chain timestamps, block hashes, prices
 and reserves are saved in a separate SQLite evidence database. Each small batch
 is committed atomically before publication and kept indefinitely. Restart loads
 only the latest seven days into the chart cache without deleting older evidence.
-The published backfill archive and collector database are never
-modified. Repaired samples do not refresh the live freshness timestamp. Delayed
-collector samples supersede repairs by block number, even if their estimated
+Published archive price rows are not modified. When both storage flags share a
+file, new evidence is written only to its repair/state tables. Repaired samples
+do not refresh the live freshness timestamp. Live RPC samples supersede repairs by block number, even if their estimated
 timestamps differ. Open charts retry their displayed history once per minute
 only while known gaps remain, including in fixed historical views.

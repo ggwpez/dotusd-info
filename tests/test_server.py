@@ -6,7 +6,6 @@ import math
 from itertools import permutations
 import random
 import queue
-import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,7 +14,6 @@ import tempfile
 import unittest
 from unittest.mock import patch, Mock
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 from http.server import ThreadingHTTPServer
 
@@ -430,11 +428,14 @@ class PageTests(unittest.TestCase):
             server.server_close()
             thread.join()
 
-    def test_explicit_upstream_does_not_open_ssh(self):
-        with patch.object(page.subprocess, 'Popen') as launch:
-            with page.price_source('http://127.0.0.1:9090/api/v1/') as upstream:
-                self.assertEqual(upstream, 'http://127.0.0.1:9090/api/v1')
-            launch.assert_not_called()
+    def test_retired_source_flags_are_rejected(self):
+        for flag in ('--ssh-host', '--upstream', '--archive-only'):
+            with self.subTest(flag=flag), patch('sys.argv', ['server.py', flag]), \
+                    patch('sys.stderr', io.StringIO()), patch.object(page, 'CacheServer') as server:
+                with self.assertRaises(SystemExit) as error:
+                    page.main()
+                self.assertEqual(error.exception.code, 2)
+                server.assert_not_called()
 
     def test_live_block_cursor_across_formats_and_reconnects(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
@@ -482,37 +483,11 @@ class PageTests(unittest.TestCase):
             server.server_close()
             thread.join()
 
-    def test_failed_ssh_exits_without_serving_an_empty_page(self):
-        with patch.object(page.subprocess, 'Popen') as launch:
-            launch.return_value.poll.return_value = 255
-            launch.return_value.returncode = 255
-            with self.assertRaisesRegex(RuntimeError, 'SSH tunnel exited'):
-                with page.price_source():
-                    self.fail('A failed SSH tunnel must not be used')
-
-    def test_owned_tunnel_closes_after_use(self):
-        with patch.object(page.subprocess, 'Popen') as launch, patch.object(page.urllib.request, 'build_opener') as opener:
-            launch.return_value.poll.return_value = None
-            opener.return_value.open.return_value.__enter__.return_value.status = 200
-            with page.price_source() as upstream:
-                self.assertTrue(upstream.endswith('/api/v1'))
-                self.assertIn('ExitOnForwardFailure=yes', launch.call_args.args[0])
-            launch.return_value.terminate.assert_called_once()
-            launch.return_value.wait.assert_called_once_with(timeout=5)
-
-    def test_raw_samples_and_bounded_window(self):
-        query = parse_qs(page.query_window({'start': ['100'], 'end': ['200']}))
-        self.assertEqual(query['query'], ['{__name__=~"arb_peg_dotusd_usdt|arb_peg_block_number",clock="estimated_2s"}[100000ms]'])
+    def test_bounded_history_window(self):
+        self.assertEqual(page.time_window({'start': ['100'], 'end': ['200']}), (100, 200))
         for start, end in [('nan', '200'), ('0', 'inf'), ('200', '100'), ('0', '604801')]:
             with self.assertRaises(ValueError):
-                page.query_window({'start': [start], 'end': [end]})
-
-    def test_gaps_and_original_timestamps_preserved(self):
-        payload = {'status': 'success', 'data': {'resultType': 'matrix', 'result': [{'metric': {'__name__': 'arb_peg_dotusd_usdt'}, 'values': [[100, '1.001'], [102, 'NaN'], [200, '.999']]}, {'metric': {'__name__': 'arb_peg_block_number'}, 'values': [[100, '50'], [102, '51'], [200, '52']]}]}}
-        self.assertEqual(page.samples(payload), [[100, 1.001, 50], [200, .999, 52]])
-        payload['data']['result'] *= 2
-        with self.assertRaises(ValueError):
-            page.samples(payload)
+                page.time_window({'start': [start], 'end': [end]})
 
     def test_http_assets_errors_and_no_arbitrary_proxy(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
@@ -717,151 +692,6 @@ class CacheTests(unittest.TestCase):
         self.assertIsNone(cache.read(now-20, now, (now-300, now-200))[3])
         self.assertEqual(cache.read(now-20, now, (now-80, now))[3]['high'][2], 3)
 
-    def test_archive_only_loads_later_upload_in_batches_without_upstream(self):
-        now = int(time.time())
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'archive.sqlite3'
-            cache = page.HistoryCache(archive=path)
-            worker = page.HistoryWorker(cache, None, archive=path)
-            worker.poll = Mock(side_effect=AssertionError('Archive-only must not poll Prometheus'))
-            waits, readiness = [], []
-
-            def wait(delay):
-                waits.append(delay)
-                readiness.append(cache.history_ready)
-                if len(waits) == 1:
-                    # No archive is a legitimate empty result, not a live fetch.
-                    self.assertEqual(cache.read(now - 5000, now), ([], None, True, None))
-                    staged = path.with_suffix('.upload')
-                    with sqlite3.connect(staged) as db:
-                        db.execute('CREATE TABLE samples (seq INTEGER PRIMARY KEY, '
-                                   'number INTEGER UNIQUE, sample_time INTEGER, price REAL)')
-                        db.executemany('INSERT INTO samples VALUES (?, ?, ?, ?)',
-                                       [(i, i, (now - 4004 + i * 2) * 1000, 1.01)
-                                        for i in range(1, 2002)])
-                    staged.replace(path)
-                elif len(waits) == 2:
-                    self.assertEqual(worker.archive_seq, 2000)
-                    with self.assertRaisesRegex(RuntimeError, 'warming up'):
-                        cache.read(now - 5000, now)
-                else:
-                    worker.stop.set()
-
-            with patch.object(worker.stop, 'wait', side_effect=wait):
-                worker.run()
-            self.assertEqual(waits, [6, 0.05, 6])
-            self.assertEqual(readiness, [True, False, True])
-            self.assertEqual([row[2] for row in cache.read(now - 5000, now)[0]],
-                             list(range(1, 2002)))
-            self.assertIsNone(cache.fetched_at)
-            worker.poll.assert_not_called()
-
-    def test_worker_seeds_then_only_refreshes_incrementally(self):
-        cache = page.HistoryCache()
-        worker = page.HistoryWorker(cache, 'http://unused')
-        worker.fetch = Mock()
-        now = time.time()
-        with patch.object(page.time, 'time', return_value=now):
-            worker.poll()
-        self.assertEqual(worker.fetch.call_args_list[0].args, (now - 3600, now))
-        self.assertEqual(worker.fetch.call_args_list[1].args,
-                         (now - 3600 - page.FETCH_SECONDS, now - 3600))
-        with patch.object(page.time, 'time', return_value=now + 6):
-            worker.poll()
-        self.assertEqual(worker.fetch.call_args_list[2].args, (now - 300, now + 6))
-        # Seeding stops once the retained window is covered.
-        for _ in range(30):
-            with patch.object(page.time, 'time', return_value=now + 12):
-                worker.poll()
-        worker.fetch.reset_mock()
-        with patch.object(page.time, 'time', return_value=now + 18):
-            worker.poll()
-        worker.fetch.assert_called_once_with(now + 12 - 300, now + 18)
-
-    def test_delayed_collector_publication_recovers_beyond_overlap(self):
-        now = time.time()
-        cache = page.HistoryCache()
-        cache.merge([[now, 1.0, 50]], now)
-        http = Mock()
-        worker = page.HistoryWorker(cache, 'http://unused', http)
-        worker.cursor = now
-        worker.backfill_end = now - page.HISTORY_SECONDS
-
-        def response(rows):
-            return io.BytesIO(json.dumps({'status': 'success', 'data': {
-                'resultType': 'matrix', 'result': [
-                    {'metric': {'__name__': metric},
-                     'values': [[row[0], str(row[column])] for row in rows]}
-                    for metric, column in [('arb_peg_dotusd_usdt', 1),
-                                           ('arb_peg_block_number', 2)]
-                ]}}).encode())
-
-        # Queries succeed throughout an eight-minute collection outage.
-        for elapsed in (6, 240, 480):
-            http.open.return_value = response([[now, 1.0, 50]])
-            with patch.object(page.time, 'time', return_value=now + elapsed):
-                worker.poll()
-        recovered = [[now + i * 2, 1.01, 50 + i] for i in range(1, 244)]
-        http.open.return_value = response(recovered)
-        with patch.object(page.time, 'time', return_value=now + 486):
-            worker.poll()
-        query = parse_qs(urlsplit(http.open.call_args.args[0]).query)
-        self.assertIn('[786000ms]', query['query'][0])
-        self.assertEqual([row[2] for row in cache.rows], list(range(50, 294)))
-
-    def test_failure_keeps_cached_data_and_retry_cursor(self):
-        now = time.time()
-        cache = page.HistoryCache()
-        cache.merge([[now - 1, 1.01, 50]], now)
-        worker = page.HistoryWorker(cache, 'http://unused')
-        worker.cursor = now
-        worker.backfill_end = now - page.HISTORY_SECONDS
-        worker.fetch = Mock(side_effect=OSError('offline'))
-        with patch.object(page.time, 'time', return_value=now + 6):
-            with self.assertRaises(OSError):
-                worker.poll()
-        self.assertEqual(worker.cursor, now)
-        self.assertEqual(cache.read(now - 20, now)[0], [(now - 1, 1.01, 50)])
-
-    def test_startup_drains_history_without_live_poll_delays(self):
-        cache = page.HistoryCache()
-        worker = page.HistoryWorker(cache, 'http://unused')
-        worker.fetch = Mock()
-        waits = []
-        def wait(delay):
-            waits.append(delay)
-            if delay == 6:
-                worker.stop.set()
-        with patch.object(worker.stop, 'wait', side_effect=wait):
-            worker.run()
-        self.assertTrue(cache.history_ready)
-        self.assertTrue(all(delay == 0.05 for delay in waits[:-1]))
-        self.assertEqual(waits[-1], 6)
-        self.assertLess(sum(waits[:-1]), 2)
-        # One recent request, then 28 historical pages; no repeated live requests.
-        self.assertEqual(worker.fetch.call_count, 29)
-
-    def test_upstream_response_limit(self):
-        http = Mock()
-        http.open.return_value = io.BytesIO(b'x' * 101)
-        cache = page.HistoryCache()
-        worker = page.HistoryWorker(cache, 'http://unused', http)
-        with patch.object(page, 'MAX_UPSTREAM_BYTES', 100):
-            with self.assertRaisesRegex(ValueError, 'size limit'):
-                worker.fetch(100, 200)
-        self.assertIsNone(cache.fetched_at)
-
-    def test_worker_fetch_preserves_raw_samples(self):
-        now = time.time()
-        payload = {'status': 'success', 'data': {'resultType': 'matrix', 'result': [
-            {'metric': {'__name__': 'arb_peg_dotusd_usdt'}, 'values': [[now - 10, '1.01']]},
-            {'metric': {'__name__': 'arb_peg_block_number'}, 'values': [[now - 10, '42']]}]}}
-        http = Mock()
-        http.open.return_value = io.BytesIO(json.dumps(payload).encode())
-        cache = page.HistoryCache()
-        worker = page.HistoryWorker(cache, 'http://unused', http)
-        worker.fetch(now - 100, now)
-        self.assertEqual(cache.read(now - 100, now)[0], [(now - 10, 1.01, 42)])
 
 
 class RequestQueueTests(unittest.TestCase):

@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 import gap_repair
 from issuance import IssuanceCache
-from server import HistoryCache
+from server import HistoryCache, HistoryWorker
 from treasury import TreasuryHistory
 
 
@@ -51,16 +51,15 @@ class GapRepairTests(unittest.TestCase):
             self.worker.poll(self.db)
         self.assertEqual(read.call_args_list[0].args[1], 101)
 
-    def test_restart_restores_progress_and_preserves_collector_rows(self):
+    def test_restart_restores_progress_and_preserves_live_rows(self):
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample):
             self.worker.poll(self.db)
-        fresh = HistoryCache()
+        fresh = HistoryCache(history_path=self.worker.path)
         fresh.merge([(self.start, 1., 100), (self.start + 2.5, .99, 101),
                      (self.start + 40, 1.02, 120)], self.now)
         fresh.history_ready = True
         restarted = gap_repair.GapRepair(fresh, self.worker.path, self.chain)
-        with patch.object(restarted.stop, 'wait', return_value=False):
-            restarted.restore(self.db)
+        HistoryWorker(fresh, chain=self.chain).load_history()
         self.assertEqual([r for r in fresh.rows if r[2] == 101], [(self.start + 2.5, .99, 101)])
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample) as read:
             restarted.poll(self.db)
@@ -71,13 +70,14 @@ class GapRepairTests(unittest.TestCase):
         evidence = (1, 'old-hash', int(old * 1000), old, 1.01, '[]')
         with self.db:
             self.db.execute('INSERT INTO repairs VALUES(?,?,?,?,?,?)', evidence)
-        self.worker.restore(self.db)
+        self.cache.history_path = self.worker.path
+        HistoryWorker(self.cache, chain=self.chain).load_history()
         self.cache.history_ready = False
         self.worker.poll(self.db)
         self.assertEqual(self.db.execute('SELECT * FROM repairs').fetchall(), [evidence])
         self.assertNotIn(1, [row[2] for row in self.cache.rows])
 
-    def test_late_collector_replaces_repair_by_block(self):
+    def test_live_price_replaces_restored_repair_by_block(self):
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample):
             self.worker.poll(self.db)
         self.cache.merge([(self.start + 2.5, .99, 101)], self.now)
@@ -118,6 +118,27 @@ class GapRepairTests(unittest.TestCase):
         with patch.object(worker.stop, 'wait', side_effect=wait), patch.object(gap_repair.logging, 'exception'):
             worker.run()
         self.assertEqual(waits, [gap_repair.PAUSE, 120, 240, gap_repair.PAUSE])
+
+    def test_leading_backfill_uses_only_unused_slots_and_retains_live_freshness(self):
+        self.complete_prices()
+        before = self.cache.fetched_at
+        with patch.object(gap_repair, 'read_sample', side_effect=self.sample) as read:
+            self.worker.backfill(self.db, 3)
+        self.assertEqual([call.args[1] for call in read.call_args_list], [99, 98, 97])
+        self.assertEqual([row[2] for row in self.cache.rows], list(range(97, 121)))
+        self.assertEqual(self.cache.fetched_at, before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 3)
+
+    def test_leading_backfill_waits_for_restore_and_respects_retention_and_budget(self):
+        with patch.object(gap_repair, 'read_sample') as read:
+            self.cache.history_ready = False
+            self.worker.backfill(self.db, 8)
+            self.cache.history_ready = True
+            self.worker.backfill(self.db, 0)
+            self.cache.merge([(self.now - gap_repair.RETENTION + 1, 1., 1)],
+                             self.now, replace=True)
+            self.worker.backfill(self.db, 8)
+        read.assert_not_called()
 
     def enable_issuance(self):
         self.worker.issuance = IssuanceCache(self.worker.path)
@@ -215,17 +236,18 @@ class GapRepairTests(unittest.TestCase):
         self.assertEqual([row for row in issuance.snapshot()['rows'] if row[2] == 110],
                          [(timestamp / 1000, 1_000_110, 110)])
 
-    def test_invalid_price_boundaries_preserve_valid_issuance(self):
+    def test_short_price_boundaries_preserve_all_blocks_and_issuance(self):
         issuance = self.enable_issuance()
         self.cache.merge([(self.start, 1., 100), (self.start + 10, 1., 120)], self.now, replace=True)
         before = self.cache.rows
         with patch.object(gap_repair, 'read_sample', side_effect=self.sample), \
                 patch.object(gap_repair, 'read_issuance', side_effect=self.issuance_sample):
-            with self.assertRaisesRegex(ValueError, 'boundaries'):
-                self.worker.poll(self.db)
-        self.assertEqual(self.cache.rows, before)
-        self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 0)
-        self.assertEqual([row[2] for row in issuance.snapshot()['rows']], [101, 105, 112, 116, 119])
+            self.assertEqual(self.worker.poll(self.db), 8)
+        self.assertEqual((self.cache.rows[0], self.cache.rows[-1]), before)
+        self.assertEqual([row[0] for row in self.cache.rows[1:-1]],
+                         [self.start + n / 2 for n in range(1, 5)])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM repairs').fetchone()[0], 4)
+        self.assertEqual(len(issuance.snapshot()['rows']), 8)
 
     def test_missing_pool_price_does_not_discard_issuance(self):
         issuance = self.enable_issuance()

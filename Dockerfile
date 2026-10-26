@@ -20,4 +20,4 @@ VOLUME ["/data"]
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c 'import json, urllib.request; response = urllib.request.urlopen("http://127.0.0.1:3001/version", timeout=3); assert json.load(response)["version"]'
-CMD ["python", "server.py", "--bind", "0.0.0.0", "--port", "3001", "--no-browser", "--archive-only", "--archive", "/data/archive.sqlite3", "--gap-repair-history", "/data/pool-repairs.sqlite3"]
+CMD ["python", "server.py", "--bind", "0.0.0.0", "--port", "3001", "--no-browser", "--hub-rpc", "https://polkadot-asset-hub-rpc.polkadot.io", "--archive", "/data/archive.sqlite3", "--gap-repair-history", "/data/pool-repairs.sqlite3"]

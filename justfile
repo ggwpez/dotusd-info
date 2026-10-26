@@ -9,13 +9,13 @@ setup:
     python3 -m venv .venv
     .venv/bin/python -m pip install -r requirements.txt
 
-# Run locally; forwards options to server.py (defaults to SSH host "server").
+# Run locally using the public Asset Hub archive RPC; forwards server.py options.
 run *args:
     .venv/bin/python server.py "$@"
 
-# Preview on port 5137 without SSH; PYTHON can select an existing environment.
+# Preview on port 5137; PYTHON can select an existing environment.
 preview *args:
-    "{{env_var_or_default('PYTHON', '.venv/bin/python')}}" server.py --port 5137 --upstream http://127.0.0.1:9090/api/v1 --no-browser "$@"
+    "{{env_var_or_default('PYTHON', '.venv/bin/python')}}" server.py --port 5137 --no-browser "$@"
 
 # Prepare changed application versions, then run the local test suite.
 test bump='patch':

@@ -43,19 +43,16 @@ These shortcuts require `just`. Without it, create the environment with
 `python3 -m venv .venv` and install dependencies with
 `.venv/bin/python -m pip install -r requirements.txt`.
 
-You will need a data source, though: a Prometheus instance with the pool-price
-history. The live data collector and Prometheus are not included in this repo.
-The server expects the `arb_peg_dotusd_usdt` and `arb_peg_block_number` metrics,
-both with the `clock="estimated_2s"` label.
-
-If Prometheus is running locally, start the chart with:
+The only live data source is a normal Polkadot Asset Hub archive RPC. The default
+is `https://polkadot-asset-hub-rpc.polkadot.io`; no SSH tunnel, Prometheus, or
+external price collector is needed. To start the chart:
 
 ```sh
-just run --upstream http://127.0.0.1:9090/api/v1 --no-browser
+just run --hub-rpc https://polkadot-asset-hub-rpc.polkadot.io --no-browser
 ```
 
-Then open <http://127.0.0.1:3001>. Give the server a moment to load the price
-history. Price history requires a working Prometheus data source.
+Then open <http://127.0.0.1:3001>. Give the server a moment to load saved history
+and fetch finalized pool prices. Missing archive state remains a gap.
 
 For a local UI preview on <http://127.0.0.1:5137>, run:
 
@@ -63,8 +60,7 @@ For a local UI preview on <http://127.0.0.1:5137>, run:
 just preview
 ```
 
-This uses local Prometheus without an SSH tunnel and does not open a browser.
-Issuance loads from the public Asset Hub RPC even if Prometheus is unavailable.
+This uses the same public archive RPC and does not open a browser.
 Additional server flags are forwarded, for example `just preview --port 5138`.
 The recipe defaults to `.venv/bin/python`; set `PYTHON` to use another environment.
 
@@ -97,7 +93,7 @@ Historical API requests can read saved data older than seven days. Supply explic
 `start` and `end` Unix timestamps to `/api/historic?series=price,ti,treasury`; each requested
 window may span at most seven days and return at most 350,000 samples per series.
 Larger requests return HTTP 400; split them into smaller windows. Older prices
-come from the published archive and saved repairs, not an on-demand Prometheus
+come from the published archive and saved prices, not an on-demand chain
 query. Missing history remains missing. This does not extend the chart's controls.
 
 Issuance and Treasury use actual chain timestamps and render as thicker, solid
@@ -115,18 +111,10 @@ window, then merges incremental TI and Treasury updates, including historical
 repairs, through the same six-second refresh as prices. Each state series has an
 independent cursor; enabling the setting does not start another request loop.
 The API also supports `?series=ti`, `?series=treasury`, or any unique subset.
-`--hub-rpc URL` overrides the public RPC. Issuance can be previewed with the
-command above even without local Prometheus; only price history remains unavailable.
-
-If Prometheus is on another machine, connect through SSH:
-
-```sh
-just run --ssh-host user@host
-```
-
-Replace `user@host` with your SSH destination. The app forwards the remote
-machine's port 9090 and opens the chart in your browser. Running
-`just run` without options uses the SSH alias `server`.
+`--hub-rpc URL` selects the archive RPC for prices, issuance, Treasury and history
+repair. `just run` uses the public endpoint by default and opens the chart in
+your browser. Keep existing `--archive PATH` and `--gap-repair-history PATH`
+settings to retain access to imported historical data and persist new samples.
 
 For more options, including the listening port and archive path, run
 `just run --help`. All arguments are forwarded to `server.py`.
@@ -175,12 +163,13 @@ release or check-version command is needed.
 `just test` uses the environment created by `just setup`. Without `just`, run
 `.venv/bin/python release.py --prepare patch` followed by
 `.venv/bin/python -m unittest discover -s tests -v`.
-The tests run locally and do not need access to the live data collector.
+The tests run locally and do not need access to a live RPC.
 JavaScript checks use Node.js, or JavaScriptCore on macOS. If neither is
 available, those checks are skipped.
 
 Gitea CI runs Ruff's critical-error checks and the full unittest suite on pushes
-and pull requests, including Node-backed JavaScript checks. It does not deploy.
+and pull requests, including Node-backed JavaScript checks. Successful pushes to
+`master` also build and deploy the container to the private installation.
 
 ## Common commands
 
@@ -191,7 +180,7 @@ Run `just` to list the commands. Run `just setup` once before local development.
 | `just setup` | Create `.venv` and install dependencies |
 | `just run [options]` | Start the app locally with optional server arguments |
 | `just test [patch\|minor]` | Prepare the version if code changed, then run tests |
-| `just preview [options]` | Preview locally on port 5137 without SSH or automatic browser launch |
+| `just preview [options]` | Preview locally on port 5137 using the public RPC without automatic browser launch |
 | `just deploy [host] [version-url]` | Deploy and verify the public version; does not rerun tests |
 | `just status [host]` | Inspect the deployed service |
 | `just logs [host]` | Read its latest 50 log entries |
@@ -237,6 +226,6 @@ instructions here so they stay in sync.
 - [How it works](docs/architecture.md): data loading, caching, and the price API.
 - [Deployment and archive backfill](docs/deployment.md): running the app with
   systemd and Caddy, and importing older prices. The supplied configuration is
-  for dotusd.info; adapt it for your own host. The optional backfill tool also
-  needs `websocket-client` and `xxhash`.
+  for dotusd.info; adapt it for your own host. Backfill uses the same archive RPC
+  and runtime dependencies as the server.
 - [Benchmarks](docs/benchmarks.md): performance measurements and how to repeat them.

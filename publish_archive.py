@@ -9,6 +9,8 @@ import sqlite3
 import tempfile
 import time
 
+from hub_quotes import HubChain, RPC
+
 START = 21572110
 
 
@@ -34,16 +36,15 @@ def seed(staging, published):
     return 'Temporary staging copy seeded in 64-page batches; production untouched'
 
 
-def validate(db, live_path):
+def validate(db, chain):
     if db.execute('PRAGMA integrity_check').fetchone() != ('ok',):
         raise ValueError('Archive integrity check failed')
     metadata = dict(db.execute('SELECT key,value FROM metadata'))
-    with closing(readonly(live_path)) as live:
-        anchor, anchor_hash, anchor_time = live.execute(
-            'SELECT number,hash,sample_time FROM blocks ORDER BY number LIMIT 1').fetchone()
-    expected = dict(start=str(START), anchor=str(anchor), anchor_hash=anchor_hash, anchor_time=str(anchor_time))
-    if metadata != expected:
-        raise ValueError('Archive does not match the live collector boundary')
+    if set(metadata) != {'start', 'anchor', 'anchor_hash', 'anchor_time'} or metadata['start'] != str(START):
+        raise ValueError('Archive metadata is incompatible')
+    anchor, anchor_time = int(metadata['anchor']), int(metadata['anchor_time'])
+    if chain.finalized() < anchor or chain.rpc.block_hash(anchor) != metadata['anchor_hash']:
+        raise ValueError('Archive chain or finalized anchor mismatch')
     count, low, high, unique = db.execute(
         'SELECT count(*),min(number),max(number),count(DISTINCT number) FROM samples').fetchone()
     if (count, low, high, unique) != (anchor - START, START, anchor - 1, anchor - START):
@@ -51,14 +52,14 @@ def validate(db, live_path):
     previous = None
     for number, stamp, price in db.execute('SELECT number,sample_time,price FROM samples ORDER BY number'):
         if stamp >= anchor_time or (previous is not None and stamp <= previous):
-            raise ValueError('Archive sample clock is not ordered before the live boundary')
+            raise ValueError('Archive sample clock is not ordered before the finalized anchor')
         if price is not None and not (0 < price < float('inf')):
             raise ValueError('Invalid archive price')
         previous = stamp
     return count
 
 
-def publish(staging, target, live):
+def publish(staging, target, chain):
     if staging.resolve() == target.resolve() or (target.exists() and staging.samefile(target)):
         raise ValueError('Staging and published archive must be separate files')
     # No in-place writers are allowed during publication. A rollback backup also
@@ -77,7 +78,7 @@ def publish(staging, target, live):
             # yielding between steps instead of copying the archive in one burst.
             copy_snapshot(source, db)
             db.execute('PRAGMA journal_mode=DELETE')
-            count = validate(db, live)
+            count = validate(db, chain)
             if target.exists():
                 with closing(readonly(target)) as current:
                     if dict(current.execute('SELECT key,value FROM metadata')) != dict(db.execute('SELECT key,value FROM metadata')):
@@ -120,11 +121,11 @@ if __name__ == '__main__':
                         help='Create a temporary work copy from the published archive in small batches')
     parser.add_argument('--cleanup-staging', action='store_true',
                         help='Remove the temporary work database only after successful publication')
-    parser.add_argument('--live', type=Path, default=Path('/var/lib/arb-peg/peg.sqlite3'))
+    parser.add_argument('--hub-rpc', default=RPC, help='Polkadot Asset Hub HTTP archive RPC')
     args = parser.parse_args()
     if args.seed_staging:
         print(seed(args.staging, args.target))
     else:
-        print(publish(args.staging, args.target, args.live))
+        print(publish(args.staging, args.target, HubChain(args.hub_rpc)))
     if args.cleanup_staging and not args.seed_staging:
         args.staging.unlink()

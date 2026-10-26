@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import publish_archive
 from test_backfill import backfill
@@ -15,10 +15,10 @@ class PublishTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
-        self.stage, self.target, self.live = [root / name for name in ('stage.db', 'published.db', 'live.db')]
-        with sqlite3.connect(self.live) as db:
-            db.execute('CREATE TABLE blocks(number,hash,sample_time)')
-            db.execute("INSERT INTO blocks VALUES(13,'anchor',13000)")
+        self.stage, self.target = [root / name for name in ('stage.db', 'published.db')]
+        self.chain = Mock()
+        self.chain.finalized.return_value = 13
+        self.chain.rpc.block_hash.return_value = 'anchor'
         self.db = backfill.database(self.stage)
         self.db.executemany('INSERT INTO metadata VALUES(?,?)',
                             dict(start='10', anchor='13', anchor_hash='anchor', anchor_time='13000').items())
@@ -35,10 +35,10 @@ class PublishTests(unittest.TestCase):
 
     def test_atomic_append_preserves_reader_cursor_and_backup(self):
         before = self.target.read_bytes()
-        worker = server.HistoryWorker(server.HistoryCache(), 'http://unused', archive=self.target)
+        worker = server.HistoryWorker(server.HistoryCache(), archive=self.target)
         worker.load_archive()
         self.assertEqual(worker.archive_seq,2)
-        result = publish_archive.publish(self.stage,self.target,self.live)
+        result = publish_archive.publish(self.stage,self.target,self.chain)
         self.assertIn('Published 3',result)
         self.assertEqual(Path(str(self.target)+'.previous').read_bytes(),before)
         self.assertTrue(worker.load_archive())
@@ -48,9 +48,9 @@ class PublishTests(unittest.TestCase):
             self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0],'delete')
 
     def test_identical_run_does_not_touch_production(self):
-        publish_archive.publish(self.stage,self.target,self.live)
+        publish_archive.publish(self.stage,self.target,self.chain)
         before = self.target.stat(), self.target.read_bytes()
-        self.assertIn('untouched',publish_archive.publish(self.stage,self.target,self.live))
+        self.assertIn('untouched',publish_archive.publish(self.stage,self.target,self.chain))
         self.assertEqual((self.target.stat(),self.target.read_bytes()),before)
 
     def test_failed_validation_leaves_live_file_unchanged(self):
@@ -58,13 +58,25 @@ class PublishTests(unittest.TestCase):
         with sqlite3.connect(self.stage) as db:
             db.execute('UPDATE samples SET price=.5 WHERE seq=1')
         with self.assertRaisesRegex(ValueError,'existing history'):
-            publish_archive.publish(self.stage,self.target,self.live)
+            publish_archive.publish(self.stage,self.target,self.chain)
         self.assertEqual(self.target.read_bytes(),before)
         with sqlite3.connect(self.stage) as db:
             db.execute('DELETE FROM samples WHERE number=10')
         with self.assertRaisesRegex(ValueError,'contiguous'):
-            publish_archive.publish(self.stage,self.target,self.live)
+            publish_archive.publish(self.stage,self.target,self.chain)
         self.assertEqual(self.target.read_bytes(),before)
+
+    def test_wrong_chain_anchor_or_unfinalized_archive_preserves_target(self):
+        before = self.target.read_bytes()
+        self.chain.rpc.block_hash.return_value = 'wrong-fork'
+        with self.assertRaisesRegex(ValueError, 'anchor mismatch'):
+            publish_archive.publish(self.stage, self.target, self.chain)
+        self.assertEqual(self.target.read_bytes(), before)
+        self.chain.rpc.block_hash.return_value = 'anchor'
+        self.chain.finalized.return_value = 12
+        with self.assertRaisesRegex(ValueError, 'anchor mismatch'):
+            publish_archive.publish(self.stage, self.target, self.chain)
+        self.assertEqual(self.target.read_bytes(), before)
 
     def test_backfill_cannot_open_published_path_or_alias(self):
         alias = self.target.parent / 'alias.db'

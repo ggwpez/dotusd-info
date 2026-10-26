@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 
-from archive_reader import read_sample
+from archive_reader import price_time, read_sample
 from hub_quotes import HubChain
 from issuance import RETENTION, read_issuance
 from treasury import read_history
@@ -28,6 +28,19 @@ def _issuance_numbers(lower, upper):
                     for index in range(last if last % 2 else last - 1, first - 1, -2))
 
 
+def price_database(path):
+    """Share the existing permanent evidence table with live price ingestion."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path)
+    db.execute('PRAGMA journal_mode=WAL')
+    db.execute('''CREATE TABLE IF NOT EXISTS repairs (
+        number INTEGER PRIMARY KEY, hash TEXT NOT NULL,
+        timestamp INTEGER NOT NULL, sample_time REAL NOT NULL,
+        price REAL NOT NULL, reserves TEXT NOT NULL)''')
+    db.execute('CREATE INDEX IF NOT EXISTS repairs_time ON repairs(sample_time)')
+    return db
+
+
 class GapRepair:
     def __init__(self, cache, path, chain=None, issuance=None, treasury=None):
         self.cache = cache
@@ -42,31 +55,12 @@ class GapRepair:
         self.thread = threading.Thread(target=self.run, name='pool-gap-repair', daemon=True)
 
     def database(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path)
-        # Restoring a long price cursor must not block live issuance commits.
-        db.execute('PRAGMA journal_mode=WAL')
-        db.execute('''CREATE TABLE IF NOT EXISTS repairs (
-            number INTEGER PRIMARY KEY, hash TEXT NOT NULL,
-            timestamp INTEGER NOT NULL, sample_time REAL NOT NULL,
-            price REAL NOT NULL, reserves TEXT NOT NULL)''')
-        db.execute('CREATE INDEX IF NOT EXISTS repairs_time ON repairs(sample_time)')
-        return db
+        return price_database(self.path)
 
-    def restore(self, db):
+    def restore(self):
         for history in (self.issuance, self.treasury):
             if history is not None:
                 history.restore()
-        cursor = db.execute(
-            'SELECT sample_time,price,number FROM repairs WHERE sample_time>? ORDER BY number',
-            (time.time() - RETENTION,))
-        while not self.stop.is_set():
-            rows = cursor.fetchmany(2000)
-            if not rows:
-                break
-            self.cache.merge(rows, time.time(), mark_fresh=False, missing_only=True)
-            if self.stop.wait(1):
-                break
 
     def poll(self, db):
         now = time.time()
@@ -82,7 +76,7 @@ class GapRepair:
             if not self.cache.history_ready:
                 return 0
             rows = self.cache.rows
-        # Only price gaps need the ingestion grace period and estimated clock.
+        # Preserve a short ingestion grace period for internal price gaps.
         cutoff = now - 120
         gap = next(((a, b) for a, b in zip(reversed(rows[:-1]), reversed(rows[1:]))
                     if a[2] is not None and b[2] is not None and
@@ -139,7 +133,8 @@ class GapRepair:
             except Exception as error:
                 history_error = error
         attempted = 0
-        previous = gap[0][0] if price_numbers else None
+        lower = (gap[0][2], gap[0][0]) if gap else None
+        upper = (gap[1][2], gap[1][0]) if gap else None
         for number in price_numbers:
             if self.stop.is_set():
                 return 0
@@ -150,13 +145,9 @@ class GapRepair:
                 _, at, timestamp, price, reserves = sample
                 if price is None:
                     raise ValueError(f'No pool price at block {number}; preserving gap')
-                # Keep both existing boundaries and the chart's estimated 2s clock.
-                upper_time = gap[1][0] - (gap[1][2] - number) * 2
-                if previous + 2 > upper_time:
-                    raise ValueError('Gap boundaries cannot fit the estimated block clock')
-                stamp = min(max(timestamp / 1000, previous + 2), upper_time)
+                stamp = price_time(number, timestamp, lower, upper)
                 prices.append((number, at, timestamp, stamp, price, reserves))
-                previous = stamp
+                lower = (number, stamp)
             except Exception as error:
                 price_error = error
             read_histories(number, at=sample[1] if sample else None,
@@ -189,6 +180,36 @@ class GapRepair:
                      attempted, len(prices), counts)
         return attempted
 
+    def backfill(self, db, limit):
+        """Spend unused repair slots extending history backwards from its edge."""
+        with self.cache.lock:
+            rows = self.cache.rows
+            if not self.cache.history_ready or not rows:
+                return
+            first = rows[0]
+        if not limit or first[2] is None or first[0] <= time.time() - RETENTION + 2:
+            return
+        if self.chain.finalized() < first[2]:
+            raise ValueError('Archive has not finalized the backfill boundary')
+        prices = []
+        upper = (first[2], first[0])
+        for number in range(first[2] - 1, max(0, first[2] - limit - 1), -1):
+            if self.stop.is_set():
+                break
+            _, at, timestamp, price, reserves = read_sample(self.chain.rpc, number)
+            if price is None:
+                break
+            stamp = price_time(number, timestamp, upper=upper)
+            prices.append((number, at, timestamp, stamp, price, reserves))
+            upper = (number, stamp)
+            if stamp <= time.time() - RETENTION:
+                break
+        if prices:
+            with db:
+                db.executemany('INSERT OR IGNORE INTO repairs VALUES(?,?,?,?,?,?)', prices)
+            self.cache.merge([(r[3], r[4], r[0]) for r in prices], time.time(),
+                             mark_fresh=False, missing_only=True)
+
     def run(self):
         failures = 0
         db = None
@@ -198,14 +219,15 @@ class GapRepair:
                     if db is None:
                         db = self.database()
                         try:
-                            self.restore(db)
+                            self.restore()
                         except Exception:
                             db.close()
                             db = None
                             raise
                     if self.stop.is_set():
                         break
-                    self.poll(db)
+                    attempted = self.poll(db)
+                    self.backfill(db, BATCH - attempted)
                     failures = 0
                 except Exception:
                     failures = min(failures + 1, 4)

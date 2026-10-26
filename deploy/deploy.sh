@@ -39,7 +39,6 @@ ssh "$host" 'sudo -n install -d -m 0755 /opt/dotusd-info/deploy'
 )
 ssh "$host" 'sudo -n sh -s' <<'REMOTE'
 set -eu
-systemctl is-active --quiet arb-prometheus arb-peg
 rm -f /opt/dotusd-info/coingecko-details.html /opt/dotusd-info/backfill_quotes.py /opt/dotusd-info/import_quote_batches.py /opt/dotusd-info/repair_quote_gaps.py
 /usr/bin/python3 -m venv /opt/dotusd-info/.venv
 /opt/dotusd-info/.venv/bin/pip install -r /opt/dotusd-info/requirements.txt
@@ -74,7 +73,7 @@ if ! systemctl reload caddy; then
     systemctl reload caddy
     exit 1
 fi
-systemctl is-active dotusd-info caddy arb-peg arb-prometheus
+systemctl is-active dotusd-info caddy
 systemctl is-enabled dotusd-info
 REMOTE
 

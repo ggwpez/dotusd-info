@@ -3,6 +3,8 @@ import io
 import json
 from unittest.mock import Mock, patch
 
+import hub_quotes
+from archive_reader import Unavailable
 from hub_quotes import GENESIS, HubChain, HubRpc
 
 
@@ -41,3 +43,23 @@ class HubChainTests(unittest.TestCase):
             with patch('hub_quotes.urllib.request.urlopen', return_value=io.BytesIO(body)):
                 with self.assertRaises(ValueError):
                     rpc.call('state_getStorage', [])
+
+    def test_rpc_response_size_is_bounded(self):
+        rpc = HubRpc('https://hub.example', delay=0)
+        with patch.object(hub_quotes, 'MAX_RPC_BYTES', 100), \
+                patch('hub_quotes.urllib.request.urlopen', return_value=io.BytesIO(b'x' * 101)):
+            with self.assertRaisesRegex(ValueError, 'size limit'):
+                rpc.call('chain_getFinalizedHead', [])
+
+    def test_block_hash_and_storage_stay_pinned(self):
+        rpc = HubRpc('https://hub.example', delay=0)
+        rpc.call = Mock(return_value=None)
+        with self.assertRaises(Unavailable):
+            rpc.block_hash(123)
+        rpc.call.return_value = [{'block': 'h123', 'changes': [['key', 'value']]}]
+        self.assertEqual(rpc.storage('h123', ['key']), {'key': 'value'})
+        rpc.call.assert_called_with('state_queryStorageAt', [['key'], 'h123'])
+        for result in ([], [{'block': 'wrong', 'changes': []}]):
+            rpc.call.return_value = result
+            with self.assertRaisesRegex(ValueError, 'pinned'):
+                rpc.storage('h123', ['key'])
