@@ -3,10 +3,6 @@
 User-facing changes only, newest first. One short sentence per entry.
 Format: `## X.Y.Z - YYYY-MM-DD`, then `- ` entries.
 
-## 1.14.4 - 2026-10-26
-
-- Removed issuance and Treasury holding graphs.
-
 ## 1.13.0 - 2026-10-26
 
 - New: a bell shows what changed.
