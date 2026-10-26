@@ -9,7 +9,6 @@ from hub_quotes import HubChain
 from issuance import RETENTION, read_issuance
 from treasury import read_history
 
-RPC = 'https://polkadot-asset-hub-rpc.polkadot.io'
 BATCH = 8
 PAUSE = 1
 ISSUANCE_STRIDE = 1800
@@ -47,10 +46,7 @@ class GapRepair:
         self.path = path
         self.issuance = issuance
         self.treasury = treasury
-        self.chain = chain or HubChain(RPC)
-        # Sequential calls, at most ten RPC requests per second, including
-        # genesis/finality checks. No JSON-RPC batches or concurrent requests.
-        self.chain.rpc.delay = 0.1
+        self.chain = chain or HubChain()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='pool-gap-repair', daemon=True)
 

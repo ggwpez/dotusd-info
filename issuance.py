@@ -199,8 +199,6 @@ class IssuanceWorker:
     def __init__(self, cache, chain=None):
         self.cache = cache
         self.chain = chain or HubChain()
-        # Reuse the bounded, genesis-verified Hub RPC; requests stay sequential.
-        self.chain.rpc.delay = 0.1
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='dotusd-issuance', daemon=True)
 

@@ -22,6 +22,11 @@ evidence without rewriting imported history. `--archive PATH` continues to
 read the published SQLite archive. `historyReady` reports completion of local
 history restoration, not complete chain coverage. Browsers retry incomplete
 startup ranges, including fixed shared ranges.
+`hub_quotes.py` owns the default endpoint and HTTP transport limits: each client
+pauses 0.1 seconds before requests, uses a 10-second request timeout and rejects
+responses larger than 16 MiB. Workers use those defaults rather than resetting
+the transport configuration. These are per-client limits, not a global rate cap.
+
 Readers capture an immutable snapshot under a brief lock, then scan it without
 holding the lock. Writers publish rows and freshness together, so ongoing reads
 retain a consistent view.

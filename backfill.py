@@ -75,7 +75,7 @@ def main():
         logging.info('Backfill %s..%s from %s; resuming at %s', START, anchor - 1, args.hub_rpc, end - 1)
         while end > START:
             begin = max(START, end - BATCH)
-            rows = archive.samples(list(range(end - 1, begin - 1, -1)))
+            rows = archive.samples(range(end - 1, begin - 1, -1))
             next_time = store_batch(db, rows, next_time)
             end = begin
             if (anchor - end) % 1024 == 0 or end == START:

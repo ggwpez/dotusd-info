@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from archive_reader import price_time, read_sample
+from gap_repair import GapRepair, price_database
 from hub_quotes import HubChain, RPC
 from issuance import IssuanceCache, IssuanceWorker
 from release import read_sources, read_version, source_hash
@@ -426,7 +427,6 @@ class HistoryWorker:
     def __init__(self, cache, chain=None, archive=None):
         self.cache = cache
         self.chain = chain or HubChain()
-        self.chain.rpc.delay = 0.1
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='price-history', daemon=True)
         self.archive = archive if archive is not None else cache.archive
@@ -488,7 +488,6 @@ class HistoryWorker:
             # per batch, not eight full-cache rebuilds on a populated archive.
             incoming = list(restored.values())
             if prices and self.cache.history_path is not None:
-                from gap_repair import price_database
                 with closing(price_database(self.cache.history_path)) as db, db:
                     db.executemany('INSERT OR IGNORE INTO repairs VALUES(?,?,?,?,?,?)', prices)
                     for row in prices:
@@ -502,7 +501,6 @@ class HistoryWorker:
     def load_history(self):
         if self.restored:
             return True
-        from gap_repair import price_database
         with closing(price_database(self.cache.history_path)) as db:
             rows = db.execute(
                 'SELECT sample_time,price,number FROM repairs WHERE sample_time>? '
@@ -799,7 +797,6 @@ def main():
     server.issuance = IssuanceCache(history_path=args.gap_repair_history)
     server.treasury = TreasuryHistory(args.gap_repair_history)
     if args.gap_repair_history:
-        from gap_repair import price_database
         # Establish WAL before concurrent workers open a newly created database.
         with closing(price_database(args.gap_repair_history)):
             pass
@@ -812,7 +809,6 @@ def main():
         issuance = IssuanceWorker(server.issuance, chain=HubChain(args.hub_rpc))
         issuance.thread.start()
         if args.gap_repair_history:
-            from gap_repair import GapRepair
             repair = GapRepair(server.cache, args.gap_repair_history,
                                chain=HubChain(args.hub_rpc), issuance=server.issuance,
                                treasury=server.treasury)

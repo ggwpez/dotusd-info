@@ -11,6 +11,7 @@ MAX_RPC_BYTES = 16 * 1024 * 1024
 
 
 class HubRpc:
+    """Sequential HTTP calls with a per-client pause, timeout and response cap."""
     def __init__(self, endpoint, delay=0.1):
         self.endpoint = endpoint
         self.delay = delay
