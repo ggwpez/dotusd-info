@@ -162,7 +162,8 @@ Keeping the commit SHA out of `VERSION` avoids a self-referential commit hash.
 Without `DEPLOY_COMMIT`, local development retains the content-hash version.
 The checksum covers `release.py`'s `RELEASE_FILES`, including runtime dependencies
 and the release script itself. It excludes `VERSION`, tests, and documentation.
-Add new runtime files to that list and the deployment copy list; no separate
+Add new runtime files to that list, the deployment copy list, the `Dockerfile`
+`COPY` lines and the `.dockerignore` allowlist; no separate
 release or check-version command is needed.
 
 `just test` uses the environment created by `just setup`. Without `just`, run
@@ -213,8 +214,9 @@ instructions here so they stay in sync.
 - Deployment validates the release internally, refuses unchanged or older
   version numbers, and fails if the expected public version is not observed
   within 60 seconds.
-- Add new runtime files to `RELEASE_FILES` in `release.py` and the copy list in
-  `deploy/deploy.sh` so hashing and deployment include them.
+- Add new runtime files to `RELEASE_FILES` in `release.py`, the copy list in
+  `deploy/deploy.sh`, the `Dockerfile` `COPY` lines and the `.dockerignore`
+  allowlist so hashing, deployment and the image include them.
 - Documentation-only changes do not need a version bump or the full test suite.
   Verify links instead.
 - Never use `/` in Git branch names; use hyphens, such as
