@@ -209,8 +209,9 @@ instructions here so they stay in sync.
   deploy from a clean checkout; never amend that commit after deployment.
   Resolve failures before committing. Do not run separate release/check commands
   or rerun tests in deploy.
-- Add a `CHANGELOG.md` entry only for user-facing changes a visitor can notice.
-  Never add entries for CI, deployment, refactoring, formatting, tests or docs.
+- Add a `CHANGELOG.md` entry only for user-facing changes a visitor can notice:
+  one short sentence, a few words. Never add entries for CI, deployment,
+  refactoring, formatting, tests or docs.
 - Deployment validates the release internally, refuses unchanged or older
   version numbers, and fails if the expected public version is not observed
   within 60 seconds.
