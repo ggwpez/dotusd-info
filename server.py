@@ -838,9 +838,8 @@ class Handler(BaseHTTPRequestHandler):
                 params = urllib.parse.parse_qs(url.query, max_num_fields=20, keep_blank_values=True)
                 selected = params.get('series', [])
                 series = selected[0].split(',') if len(selected) == 1 else []
-                if (not series or len(set(series)) != len(series) or
-                        not set(series) <= {'price', 'ti', 'treasury'}):
-                    raise ValueError('Choose a nonempty unique subset of price, ti, treasury.')
+                if series != ['price']:
+                    raise ValueError('Only price data is currently available. Use series=price.')
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
                 histories = {}

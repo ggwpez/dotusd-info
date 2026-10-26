@@ -40,8 +40,11 @@ globally.
 
 ## Historic API
 
-`GET /api/historic?series=…` selects any unique, nonempty subset of `price`,
-`ti` and `treasury`.
+`GET /api/historic?series=price` currently serves prices only. TI and Treasury
+selections, including combinations with prices, return HTTP 400 before any
+state history read. State collection and persistence continue unchanged.
+The state encoding and cursor machinery described below is retained internally
+but is temporarily unavailable through HTTP.
 
 ### Parameters
 
@@ -89,11 +92,9 @@ stay individual records to avoid rounding drift.
 
 ### Status and errors
 
-- Recent price-only requests return 503 until history is restored. Older saved
-  windows and requests including state return 200 with `historyReady: false`
-  and empty prices.
-- State `error` reports live-RPC or loading status; retained samples remain
-  available, and a successful refresh clears it.
+- Recent price requests return 503 until history is restored. Older saved
+  windows can return 200 with `historyReady: false` and empty prices.
+- State selections return 400 regardless of loading, saved data or RPC status.
 - Disk read failures return 503. Responses carry `Cache-Control: no-store` and
   `X-App-Version`.
 
@@ -170,8 +171,8 @@ gap for retry.
 - There is no live Treasury poll; without archive repair the series is empty.
 - `TreasuryHistory` stores `(number, timestamp, balance)` in the `treasury`
   table and shares TI's cache implementation, revision journal and historical
-  reads. The HTTP handler and repair worker share one instance, so backfill
-  reaches open subscriptions.
+  reads. The repair worker continues updating the shared instance while public
+  state-series access is disabled.
 - `treasury_identity` records the asset and account behind saved rows. A missing
   or mismatched identity atomically invalidates Treasury rows only, before any
   read; the repair grid then refills them.
@@ -210,22 +211,22 @@ freshness, and live samples supersede repairs for the same block.
   two-pixel band around it, respecting gaps, zoom and scale.
 - **Log scale** applies `sign(bps) * log1p(abs(bps))` around the peg; labels,
   ratings and tooltips keep their units and values.
-- Units (`scale=bps|percent|dollars`), axis (`axis=linear|log`) and TI
-  visibility (`ti=1|0`) are written to the URL. Valid URL values override saved
-  preferences without changing them; Back/Forward restores them without refetching.
+- Units (`scale=bps|percent|dollars`) and axis (`axis=linear|log`) are written
+  to the URL. Valid URL values override saved preferences without changing them;
+  Back/Forward restores them without refetching. TI visibility is forced off;
+  saved preferences and `ti=1` links cannot enable it.
 - Historical and zoomed views show `-` for peg tightness, current price and spot
   price; range low/high remains. Dollar mode hides the redundant spot price with
   `visibility: hidden`.
-- TI and Treasury share a linear right axis. Samples up to 1,800 blocks apart are
-  connected; larger gaps stay open. Hover looks up state by block number and shows
-  `unavailable` for missing samples.
+- The issuance setting is disabled and unchecked with a temporary-unavailability
+  explanation. The state-series rendering machinery is retained but inactive.
 - Hover redraws are coalesced per animation frame.
 
 ### Loading
 
 - One subscription: a six-second poll and one abort controller for
-  `/api/historic`, using `series=price` or `series=price,ti,treasury`. Hidden
-  pages do not poll; navigation cancels the previous request.
+  `/api/historic?series=price`. Hidden pages do not poll; navigation cancels
+  the previous request. No TI or Treasury windows or cursors are requested.
 - Live polls send `startpoint` with the last finalized block and omit `end`.
   Initial loads use timestamps and `windowStart` for early extrema.
 - Prices draw while streaming. State rows and cursors commit only after
@@ -235,7 +236,7 @@ freshness, and live samples supersede repairs for the same block.
   are reconstructed on demand for hover and keyboard navigation. Rendering keeps
   pixel endpoints and extrema; nothing is downsampled.
 - Price history with known missing blocks retries the displayed window once per
-  minute. With TI enabled, fixed views also poll for repair deltas.
+  minute.
 - Returning to live reuses cached data only within the freshness threshold;
   otherwise it shows “Loading live prices…” until the current window arrives.
 

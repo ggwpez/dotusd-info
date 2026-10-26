@@ -31,7 +31,7 @@ function linkedView() {
   return {range, zoom: valid ? [start, end] : null,
     scale: ['bps', 'percent', 'dollars'].includes(scale) ? scale : null,
     axis: ['linear', 'log'].includes(axis) ? axis : null,
-    issuance: params.get('ti') === '1' ? true : params.get('ti') === '0' ? false : null};
+    issuance: false};
 }
 const initialView = linkedView();
 const canvas = $('chart'), ctx = canvas.getContext('2d');
@@ -69,10 +69,9 @@ let axisScale = 'linear';
 try {
   if (localStorage.getItem('dotusd-axis-scale') === 'log') axisScale = 'log';
 } catch {}
+// State-series display and requests are temporarily disabled; preserve the saved preference.
 let showIssuance = false;
-try { showIssuance = localStorage.getItem('dotusd-issuance-axis') === 'true'; } catch {}
-const preferredIssuance = showIssuance;
-showIssuance = initialView.issuance ?? preferredIssuance;
+const preferredIssuance = false;
 let issuanceRows = [], issuanceCursor = null, issuanceCoverage = null;
 let treasuryRows = [], treasuryCursor = null, treasuryCoverage = null;
 const issuanceColor = '#82b7ff';
@@ -898,20 +897,8 @@ $('axis-scale').addEventListener('change', event => {
   writeViewUrl();
   updateViewControls();
 });
-$('issuance-axis').checked = showIssuance;
-$('issuance-axis').addEventListener('change', event => {
-  showIssuance = event.target.checked;
-  if (showIssuance) {
-    issuanceCursor = null;
-    issuanceCoverage = null;
-    treasuryCursor = null;
-    treasuryCoverage = null;
-  }
-  try { localStorage.setItem('dotusd-issuance-axis', String(showIssuance)); } catch {}
-  applyScale();
-  writeViewUrl();
-  refresh(true);
-});
+$('issuance-axis').checked = false;
+$('issuance-axis').disabled = true;
 const settings = document.querySelector('.settings');
 // The bell exists only when CHANGELOG.md has entries; its list is server-rendered.
 const changelog = $('changelog');

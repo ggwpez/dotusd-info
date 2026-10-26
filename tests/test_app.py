@@ -272,7 +272,7 @@ class AppTests(unittest.TestCase):
         """
         self.assertTrue(evaluate(source, asynchronous=True))
 
-    def test_combined_subscription_toggles_and_ignores_stale_streams(self):
+    def test_price_only_subscription_ignores_state_series_links(self):
         source = (ROOT / 'tests/app_test.js').read_text()
         source += '\n' + (ROOT / 'ranges.js').read_text().replace('export ', '')
         source += '\n' + (ROOT / 'app.js').read_text().split('\n', 1)[1]
@@ -293,13 +293,10 @@ class AppTests(unittest.TestCase):
             requests.push({url, signal, respond: result.resolve});
             return result.promise;
         };
-        let pending;
-        const originalRefresh = refresh;
-        refresh = (...args) => pending = originalRefresh(...args);
         writeViewUrl = () => {};
         (async () => {
             reloading = false;
-            state.range = 3600; state.live = true; state.zoom = null;
+            state.range = 86400; state.live = true; state.zoom = null;
             const price = refresh();
             require(requests.length === 1 && requests[0].url.startsWith('/api/historic?series=price&'),
                 'one price-only historic subscription');
@@ -310,64 +307,21 @@ class AppTests(unittest.TestCase):
             require(requests.length === 1 && !requests[0].signal.aborted,
                 'online, visibility, and poll triggers share the in-flight request');
 
-            elements.get('issuance-axis').events.change({target: {checked: true}});
-            const combined = pending;
-            require(requests.length === 2 && requests[0].signal.aborted,
-                'TI enable cancels and reconfigures the existing request exactly once');
-            require(requests[1].url.startsWith('/api/historic?series=price,ti,treasury&') &&
-                requests[1].url.includes('&tiStart=' + (now - 3600)) &&
-                requests[1].url.includes('&treasuryStart=' + (now - 3600)) &&
-                !requests[1].url.includes('tiEnd=') && !requests[1].url.includes('tiCursor=') &&
-                !requests[1].url.includes('treasuryEnd=') && !requests[1].url.includes('treasuryCursor='),
-                'enabled live subscription requests both full viewports without ends or cursors');
-            requests[0].respond({headers: {get: () => 'obsolete-release'}});
-            await price;
-            require(!reloading, 'cancelled price response cannot trigger a version reload');
-            const stale = historicStream({rows: [[now - 10, 1000, 10]],
-                reset: true, cursor: 'stale', error: null}, now, [],
-                {rows: [[now - 10, 100, 10]], reset: true, cursor: 'stale-treasury', error: null});
-            requests[1].respond(stale.response);
-            await stale.started;
-            require(issuanceCursor === null && !issuanceRows.length &&
-                treasuryCursor === null && !treasuryRows.length,
-                'header alone never publishes either series or advances cursors');
-
-            elements.get('issuance-axis').events.change({target: {checked: false}});
-            const disabled = pending;
-            require(requests.length === 3 && requests[1].signal.aborted &&
-                requests[2].url.startsWith('/api/historic?series=price&') &&
-                !requests[2].url.includes('&ti') && !requests[2].url.includes('&treasury'),
-                'disable reconfigures one request back to price only');
+            require(elements.get('issuance-axis').disabled && !elements.get('issuance-axis').checked,
+                'the unavailable state-series setting is disabled and unchecked');
+            location.search = '?ti=1';
+            URLSearchParams.prototype.get = name => name === 'ti' ? '1' : null;
+            window.events.popstate();
+            require(!showIssuance && requests.length === 1,
+                'a state-series link cannot enable the display or restart the subscription');
             const priceOnly = historicStream(undefined, now);
-            requests[2].respond(priceOnly.response);
+            requests[0].respond(priceOnly.response);
             await priceOnly.started;
             priceOnly.finish();
-            await disabled;
-            stale.finish();
-            await combined;
-            require(issuanceCursor === null && !issuanceRows.length &&
-                treasuryCursor === null && !treasuryRows.length && !loading,
-                'a stale combined stream cannot overwrite the new subscription');
-
-            issuanceCursor = 'previous-enable';
-            treasuryCursor = 'previous-treasury-enable';
-            elements.get('issuance-axis').events.change({target: {checked: true}});
-            const enabled = pending;
-            require(requests.length === 4 && !requests[3].url.includes('tiCursor=') &&
-                !requests[3].url.includes('treasuryCursor='),
-                'each enable resets both revision cursors');
-            const fresh = historicStream({rows: [[now - 5, 1100, 11]],
-                reset: true, cursor: 'fresh', error: null}, now, [],
-                {rows: [[now - 5, 0, 11]], reset: true, cursor: 'fresh-treasury', error: null});
-            requests[3].respond(fresh.response);
-            await fresh.started;
-            fresh.finish();
-            await enabled;
-            require(issuanceCursor === 'fresh' && issuanceRows[0][2] === 11 && !loading &&
-                treasuryCursor === 'fresh-treasury' && treasuryRows[0][1] === 0,
-                'the active completed stream publishes both series');
-            require(requests.every(request => request.url.startsWith('/api/historic?')),
-                'there is no second issuance fetch or legacy endpoint');
+            await price;
+            require(requests.every(request => request.url.startsWith('/api/historic?series=price&') &&
+                !request.url.includes('&ti') && !request.url.includes('&treasury')),
+                'only price data is requested, without state windows or cursors');
             return true;
         })();
         """

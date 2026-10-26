@@ -101,7 +101,7 @@ class PageTests(unittest.TestCase):
                     if include_price and not streaming:
                         self.assertEqual(result['samples'], rows[:1])
 
-    def test_historic_series_selection_formats_and_fresh_state_deltas(self):
+    def test_historic_serves_only_prices_even_with_saved_state(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()
         now = time.time()
@@ -126,79 +126,28 @@ class PageTests(unittest.TestCase):
             for series in combinations:
                 for encoding in ('raw', 'ranges-v1', 'stream'):
                     with self.subTest(series=series, encoding=encoding):
-                        with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
+                        route = base + f'series={series}&format={encoding}' + bounds
+                        if series != 'price':
+                            with self.assertRaises(HTTPError) as error:
+                                urlopen(route)
+                            self.assertEqual(error.exception.code, 400)
+                            self.assertIn('series=price', json.load(error.exception)['error'])
+                            error.exception.close()
+                            continue
+                        with urlopen(route) as response:
                             if encoding == 'stream':
                                 messages = decode_stream(response)
                                 body = messages[0]
-                                self.assertEqual(body['encoding'], 'ranges-stream-v2')
                                 self.assertEqual(messages[-1], {'done': True})
-                                self.assertEqual(messages[1:-1], [{'ranges': list(page.pack_ranges(prices))}]
-                                                 if 'price' in series else [])
+                                self.assertEqual(messages[1:-1], [{'ranges': list(page.pack_ranges(prices))}])
                             else:
                                 body = decode_history(json.load(response))
-                                if 'price' in series:
-                                    self.assertEqual(body['samples' if encoding == 'raw' else 'ranges'],
-                                                     prices if encoding == 'raw' else list(page.pack_ranges(prices)))
-                                else:
-                                    self.assertEqual(set(body), set(series.split(',')))
-                            if 'price' in series:
-                                self.assertTrue(body['historyReady'])
-                                self.assertEqual(body['fetchedAt'], now)
-                            else:
-                                for key in ('fetchedAt', 'historyReady', 'extremes', 'ranges', 'samples'):
-                                    self.assertNotIn(key, body)
-                            if 'ti' in series:
-                                self.assertEqual(body['ti']['rows'], rows[1:])
-                                self.assertTrue(body['ti']['reset'])
-                                self.assertIsNone(body['ti']['error'])
-                            else:
-                                self.assertNotIn('ti', body)
-                            if 'treasury' in series:
-                                self.assertEqual(body['treasury']['rows'], treasury_rows[1:])
-                                self.assertTrue(body['treasury']['reset'])
-                                self.assertIsNone(body['treasury']['error'])
-                            else:
-                                self.assertNotIn('treasury', body)
-            route = (base + 'series=price,ti,treasury&format=stream&startpoint=55' + bounds +
-                     f'&windowStart={now-60}&windowEnd={now}')
-            with urlopen(route) as response:
-                initial, done = decode_stream(response)
-            cursor = initial['ti']['cursor']
-            treasury_cursor = initial['treasury']['cursor']
-            self.assertEqual(done, {'done': True})
-            cursors = '&tiCursor=' + cursor + '&treasuryCursor=' + treasury_cursor
-            with urlopen(route + cursors) as response:
-                unchanged, done = decode_stream(response)
-            self.assertEqual(unchanged['ti']['rows'], [])
-            self.assertFalse(unchanged['ti']['reset'])
-            self.assertEqual(unchanged['treasury']['rows'], [])
-            self.assertFalse(unchanged['treasury']['reset'])
-            # Older archive repairs and corrected supply are independent of the price cursor.
-            server.issuance.merge([(now - 40, 110., 20), (now - 30, 121., 30),
-                                   (now - 5, 150., 60)])
-            server.treasury.merge([(now - 35, 0., 25), (now - 25, 61., 35)])
-            with urlopen(route + cursors) as response:
-                changed, done = decode_stream(response)
-            self.assertEqual(changed['ti']['rows'], [[now - 40, 110., 20], [now - 30, 121., 30]])
-            self.assertFalse(changed['ti']['reset'])
-            self.assertNotEqual(changed['ti']['cursor'], cursor)
-            self.assertEqual(done, {'done': True})
-            self.assertEqual(changed['treasury']['rows'], [[now - 35, 0., 25], [now - 25, 61., 35]])
-            self.assertFalse(changed['treasury']['reset'])
-            self.assertNotEqual(changed['treasury']['cursor'], treasury_cursor)
-            # A state cursor cannot suppress another series' rows.
-            with urlopen(route + '&tiCursor=' + changed['ti']['cursor'] +
-                         '&treasuryCursor=' + changed['ti']['cursor']) as response:
-                independent, done = decode_stream(response)
-            self.assertEqual(independent['ti']['rows'], [])
-            self.assertTrue(independent['treasury']['reset'])
-            self.assertEqual(independent['treasury']['rows'],
-                             [[now - 35, 0., 25], [now - 25, 61., 35], treasury_rows[2]])
-            with urlopen(route + '&tiCursor=expired') as response:
-                reset, done = decode_stream(response)
-            self.assertTrue(reset['ti']['reset'])
-            self.assertEqual(reset['ti']['rows'],
-                             [[now - 40, 110., 20], [now - 30, 121., 30], rows[2]])
+                                self.assertEqual(body['samples' if encoding == 'raw' else 'ranges'],
+                                                 prices if encoding == 'raw' else list(page.pack_ranges(prices)))
+                            self.assertTrue(body['historyReady'])
+                            self.assertEqual(body['fetchedAt'], now)
+                            self.assertNotIn('ti', body)
+                            self.assertNotIn('treasury', body)
         finally:
             server.shutdown()
             server.server_close()
@@ -268,131 +217,26 @@ class PageTests(unittest.TestCase):
                     urlopen(base + removed)
                 self.assertEqual(error.exception.code, 404)
                 error.exception.close()
-            # The live seven-day lower bound can age while a request is in transit.
-            with urlopen(base + f'/api/historic?series=ti&tiStart={now-604800}') as response:
-                self.assertEqual(decode_history(json.load(response))['ti']['rows'], [])
-            rows = [[now - 4000, 1., 1], [now - 100, 2., 2], [now - 10, 3., 3]]
-            server.issuance.merge(rows, live=True)
-            for series in ('ti', 'price,ti'):
-                with urlopen(base + f'/api/historic?series={series}') as response:
-                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], rows[1:])
-                with urlopen(base + f'/api/historic?series={series}&start={now-200}&end={now-50}') as response:
-                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], [rows[1]])
-                # Explicit issuance bounds override generic price bounds.
-                with urlopen(base + f'/api/historic?series={series}&start={now-200}&end={now-50}'
-                             f'&tiStart={now-20}&tiEnd={now}') as response:
-                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], [rows[2]])
-                with urlopen(base + f'/api/historic?series={series}&end={now-50}') as response:
-                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], [rows[1]])
         finally:
             server.shutdown()
             server.server_close()
             thread.join()
 
-    def test_treasury_warming_failures_and_disabled_history_remain_independent(self):
+    def test_disabled_state_does_not_read_storage_or_bypass_price_warmup(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()
-        directory = tempfile.TemporaryDirectory()
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}/api/historic?'
-        now = time.time()
-        bounds = f'&start={now-60}&end={now}'
         try:
-            with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
-                with urlopen(base + 'series=treasury' + bounds) as response:
-                    disabled = decode_history(json.load(response))['treasury']
-                self.assertEqual(disabled['rows'], [])
-                self.assertIsNone(disabled['error'])
-                server.treasury = page.TreasuryHistory(Path(directory.name) / 'history.db')
-                with urlopen(base + 'series=treasury' + bounds) as response:
-                    loading = decode_history(json.load(response))['treasury']
-                self.assertEqual(loading['rows'], [])
-                self.assertIn('Loading', loading['error'])
-                rows = [[now - 40, 0., 10], [now - 20, 50., 20]]
-                server.treasury.merge(rows)
-                for series in ('treasury', 'ti,treasury', 'price,treasury', 'price,ti,treasury'):
-                    for encoding in ('raw', 'ranges-v1', 'stream'):
-                        with self.subTest(series=series, encoding=encoding):
-                            with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
-                                if encoding == 'stream':
-                                    body, done = decode_stream(response)
-                                    self.assertEqual(done, {'done': True})
-                                else:
-                                    body = decode_history(json.load(response))
-                            self.assertEqual(body['treasury']['rows'], rows)
-                            self.assertIsNone(body['treasury']['error'])
-                            if 'price' in series:
-                                self.assertFalse(body['historyReady'])
-                                self.assertIsNone(body['fetchedAt'])
-                            if 'ti' in series:
-                                self.assertEqual(body['ti']['rows'], [])
-                                self.assertIn('Loading', body['ti']['error'])
-                with server.treasury.lock:
-                    server.treasury.error = 'Treasury history temporarily unavailable.'
-                with urlopen(base + 'series=treasury' + bounds) as response:
-                    failed = decode_history(json.load(response))['treasury']
-                self.assertEqual(failed['rows'], rows)
-                self.assertEqual(failed['error'], server.treasury.error)
-                old = now - 30 * 86400
-                with patch.object(server.treasury, 'database', side_effect=OSError('Disk unavailable')):
-                    with self.assertRaises(HTTPError) as error:
-                        urlopen(base + f'series=treasury&start={old}&end={old+60}')
-                    self.assertEqual(error.exception.code, 503)
-                    self.assertIn('Stored history', json.load(error.exception)['error'])
+            with patch.object(server.issuance, 'selection', side_effect=AssertionError('TI read')), \
+                    patch.object(server.treasury, 'selection', side_effect=AssertionError('Treasury read')):
+                for series, status in (('price', 503), ('ti', 400), ('treasury', 400),
+                                       ('price,ti,treasury', 400)):
+                    with self.subTest(series=series), self.assertRaises(HTTPError) as error:
+                        urlopen(base + f'series={series}')
+                    self.assertEqual(error.exception.code, status)
                     error.exception.close()
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join()
-            directory.cleanup()
-
-    def test_historic_issuance_reads_cached_loading_success_and_failure_states(self):
-        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
-        server.cache = page.HistoryCache()
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        base = f'http://127.0.0.1:{server.server_port}'
-        now = time.time()
-        route = f'/api/historic?series=ti&tiStart={now-60}'
-        try:
-            with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
-                with urlopen(base + route) as response:
-                    body = decode_history(json.load(response))['ti']
-                    self.assertEqual(body['rows'], [])
-                    self.assertIn('Loading', body['error'])
-                    self.assertEqual(response.headers['Cache-Control'], 'no-store')
-                    self.assertEqual(response.headers['X-App-Version'], server.version)
-                rows = ((now - 10, 123456.789, 100), (now - 4, 123456.789, 101))
-                server.issuance.merge(rows, live=True)
-                for error in (None, 'Issuance refresh failed: RPC unavailable'):
-                    with server.issuance.lock:
-                        self.assertEqual(server.issuance.rows, rows)
-                        server.issuance.error = error
-                    with urlopen(base + route) as response:
-                        ti = decode_history(json.load(response))['ti']
-                        self.assertEqual(ti['rows'], [list(row) for row in rows])
-                        self.assertEqual(ti['error'], error)
-                        self.assertTrue(ti['reset'])
-                        self.assertIsInstance(ti['cursor'], str)
-                # Issuance remains available independently of price-history startup.
-                with self.assertRaises(HTTPError) as error:
-                    urlopen(base + '/api/historic?series=price')
-                self.assertEqual(error.exception.code, 503)
-                error.exception.close()
-                for encoding in ('raw', 'ranges-v1', 'stream'):
-                    with urlopen(base + route.replace('series=ti', 'series=price,ti') +
-                                 f'&format={encoding}') as response:
-                        if encoding == 'stream':
-                            metadata, done = decode_stream(response)
-                            self.assertEqual(done, {'done': True})
-                        else:
-                            metadata = decode_history(json.load(response))
-                            self.assertEqual(metadata['samples' if encoding == 'raw' else 'ranges'], [])
-                        self.assertEqual(metadata['ti']['rows'], [list(row) for row in rows])
-                        self.assertIn('RPC unavailable', metadata['ti']['error'])
-                        self.assertIsNone(metadata['fetchedAt'])
-                        self.assertFalse(metadata['historyReady'])
         finally:
             server.shutdown()
             server.server_close()
