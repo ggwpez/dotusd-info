@@ -26,10 +26,6 @@ The Treasury dotUSD holding account is
 [`166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr`](https://assethub-polkadot.subscan.io/account/166ASLGTqFioubHFAKzbSEyN9BgVQxpF2ruxr3uPNAB7RBQr);
 balances are in dotUSD units. This is not the generic Treasury pallet account.
 
-The retired CoinGecko comparison implementation is preserved on the
-`preserve-coingecko` branch. Production serves only the pool-price chart;
-the comparison page, API, and background worker are removed.
-
 ## Run it locally
 
 The app uses Python 3.10+ and plain JavaScript. There is no frontend build step,

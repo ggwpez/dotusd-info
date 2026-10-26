@@ -2,197 +2,105 @@
 
 [Project overview](../README.md)
 
-Run these commands from the repository root. The supplied configuration targets
-the existing dotusd.info installation; adapt the domain, service names, and data
-paths for your own host. In the examples, `server` is an SSH configuration alias;
-replace it with your own alias or `user@host`.
+Run commands from the repository root. `server` is an SSH alias; substitute
+your own alias or `user@host`.
 
-The release workflow is `just test`, commit, then `just deploy`. `just test`
-prepares the release version automatically; use `just test minor` for features.
-Commit the updated `VERSION` with the changes after the tests pass. Repeating
-`just test` without application changes does not bump the version again.
-Deployment requires a clean checkout on `master`: `git status --porcelain` must
-be empty, including untracked files. Commit all release changes before deploying,
-and do not amend that commit afterward.
-
-The checked-in `VERSION` contains the release number plus a 12-hex SHA-256 source
-checksum, not a Git commit SHA. It remains internal integrity metadata, avoiding
-a self-referential commit hash. The deployment script checks this checksum but
-does not rerun the suite; a stale release stops deployment. Before transferring
-files or restarting services, it also checks the public version and requires
-the local MAJOR.MINOR.PATCH number to be strictly newer. The same number with a
-different commit or checksum is refused, as are older versions. If the deployed
-version cannot be read or parsed, deployment stops without changing the server.
-
-The preflight uses the existing `/api/version` alias when the verification URL
-is `/version`, so it also works before the new route has been deployed. Custom
-endpoint paths are used as supplied. The post-deployment check uses `/version`.
-
-Test, make the final release commit on `master`, then deploy the clean checkout:
+## Release
 
 ```sh
-just test               # or just test minor for features
-git add -A
-git commit -m "Prepare release"
-just deploy             # use the SSH alias server
-# Or choose another host:
-just deploy user@host
+just test          # just test minor for features
+git add <changed-files> VERSION
+git -c commit.gpgsign=false commit --no-gpg-sign -m "Describe the change"
+just deploy        # or: just deploy user@host [https://example.org/version]
 ```
 
-Run only the command for your intended host. This copies an immutable Git snapshot and
-generates `DEPLOY_COMMIT` beside the remote `server.py`, containing the full
-40-character HEAD SHA followed by a newline, before restarting the service.
-Do not check this generated deployment file into Git. Deployment does not commit
-changes or bump the version. The server verifies the source checksum against
-`VERSION` before exposing `MAJOR.MINOR.PATCH+<7-hex Git commit SHA>` in the
-footer, `X-App-Version`, and `/version` (also available at `/api/version`).
-Without `DEPLOY_COMMIT`, local development retains the content-hash version.
+`just deploy` refuses to run unless:
 
-To match a public release to its `master` commit, take the entire suffix after
-`+` from `/version`; it is the first seven characters of the full Git hash.
-Use `git show <short-SHA>` to inspect that exact commit. Do not compare the public
-suffix to the checksum in the checked-in `VERSION`; they have different roles.
+- the checkout is a clean `master` (`git status --porcelain` empty);
+- `VERSION` matches the source checksum;
+- the local release number is strictly newer than the deployed `/version`.
 
-After the remote setup and health checks, deployment polls the public `/version`
-endpoint immediately, then every 5 seconds for up to 60 seconds. Each request
-is limited to 5 seconds or the remaining deadline, whichever is shorter, for
-both curl's total request timeout and the local subprocess timeout. It returns
-success as soon as the JSON `version` matches the release number plus the first
-seven characters of HEAD captured before deployment, not the contents of `VERSION`.
-If the deadline expires, it exits with an error showing the last
-version mismatch or request failure. This 60-second limit applies to the final
-verification, not file transfer, dependency installation, or service startup.
+It copies a Git snapshot, writes the full HEAD SHA to `DEPLOY_COMMIT`, restarts
+the service, then polls `/version` every 5 seconds for up to 60 seconds until
+it reports `MAJOR.MINOR.PATCH+<7-hex HEAD>`. A timeout fails but does not roll
+back; check `just status` and `just logs`. To find a release's commit, run
+`git show <suffix>` with the suffix after `+`.
 
-For another domain, pass its version URL explicitly:
+Without `just`, run `./deploy/deploy.sh [host] [version-url]`. Local Python
+defaults to `.venv/bin/python` (override with `PYTHON`); verification needs
+`curl`.
 
-```sh
-just deploy user@host https://example.org/version
-```
+## systemd and Caddy host
 
-Without `just`, use `./deploy/deploy.sh [host] [version-url]`. Local Python
-commands use `.venv/bin/python` by default (override with `PYTHON`); install
-the project requirements into that environment before testing and deployment.
-Public verification requires `curl` locally. A verification failure does not
-roll back the deployment; inspect `just status` and `just logs` before retrying.
-Requires Python 3.10+, Caddy, rsync, passwordless sudo and `python3-venv` on the
-target, plus outbound HTTPS access to a Polkadot Asset Hub archive RPC.
-Deployment installs `requirements.txt` into `/opt/dotusd-info/.venv`.
-SSH is only deployment/administration transport; the application does not invoke it.
+Requirements: Python 3.10+, Caddy, rsync, passwordless sudo, `python3-venv`, and
+outbound HTTPS to an Asset Hub archive RPC.
 
-The app runs as a dedicated dynamic user at `/opt/dotusd-info`, listening only
-on `127.0.0.1:3001`. `dotusd-info.service` restarts automatically and is enabled
-at boot. Caddy imports `/etc/caddy/sites/dotusd-info.caddy` and provides HTTPS
-for `dotusd.info`, with `www.dotusd.info` redirecting to the main domain. The deployment validates Caddy before reload, backs up the
-previous site configuration, and does not replace other sites.
+- The app lives in `/opt/dotusd-info` with its own `.venv`, runs as a dynamic
+  user, and listens on `127.0.0.1:3001`. `dotusd-info.service` is enabled at
+  boot and restarts automatically.
+- Caddy imports `/etc/caddy/sites/dotusd-info.caddy`: HTTPS for `dotusd.info`,
+  with `www.dotusd.info` redirecting. Deployment validates Caddy before reload,
+  backs up the previous site file, and leaves other sites alone.
+- `just status [host]` and `just logs [host]` (latest 50 entries) inspect the
+  service.
 
-Inspect the deployment with `just status` and `just logs`; both accept an
-optional host, for example `just logs user@host`. Logs show the latest 50 entries
-without following the stream. Run `just` to list all common commands.
+## Container (Coolify)
 
-## Container deployment (direct archive RPC)
+- Private URL `https://dotusd.vpn.selenio-software.ltd`; Coolify
+  **dotUSD / production / dotusd-info**, 512 MiB.
+- Pushing to `master` runs checks, builds and pushes the image, triggers the
+  Coolify deployment, then runs `deploy/check_version.py` against the private
+  `/version` (same 60-second poll). Pull requests do not deploy. CI secrets:
+  `REGISTRY_USERNAME`, `REGISTRY_TOKEN`, `COOLIFY_DEPLOY_WEBHOOK`,
+  `COOLIFY_DEPLOY_TOKEN`; the Coolify API must stay enabled.
+- `/opt/dotusd-info/data` is mounted at `/data` (UID/GID `10001:10001`). The
+  command uses one database for everything:
+  `--archive /data/dotusd.sqlite3 --gap-repair-history /data/dotusd.sqlite3 --hub-rpc https://polkadot-asset-hub-rpc.polkadot.io`.
+  New deployments default to separate `/data/archive.sqlite3` and
+  `/data/pool-repairs.sqlite3`; keep existing paths when upgrading.
+- To replace the database: take an SQLite backup, stop the deployment, keep the
+  old file and its sidecars, rename the new file into place, set ownership, and
+  restart. Verify samples through `/api/historic` and the chart, not just
+  `/version`.
 
-- Private URL: `https://dotusd.vpn.selenio-software.ltd`; Coolify **dotUSD / production / dotusd-info**, 512 MiB. Public production is unchanged.
-- Push a release with updated `VERSION` to `master`: checks → image build/push → Coolify redeploy. PRs do not deploy. CI secrets: `REGISTRY_USERNAME`, `REGISTRY_TOKEN`, `COOLIFY_DEPLOY_WEBHOOK`, `COOLIFY_DEPLOY_TOKEN`. Coolify API must stay enabled; its deploy token is team-wide.
-- CI then runs the same `deploy/check_version.py` poll as `just deploy` against the private `/version` endpoint: every 5 seconds for up to 60 seconds, requiring the release number plus the deploying commit's seven-character SHA. A timeout fails CI; webhook acceptance alone is not deployment success. This does not verify or deploy public `dotusd.info`.
-- `/opt/dotusd-info/data` → `/data`, UID/GID `10001:10001`. Keep the private deployment's existing `--archive /data/dotusd.sqlite3 --gap-repair-history /data/dotusd.sqlite3` paths: one SQLite database for prices, repairs, issuance and Treasury. Use `--hub-rpc https://polkadot-asset-hub-rpc.polkadot.io` for all live chain data; remove old source-selection flags from saved Compose commands.
-- The image defaults to separate `/data/archive.sqlite3` and `/data/pool-repairs.sqlite3` paths for new deployments. It needs no SSH executable or external price collector. Preserve existing mounts and path overrides when upgrading rather than creating an empty database beside imported history.
-- For the historical import described below, SSH alias `server` supplied three sources: `/var/lib/dotusd-info/archive.sqlite3` (`samples`, older prices), `/var/lib/arb-peg/peg.sqlite3` (`blocks`, subsequent prices), and `/var/lib/dotusd-quotes/pool-repairs.sqlite3` (issuance, Treasury and repairs). These are legacy migration inputs, not runtime dependencies. Read the collector database only; do not modify the separate arbitrage deployment.
-- Use SQLite backup for consistent snapshots. Append collector `number,hash,timestamp,sample_time,price,reserves` to the copied archive's `samples` in block order; preserve existing sequence IDs. Copy the state tables, their schema and indexes into that same database. Verify integrity, contiguous price block coverage, increasing sample times and source row preservation. Never fill missing prices with fabricated values.
-- Upload via a temporary file, stop the deployment before replacing its writable database, preserve the previous database and SQLite sidecars for rollback, then atomically rename, set UID/GID `10001:10001` and restart. Verify exact price, issuance and Treasury samples through `/api/historic` and inspect the chart, not just `/version`.
-- Imported 2026-10-26: 735,110 prices through block 22,307,219 (06:00:52 UTC), 111,944 issuance and 83,482 Treasury records. That import was a one-time snapshot; the direct-RPC runtime now appends new finalized prices. Use fixed historical windows for imported data older than the rolling window. Follow-up: [complete migration tooling and storage ownership](https://gitea.vpn.selenio-software.ltd/selenio-software-ltd/dotusd-info/issues/1).
+## History repair
+
+`--gap-repair-history PATH` (enabled by the supplied service, at
+`/var/lib/dotusd-quotes/pool-repairs.sqlite3`) stores live prices, repair
+evidence, issuance and Treasury in one SQLite file. Nothing is pruned; plan for
+disk growth. See [History repair](architecture.md#history-repair) for behavior.
+Log lines start with `Archive gap repair` (`journalctl -u dotusd-info`).
+
+Without the flag, issuance is a 15-block in-memory preview and Treasury is not
+collected.
 
 ## Archive backfill
 
-`backfill.py` imports every finalized block from referendum 1944's enactment at
-21,572,110 (2026-10-08 07:31:12 UTC) up to an exclusive finalized anchor obtained
-from the archive RPC when creating the staging database. On resume, it reuses
-the stored anchor and validates its hash against the chain. `--hub-rpc URL`
-defaults to `https://polkadot-asset-hub-rpc.polkadot.io`. The importer verifies
-the genesis and boundary hash, preserving original block timestamps and pool
-reserves. Pool decoding is shared with `archive_reader.py`; no collector database
-is required.
-
-Production reads one final archive, `/var/lib/dotusd-info/archive.sqlite3`.
-Backfill writes only to the temporary `/var/lib/dotusd-backfill/archive.sqlite3`.
-The importer refuses the published path (including aliases), and its service mounts
-production data read-only. It is manually started, has no automatic retries, and
-uses a 25% CPU cap, low process priority and idle disk priority.
-
-Keep the service disabled between manual runs. Install the scripts and unit, then:
+`backfill.py` imports every finalized block from 21,572,110 (referendum 1944's
+enactment) up to a finalized anchor fixed when staging starts; resumes reuse and
+re-verify that anchor. It writes only to
+`/var/lib/dotusd-backfill/archive.sqlite3` and refuses the published
+`/var/lib/dotusd-info/archive.sqlite3`. The manual service mounts production data
+read-only, never retries, and runs at 25% CPU with idle I/O priority.
 
 ```sh
 scp deploy/dotusd-backfill.service server:/tmp/dotusd-backfill.service
 ssh server 'sudo install -m 0644 /tmp/dotusd-backfill.service /etc/systemd/system/dotusd-backfill.service && sudo systemctl daemon-reload && sudo systemctl start --no-block dotusd-backfill'
+ssh server journalctl -u dotusd-backfill -n 20 --no-pager
 ```
 
-For an existing partial archive, seed the temporary database with SQLite's backup
-API in 64-page batches, pausing 20 ms between batches. Use `publish_archive.py --seed-staging` for this throttled copy. Preserve sequence IDs: the
-web server uses them as its import cursor. Do not modify the published database.
-The importer verifies the chain and saved boundary and resumes the staging copy.
-Install `requirements.txt` in `/opt/dotusd-info/.venv`, as the deployment script
-does. The unit uses a dedicated dynamic user and creates its staging state
-directory automatically; it does not require a Prometheus account.
+To continue from an existing archive, seed staging with
+`publish_archive.py --seed-staging` (throttled SQLite backup that preserves
+sequence IDs, which the server uses as its import cursor).
 
-After the service completes, publish with the separately throttled command:
+Publish when the service completes:
 
 ```sh
 ssh server 'sudo systemd-run --unit=dotusd-archive-publish --wait --collect --pipe -p CPUQuota=10% -p MemoryMax=192M -p Nice=19 -p IOSchedulingClass=idle /opt/dotusd-info/.venv/bin/python /opt/dotusd-info/publish_archive.py --hub-rpc https://polkadot-asset-hub-rpc.polkadot.io --cleanup-staging'
 ```
 
-Publication copies 64 SQLite pages per step with a 20 ms pause, checks SQLite
-integrity, contiguous block coverage, clock order, the saved finalized boundary via RPC, and exact
-preservation of every published row and sequence ID. An identical archive is a
-no-op. A changed archive is made available with an atomic rename, after preserving
-the prior file as `archive.sqlite3.previous` for rollback. No web restart is needed;
-the existing worker lazily imports new rows in its usual 2,000-row batches. Once
-production verification succeeds, remove the rollback file. The temporary staging
-database is removed only after successful publication with `--cleanup-staging`.
-No background backfill or second permanent archive remains.
-
-Inspect progress with `ssh server journalctl -u dotusd-backfill -n 20 --no-pager`.
-
-## Retired comparison
-
-The comparison implementation is preserved on `preserve-coingecko`.
-Production no longer serves `/coingecko` or `/api/coingecko/prices` and does
-not start a comparison worker. Existing comparison history files are left
-untouched; `/var/lib/dotusd-quotes` remains the state directory for price repairs
-and total issuance history.
-
-## Automatic price gap recovery, issuance and Treasury history
-
-The supplied service enables `--gap-repair-history
-/var/lib/dotusd-quotes/pool-repairs.sqlite3`. This uses the existing writable
-state directory and needs no additional service or timer. The same SQLite file
-stores live pool prices, price-repair evidence, total issuance and Treasury holdings
-indefinitely, including samples from the independent recent 15-block live issuance poll.
-Startup restores the latest seven days of saved history before new RPC samples arrive.
-
-The repair worker queries the same archive RPC independently of live price polling.
-Price repair, issuance and Treasury backfill share a limit of eight archive blocks per pass,
-at most ten sequential RPC requests per second and a one-second pause after each successful
-pass. Missing state first fills a fixed grid at block numbers divisible by
-1,800 throughout the retained price block range, newest-first, then fills midpoint
-levels at 900, 450, 225, and progressively halved intervals down to single blocks.
-Each level runs newest-first; odd intervals split into floor/ceiling halves.
-This produces a coarse graph even where prices are already
-complete; seven-day coverage grows gradually and may remain incomplete.
-Restarting the website resumes saved progress without resetting the coarse grid.
-For each selected block, one `state_queryStorageAt` call requests whichever of
-TI and Treasury holdings is missing; saved series are not requested again.
-The `treasury(number, timestamp, balance)` table stores dotUSD units and actual
-chain timestamps. Treasury collection is historical-only, with no separate live
-poll. The issuance setting shows both state series through the shared historic
-API and browser subscription. Missing Treasury accounts record zero; RPC failures
-and unsupported layouts leave a gap for retry.
-RPC failures back off up to fifteen minutes and do not interrupt live collection
-or the independent issuance poll. Inspect `Archive gap repair` messages in
-`journalctl -u dotusd-info`.
-
-Omit the option to disable automatic repair and disk-backed state history;
-issuance then remains a recent-only, in-memory preview and Treasury is not collected.
-The server never automatically prunes repaired history, saved evidence, issuance or Treasury;
-allow for ongoing SQLite disk growth. Only in-memory caches and chart windows
-are bounded to seven days. Previously deleted history is not recovered by this
-policy. The original chain timestamps are used for issuance rather than the
-estimated pool-price clock.
+Publication verifies integrity, contiguous blocks, clock order, the finalized
+boundary, and that every published row and sequence ID is preserved. It then
+renames atomically, keeping `archive.sqlite3.previous` for rollback (delete it
+after verifying production). The running server imports new rows without a
+restart.
