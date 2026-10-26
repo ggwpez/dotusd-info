@@ -3,17 +3,9 @@
 User-facing changes only, newest first. One short sentence per entry.
 Format: `## X.Y.Z - YYYY-MM-DD`, then `- ` entries.
 
-## 1.14.3 - 2026-10-26
+## 1.14.4 - 2026-10-26
 
-- Remove the unavailable issuance setting.
-
-## 1.14.2 - 2026-10-26
-
-- Older chart requests keep loading prices without issuance or Treasury.
-
-## 1.14.1 - 2026-10-26
-
-- Temporarily show prices only; issuance and Treasury are unavailable.
+- Removed issuance and Treasury holding graphs.
 
 ## 1.13.0 - 2026-10-26
 
