@@ -54,3 +54,10 @@ jobs:
           curl --request POST --fail-with-body --silent --show-error --output /dev/null \
             --header "Authorization: Bearer $COOLIFY_DEPLOY_TOKEN" \
             "$COOLIFY_DEPLOY_WEBHOOK"
+      - name: Verify deployed version
+        run: |
+          set -eu
+          release_version=$(python3 release.py --check)
+          expected_version="${release_version%%+*}+$(printf '%.7s' "$DEPLOY_COMMIT")"
+          python3 deploy/check_version.py "$expected_version" \
+            https://dotusd.vpn.selenio-software.ltd/version

@@ -92,6 +92,7 @@ without following the stream. Run `just` to list all common commands.
 
 - Private URL: `https://dotusd.vpn.selenio-software.ltd`; Coolify **dotUSD / production / dotusd-info**, 512 MiB. Public production is unchanged.
 - Push a release with updated `VERSION` to `master`: checks → image build/push → Coolify redeploy. PRs do not deploy. CI secrets: `REGISTRY_USERNAME`, `REGISTRY_TOKEN`, `COOLIFY_DEPLOY_WEBHOOK`, `COOLIFY_DEPLOY_TOKEN`. Coolify API must stay enabled; its deploy token is team-wide.
+- CI then runs the same `deploy/check_version.py` poll as `just deploy` against the private `/version` endpoint: every 5 seconds for up to 60 seconds, requiring the release number plus the deploying commit's seven-character SHA. A timeout fails CI; webhook acceptance alone is not deployment success. This does not verify or deploy public `dotusd.info`.
 - `/opt/dotusd-info/data` → `/data`, UID/GID `10001:10001`: `archive.sqlite3` for price history, `pool-repairs.sqlite3` for repairs/state. `--archive-only` skips Prometheus/SSH; RPC workers remain enabled, but no live price collector runs.
 - Import a consistent SQLite backup via temporary file + atomic rename. First archive uploads load automatically; changed sequence IDs require restart. Stop the service before replacing writable repairs/state. Source databases remain on SSH alias `server`; none were imported.
 
