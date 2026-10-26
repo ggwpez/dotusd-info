@@ -1,7 +1,7 @@
 // Each line is independently decodable; network reads can split or combine lines.
 export async function* readPriceStream(response) {
   const reader = response.body.getReader(), decoder = new TextDecoder();
-  let buffer = '', started = false, finished = false;
+  let buffer = '', started = false, finished = false, metadata;
   try {
     while (true) {
       const {value, done} = await reader.read();
@@ -12,10 +12,14 @@ export async function* readPriceStream(response) {
         buffer = buffer.slice(newline + 1);
         if (finished) throw new Error('Unexpected data after price stream');
         if (!started) {
-          if (message.encoding !== 'ranges-stream-v1') throw new Error('Unsupported price format');
+          if (message.encoding !== 'ranges-stream-v2') throw new Error('Unsupported history format');
+          metadata = message;
           started = true;
         } else if (message.done === true) finished = true;
-        else if (!Array.isArray(message.ranges)) throw new Error('Invalid price stream');
+        else if (!Array.isArray(message.ranges) || (message.series !== undefined &&
+            (!['ti', 'treasury'].includes(message.series) || !metadata[message.series]))) {
+          throw new Error('Invalid history batch');
+        }
         yield message;
       }
       if (done) break;

@@ -22,9 +22,55 @@ page = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(page)
 
 
+def unpack_ranges(records):
+    if not records:
+        return []
+    stamp, block, value = records[0]
+    rows = [[stamp, value, block]]
+    for record in records[1:]:
+        count, dt, db = record[:3]
+        if count == 0:
+            stamp, block, value = dt, db, record[3]
+            rows.append([stamp, value, block])
+            continue
+        if len(record) == 4:
+            value = record[3]
+        rows.extend([stamp + i * dt, value, block + i * db] for i in range(1, count + 1))
+        stamp += count * dt
+        block += count * db
+    return rows
+
+
+def decode_history(body):
+    for name in ('ti', 'treasury'):
+        history = body.get(name)
+        if history is not None and 'ranges' in history:
+            assert history.pop('encoding') == 'ranges-v1'
+            history['rows'] = unpack_ranges(history.pop('ranges'))
+    return body
+
+
+def decode_stream(lines):
+    messages = [json.loads(line) for line in lines]
+    metadata = messages[0]
+    assert metadata['encoding'] == 'ranges-stream-v2'
+    for name in ('ti', 'treasury'):
+        if name in metadata:
+            assert 'rows' not in metadata[name]
+            metadata[name]['rows'] = []
+    output = [metadata]
+    for message in messages[1:]:
+        if 'series' in message:
+            metadata[message['series']]['rows'].extend(unpack_ranges(message['ranges']))
+        else:
+            output.append(message)
+    return output
+
+
 class PageTests(unittest.TestCase):
     def test_large_state_history_streams_bounded_chunks_without_losing_rows(self):
-        rows = [[1_700_000_000 + n, n / 1000, n] for n in range(4097)]
+        rows = [[1_700_000_000 + n // 2, 123.45 if n < 3000 else 125.67, n] for n in range(4097)]
+        rows[2001][0] += .125
         histories = {
             name: {'rows': rows, 'cursor': 'instance:4097', 'reset': True, 'error': None}
             for name in ('ti', 'treasury')
@@ -41,11 +87,15 @@ class PageTests(unittest.TestCase):
                     self.assertLess(max(map(len, chunks)), 64 * 1024)
                     encoded = b''.join(chunks)
                     if streaming:
-                        records = [json.loads(line) for line in encoded.splitlines()]
+                        wire = encoded.splitlines()
+                        header = json.loads(wire[0])
+                        self.assertLess(len(wire[0]), 1024)
+                        self.assertNotIn('rows', header['ti'])
+                        records = decode_stream(wire)
                         result = records[0]
                         self.assertEqual(records[-1], {'done': True})
                     else:
-                        result = json.loads(encoded)
+                        result = decode_history(json.loads(encoded))
                     for name in histories:
                         self.assertEqual(result[name], histories[name])
                     if include_price and not streaming:
@@ -78,14 +128,14 @@ class PageTests(unittest.TestCase):
                     with self.subTest(series=series, encoding=encoding):
                         with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
                             if encoding == 'stream':
-                                messages = [json.loads(line) for line in response]
+                                messages = decode_stream(response)
                                 body = messages[0]
-                                self.assertEqual(body['encoding'], 'ranges-stream-v1')
+                                self.assertEqual(body['encoding'], 'ranges-stream-v2')
                                 self.assertEqual(messages[-1], {'done': True})
                                 self.assertEqual(messages[1:-1], [{'ranges': list(page.pack_ranges(prices))}]
                                                  if 'price' in series else [])
                             else:
-                                body = json.load(response)
+                                body = decode_history(json.load(response))
                                 if 'price' in series:
                                     self.assertEqual(body['samples' if encoding == 'raw' else 'ranges'],
                                                      prices if encoding == 'raw' else list(page.pack_ranges(prices)))
@@ -112,13 +162,13 @@ class PageTests(unittest.TestCase):
             route = (base + 'series=price,ti,treasury&format=stream&startpoint=55' + bounds +
                      f'&windowStart={now-60}&windowEnd={now}')
             with urlopen(route) as response:
-                initial, done = [json.loads(line) for line in response]
+                initial, done = decode_stream(response)
             cursor = initial['ti']['cursor']
             treasury_cursor = initial['treasury']['cursor']
             self.assertEqual(done, {'done': True})
             cursors = '&tiCursor=' + cursor + '&treasuryCursor=' + treasury_cursor
             with urlopen(route + cursors) as response:
-                unchanged, done = [json.loads(line) for line in response]
+                unchanged, done = decode_stream(response)
             self.assertEqual(unchanged['ti']['rows'], [])
             self.assertFalse(unchanged['ti']['reset'])
             self.assertEqual(unchanged['treasury']['rows'], [])
@@ -128,7 +178,7 @@ class PageTests(unittest.TestCase):
                                    (now - 5, 150., 60)])
             server.treasury.merge([(now - 35, 0., 25), (now - 25, 61., 35)])
             with urlopen(route + cursors) as response:
-                changed, done = [json.loads(line) for line in response]
+                changed, done = decode_stream(response)
             self.assertEqual(changed['ti']['rows'], [[now - 40, 110., 20], [now - 30, 121., 30]])
             self.assertFalse(changed['ti']['reset'])
             self.assertNotEqual(changed['ti']['cursor'], cursor)
@@ -139,13 +189,13 @@ class PageTests(unittest.TestCase):
             # A state cursor cannot suppress another series' rows.
             with urlopen(route + '&tiCursor=' + changed['ti']['cursor'] +
                          '&treasuryCursor=' + changed['ti']['cursor']) as response:
-                independent, done = [json.loads(line) for line in response]
+                independent, done = decode_stream(response)
             self.assertEqual(independent['ti']['rows'], [])
             self.assertTrue(independent['treasury']['reset'])
             self.assertEqual(independent['treasury']['rows'],
                              [[now - 35, 0., 25], [now - 25, 61., 35], treasury_rows[2]])
             with urlopen(route + '&tiCursor=expired') as response:
-                reset, done = [json.loads(line) for line in response]
+                reset, done = decode_stream(response)
             self.assertTrue(reset['ti']['reset'])
             self.assertEqual(reset['ti']['rows'],
                              [[now - 40, 110., 20], [now - 30, 121., 30], rows[2]])
@@ -189,20 +239,20 @@ class PageTests(unittest.TestCase):
                 error.exception.close()
             # The live seven-day lower bound can age while a request is in transit.
             with urlopen(base + f'/api/historic?series=ti&tiStart={now-604800}') as response:
-                self.assertEqual(json.load(response)['ti']['rows'], [])
+                self.assertEqual(decode_history(json.load(response))['ti']['rows'], [])
             rows = [[now - 4000, 1., 1], [now - 100, 2., 2], [now - 10, 3., 3]]
             server.issuance.merge(rows, live=True)
             for series in ('ti', 'price,ti'):
                 with urlopen(base + f'/api/historic?series={series}') as response:
-                    self.assertEqual(json.load(response)['ti']['rows'], rows[1:])
+                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], rows[1:])
                 with urlopen(base + f'/api/historic?series={series}&start={now-200}&end={now-50}') as response:
-                    self.assertEqual(json.load(response)['ti']['rows'], [rows[1]])
+                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], [rows[1]])
                 # Explicit issuance bounds override generic price bounds.
                 with urlopen(base + f'/api/historic?series={series}&start={now-200}&end={now-50}'
                              f'&tiStart={now-20}&tiEnd={now}') as response:
-                    self.assertEqual(json.load(response)['ti']['rows'], [rows[2]])
+                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], [rows[2]])
                 with urlopen(base + f'/api/historic?series={series}&end={now-50}') as response:
-                    self.assertEqual(json.load(response)['ti']['rows'], [rows[1]])
+                    self.assertEqual(decode_history(json.load(response))['ti']['rows'], [rows[1]])
         finally:
             server.shutdown()
             server.server_close()
@@ -220,12 +270,12 @@ class PageTests(unittest.TestCase):
         try:
             with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
                 with urlopen(base + 'series=treasury' + bounds) as response:
-                    disabled = json.load(response)['treasury']
+                    disabled = decode_history(json.load(response))['treasury']
                 self.assertEqual(disabled['rows'], [])
                 self.assertIsNone(disabled['error'])
                 server.treasury = page.TreasuryHistory(Path(directory.name) / 'history.db')
                 with urlopen(base + 'series=treasury' + bounds) as response:
-                    loading = json.load(response)['treasury']
+                    loading = decode_history(json.load(response))['treasury']
                 self.assertEqual(loading['rows'], [])
                 self.assertIn('Loading', loading['error'])
                 rows = [[now - 40, 0., 10], [now - 20, 50., 20]]
@@ -235,10 +285,10 @@ class PageTests(unittest.TestCase):
                         with self.subTest(series=series, encoding=encoding):
                             with urlopen(base + f'series={series}&format={encoding}' + bounds) as response:
                                 if encoding == 'stream':
-                                    body, done = [json.loads(line) for line in response]
+                                    body, done = decode_stream(response)
                                     self.assertEqual(done, {'done': True})
                                 else:
-                                    body = json.load(response)
+                                    body = decode_history(json.load(response))
                             self.assertEqual(body['treasury']['rows'], rows)
                             self.assertIsNone(body['treasury']['error'])
                             if 'price' in series:
@@ -250,7 +300,7 @@ class PageTests(unittest.TestCase):
                 with server.treasury.lock:
                     server.treasury.error = 'Treasury history temporarily unavailable.'
                 with urlopen(base + 'series=treasury' + bounds) as response:
-                    failed = json.load(response)['treasury']
+                    failed = decode_history(json.load(response))['treasury']
                 self.assertEqual(failed['rows'], rows)
                 self.assertEqual(failed['error'], server.treasury.error)
                 old = now - 30 * 86400
@@ -277,7 +327,7 @@ class PageTests(unittest.TestCase):
         try:
             with patch('hub_quotes.HubRpc.call', side_effect=AssertionError('Request-triggered RPC')):
                 with urlopen(base + route) as response:
-                    body = json.load(response)['ti']
+                    body = decode_history(json.load(response))['ti']
                     self.assertEqual(body['rows'], [])
                     self.assertIn('Loading', body['error'])
                     self.assertEqual(response.headers['Cache-Control'], 'no-store')
@@ -289,7 +339,7 @@ class PageTests(unittest.TestCase):
                         self.assertEqual(server.issuance.rows, rows)
                         server.issuance.error = error
                     with urlopen(base + route) as response:
-                        ti = json.load(response)['ti']
+                        ti = decode_history(json.load(response))['ti']
                         self.assertEqual(ti['rows'], [list(row) for row in rows])
                         self.assertEqual(ti['error'], error)
                         self.assertTrue(ti['reset'])
@@ -303,10 +353,10 @@ class PageTests(unittest.TestCase):
                     with urlopen(base + route.replace('series=ti', 'series=price,ti') +
                                  f'&format={encoding}') as response:
                         if encoding == 'stream':
-                            metadata, done = [json.loads(line) for line in response]
+                            metadata, done = decode_stream(response)
                             self.assertEqual(done, {'done': True})
                         else:
-                            metadata = json.load(response)
+                            metadata = decode_history(json.load(response))
                             self.assertEqual(metadata['samples' if encoding == 'raw' else 'ranges'], [])
                         self.assertEqual(metadata['ti']['rows'], [list(row) for row in rows])
                         self.assertIn('RPC unavailable', metadata['ti']['error'])
@@ -336,19 +386,19 @@ class PageTests(unittest.TestCase):
                 with urlopen(base + route + query) as response:
                     self.assertGreaterEqual(float(response.headers['X-History-End']), rows[-1][0])
                     if encoding == 'stream':
-                        metadata, batch, done = [json.loads(line) for line in response]
+                        metadata, batch, done = decode_stream(response)
                         self.assertEqual(batch['ranges'], list(page.pack_ranges(rows[1:])))
                         self.assertEqual(done, {'done': True})
                     else:
-                        metadata = json.load(response)
+                        metadata = decode_history(json.load(response))
                         self.assertEqual(metadata['samples' if encoding == 'raw' else 'ranges'],
                                          rows[1:] if encoding == 'raw' else list(page.pack_ranges(rows[1:])))
                     self.assertEqual(metadata['extremes'], {'low': rows[0], 'high': rows[1]})
             # A rounded timestamp start must not cut off a newer block.
             with urlopen(base + route + f'?series=price&startpoint=10&start={now}&end={now+2}&format=raw') as response:
-                self.assertEqual(json.load(response)['samples'], rows[1:])
+                self.assertEqual(decode_history(json.load(response))['samples'], rows[1:])
             with urlopen(base + route + f'?series=price&startpoint=11&end={now}&format=raw') as response:
-                self.assertEqual(json.load(response)['samples'], [])
+                self.assertEqual(decode_history(json.load(response))['samples'], [])
             for value in ('', '-1', '1.5', 'NaN', '9007199254740992', '10&startpoint=11', '10&afterBlock=10'):
                 with self.assertRaises(HTTPError) as error:
                     urlopen(base + route + '?series=price&startpoint=' + value)
@@ -409,7 +459,7 @@ class PageTests(unittest.TestCase):
                 base = f'http://127.0.0.1:{server.server_port}'
                 try:
                     with urlopen(base + '/version') as response:
-                        self.assertEqual(json.load(response), {'version': expected})
+                        self.assertEqual(decode_history(json.load(response)), {'version': expected})
                         self.assertEqual(response.headers['X-App-Version'], expected)
                     with urlopen(base) as response:
                         self.assertIn(expected.encode(), response.read())
@@ -440,15 +490,15 @@ class PageTests(unittest.TestCase):
         try:
             with urlopen(base + f'/api/historic?series=price&start={now-20001}&end={now}&windowStart={now-20001}&windowEnd={now}&format=stream') as response:
                 self.assertEqual(response.headers['Content-Type'], 'application/x-ndjson')
-                messages = [json.loads(line) for line in response]
-            self.assertEqual(messages[0]['encoding'], 'ranges-stream-v1')
+                messages = decode_stream(response)
+            self.assertEqual(messages[0]['encoding'], 'ranges-stream-v2')
             self.assertTrue(messages[0]['historyReady'])
             self.assertEqual(messages[0]['extremes']['high'][1], 1.002)
             self.assertEqual(messages[1]['ranges'], list(page.pack_ranges(rows[:8192])))
             self.assertEqual(messages[2]['ranges'], list(page.pack_ranges(rows[8192:])))
             self.assertEqual(messages[3:], [{'done': True}])
             with urlopen(base + f'/api/historic?series=price&start={now-1}&end={now}&format=stream') as response:
-                messages = [json.loads(line) for line in response]
+                messages = decode_stream(response)
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[-1], {'done': True})
         finally:
@@ -482,25 +532,25 @@ class PageTests(unittest.TestCase):
                 with self.subTest(format=format):
                     with urlopen(base + f'&format={format}&afterBlock=11') as response:
                         if format == 'stream':
-                            metadata, batch, done = [json.loads(line) for line in response]
+                            metadata, batch, done = decode_stream(response)
                             self.assertEqual(batch['ranges'], list(page.pack_ranges(rows[2:])))
                             self.assertEqual(done, {'done': True})
                         else:
-                            metadata = json.load(response)
+                            metadata = decode_history(json.load(response))
                             key = 'samples' if format == 'raw' else 'ranges'
                             expected = rows[2:] if format == 'raw' else list(page.pack_ranges(rows[2:]))
                             self.assertEqual(metadata[key], expected)
                         self.assertEqual(metadata['extremes'], {'low': rows[0], 'high': rows[1]})
                         self.assertTrue(metadata['historyReady'])
             with urlopen(base + '&format=stream&afterBlock=12') as response:
-                messages = [json.loads(line) for line in response]
+                messages = decode_stream(response)
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[-1], {'done': True})
             # Catch up beyond the former five-minute overlap, using the same cursor.
             newer = [[now - 600, 1, 13], [now - 2, .999, 14]]
             server.cache.merge(newer, now)
             with urlopen(base + '&format=raw&afterBlock=12') as response:
-                self.assertEqual(json.load(response)['samples'], newer)
+                self.assertEqual(decode_history(json.load(response))['samples'], newer)
             for cursor in ('', '-1', '1.5', 'NaN', '9007199254740992', '12&afterBlock=13'):
                 with self.subTest(cursor=cursor), self.assertRaises(HTTPError) as error:
                     urlopen(base + '&afterBlock=' + cursor)
@@ -527,7 +577,7 @@ class PageTests(unittest.TestCase):
             # Deployment checks work even while history is warming.
             for route in ('/version', '/api/version'):
                 with urlopen(base + route) as response:
-                    self.assertEqual(json.load(response), {'version': server.version})
+                    self.assertEqual(decode_history(json.load(response)), {'version': server.version})
                     self.assertEqual(response.headers['X-App-Version'], server.version)
                     self.assertEqual(response.headers['Cache-Control'], 'no-store')
             with urlopen(base) as response:
@@ -557,7 +607,7 @@ class PageTests(unittest.TestCase):
             now = time.time()
             server.cache.merge([[now - 10, 1.001, 50]], now)
             with urlopen(base + '/api/historic?series=price') as response:
-                packed = json.load(response)
+                packed = decode_history(json.load(response))
                 self.assertEqual(packed['encoding'], 'ranges-v1')
                 self.assertEqual(packed['ranges'], [[now - 10, 50, 1.001]])
                 self.assertNotIn('samples', packed)
@@ -567,7 +617,7 @@ class PageTests(unittest.TestCase):
             def read():
                 with urlopen(base + '/api/historic?series=price&format=raw') as response:
                     self.assertEqual(response.headers['X-App-Version'], server.version)
-                    return json.load(response)
+                    return decode_history(json.load(response))
             with ThreadPoolExecutor(max_workers=3) as pool:
                 results = list(pool.map(lambda _: read(), range(12)))
             for result in results:

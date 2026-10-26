@@ -85,9 +85,11 @@ same response; idle-server expiry checks run every 0.5 seconds. The separate TCP
 listen backlog is 64 connections. Responses stream in batches
 and client sockets have a ten-second inactivity timeout.
 
-Issuance and Treasury JSON is encoded in 256-row batches, including the initial
-NDJSON record. Streaming no longer constructs and copies a full state-history
-JSON string before sending it. The wire format and browser decoding are unchanged.
+All three series use lossless delta/range encoding by default. State stream
+batches cover at most 1,024 input samples and are independently seeded; the
+first NDJSON record contains only metadata, not full state-history arrays.
+Nonstream JSON encodes at most 256 range records per write. `format=raw` remains
+an explicit uncompressed diagnostic representation.
 
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
@@ -95,9 +97,12 @@ remain gaps. This is a USDT pool reference, with no fees or slippage included.
 ## Total issuance
 
 `GET /api/historic` selects any nonempty unique subset of `price`, `ti`, and
-`treasury`, in any order. TI is returned under `ti` as `{rows, cursor, reset, error}`;
-each row is `[timestamp_seconds, issuance_dotusd, block_number]`. Treasury has
-the same shape under `treasury`, with holdings in dotUSD units.
+`treasury`, in any order. Default JSON returns TI under `ti` as
+`{encoding: "ranges-v1", ranges, cursor, reset, error}`; Treasury has the same
+shape under `treasury`. The shared range encoding preserves every
+`[timestamp_seconds, value_dotusd, block_number]` sample, including repeated
+timestamps, gaps and value changes. `format=raw` returns `{rows, cursor, reset, error}`
+for each state series instead.
 Generic `start`/`end` select the window (default: last hour).
 `tiStart`/`tiEnd` and `treasuryStart`/`treasuryEnd` independently override state
 bounds when price polls use a block cursor. Omitting the respective end in live
@@ -154,7 +159,7 @@ price block bounds, even when no price gaps remain; it does not enlarge the live
 worker's 15-block fetch window.
 
 Requests read cached rows or bounded SQLite windows and never trigger RPC work.
-Without saved history, TI starts with an empty `ti.rows` array and a loading `ti.error`.
+Without saved history, TI returns no samples and a loading `ti.error`.
 TI-only and combined requests return HTTP 200 even while price history warms;
 combined responses then include empty prices with `historyReady: false`.
 Recent price-only requests return HTTP 503 until prices are ready; older saved
@@ -273,10 +278,15 @@ requests fresh snapshots for any series without full coverage.
 
 The browser renders cached data immediately and loads the selected history window
 in one request. `?format=stream` returns newline-delimited JSON: a
-`ranges-stream-v1` metadata line (including full-window extrema), independently
-packed `ranges` lines of up to 8,192 samples each, then a `{"done":true}` line.
-The client decodes and draws complete lines as they arrive, without expanding
-ranges or acknowledging batches. Network reads may split or combine lines.
+`ranges-stream-v2` metadata line (including full-window extrema and requested
+state `{cursor, reset, error}` fields), price `{"ranges":[...]}` batches of up to
+8,192 samples, state `{"series":"ti","ranges":[...]}` or
+`{"series":"treasury","ranges":[...]}` batches of up to 1,024 samples, then a
+`{"done":true}` line. Each batch starts with its own absolute seed; it never
+depends on the preceding batch. Empty state selections emit metadata but no batches.
+Prices draw before state transfer completes. The client expands state batches
+into pending rows and commits them and their cursors only after a complete stream;
+price ranges remain compact in the browser. Network reads may split or combine lines.
 Full-window extrema keep the vertical scale stable during history loading.
 Incremental polls omit the statistics window and compute extrema from the cached
 visible samples, including new samples and excluding those that leave the window. Only a

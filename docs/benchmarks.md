@@ -4,6 +4,26 @@
 
 Run the commands below from the repository root.
 
+## Compact combined history responses
+
+On October 26, 2026, a captured seven-day production stream contained 115,703
+TI samples and 88,566 Treasury samples. Re-encoding the same snapshot with
+lossless state ranges, with no HTTP compression, produced:
+
+| Measurement | Raw-state stream | Range-state stream |
+| --- | ---: | ---: |
+| Entire response (bytes) | 8,125,009 | 1,612,393 |
+| First metadata record (bytes) | 7,935,424 | 271 |
+
+This is an 80.16% payload reduction. Every decoded state timestamp, value and
+block matched the captured input exactly. The largest state record was 11,858
+bytes. The actual local HTTP endpoint returned 1,612,424 bytes (different cursor
+metadata), and the browser rendered all three series from that stream.
+State compaction preserves gaps and repeated timestamps; its compression ratio
+depends on balance changes and timestamp/block spacing, not downsampling.
+This measures response size, not a production latency guarantee.
+
+
 ## Seven-day memory regression
 
 On October 26, 2026, the deployed `4402d4e` image was compared with the

@@ -81,9 +81,18 @@ function historicStream(ti, end, ranges = [], treasury) {
     async read() {
       if (first) {
         first = false;
-        return {done: false, value: JSON.stringify({
-          encoding: 'ranges-stream-v1', fetchedAt: end, historyReady: true, extremes: null, ti, treasury,
-        }) + '\n' + JSON.stringify({ranges}) + '\n'};
+        const metadata = {encoding: 'ranges-stream-v2', fetchedAt: end, historyReady: true, extremes: null};
+        const batches = [{ranges}];
+        for (const [series, state] of Object.entries({ti, treasury})) {
+          if (!state) continue;
+          const {rows, ...fields} = state;
+          metadata[series] = fields;
+          // Separate independently seeded records exercise multiple state batches.
+          for (const [stamp, value, block] of rows ?? []) {
+            batches.push({series, ranges: [[stamp, block, value]]});
+          }
+        }
+        return {done: false, value: [metadata, ...batches].map(m => JSON.stringify(m) + '\n').join('')};
       }
       started.resolve();
       return finished.promise;

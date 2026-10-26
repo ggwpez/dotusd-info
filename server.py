@@ -224,7 +224,7 @@ def encode_response(rows, fetched_at, history_ready, extremes, raw=False, stream
     def encode(record):
         return json.dumps(record, allow_nan=False, separators=(',', ':')).encode()
     if streaming:
-        yield encode({'encoding': 'ranges-stream-v1', 'fetchedAt': fetched_at,
+        yield encode({'encoding': 'ranges-stream-v2', 'fetchedAt': fetched_at,
                       'historyReady': history_ready, 'extremes': extremes}) + b'\n'
         for offset in range(0, len(rows), 8192):
             yield encode({'ranges': list(pack_ranges(rows[offset:offset + 8192]))}) + b'\n'
@@ -240,44 +240,49 @@ def encode_response(rows, fetched_at, history_ready, extremes, raw=False, stream
                b',"extremes":' + encode(extremes) + b'}')
 
 
-def historic_response(chunks, histories, streaming):
-    """Attach fresh state histories without caching them with price chunks."""
+def historic_response(chunks, histories, streaming, raw=False):
+    """Attach fresh, losslessly packed state without caching it with prices."""
     if not histories:
         yield from chunks
         return
     encoder = json.JSONEncoder(allow_nan=False, separators=(',', ':'))
-
-    def body():
-        for index, (name, history) in enumerate(histories.items()):
-            yield ((',' if index else '') + encoder.encode(name) + ':{').encode()
-            for field, (key, value) in enumerate(history.items()):
-                yield ((',' if field else '') + encoder.encode(key) + ':').encode()
-                if key != 'rows':
-                    yield encoder.encode(value).encode()
-                    continue
-                yield b'['
-                rows = iter(value)
-                first = True
-                while batch := list(islice(rows, 256)):
-                    yield (b'' if first else b',') + encoder.encode(batch)[1:-1].encode()
-                    first = False
-                yield b']'
-            yield b'}'
-
-    if chunks is None:
-        yield b'{"encoding":"ranges-stream-v1",' if streaming else b'{'
-        yield from body()
-        yield b'}\n' if streaming else b'}'
-        if streaming:
-            yield b'{"done":true}\n'
+    metadata = {name: {key: value for key, value in history.items() if key != 'rows'}
+                for name, history in histories.items()}
+    if streaming:
+        prices = iter(chunks) if chunks is not None else iter(())
+        first = json.loads(next(prices)) if chunks is not None else {'encoding': 'ranges-stream-v2'}
+        first.update(metadata)
+        yield encoder.encode(first).encode() + b'\n'
+        # Prices can draw immediately; state commits atomically at end of stream.
+        for chunk in prices:
+            if chunk != b'{"done":true}\n':
+                yield chunk
+        for name, history in histories.items():
+            rows = history['rows']
+            for offset in range(0, len(rows), 1024):
+                batch = {'series': name, 'ranges': list(pack_ranges(rows[offset:offset + 1024]))}
+                yield encoder.encode(batch).encode() + b'\n'
+        yield b'{"done":true}\n'
         return
-    chunks = iter(chunks)
-    first = next(chunks)
-    # Stream state fields into the first object without materializing its JSON.
+
     yield b'{'
-    yield from body()
-    yield b',' + first[1:]
-    yield from chunks
+    for index, (name, history) in enumerate(histories.items()):
+        yield ((',' if index else '') + encoder.encode(name) + ':{').encode()
+        fields = metadata[name] if raw else {'encoding': 'ranges-v1', **metadata[name]}
+        yield encoder.encode(fields)[1:-1].encode()
+        yield b',"rows":[' if raw else b',"ranges":['
+        records = iter(history['rows']) if raw else pack_ranges(history['rows'])
+        first = True
+        while batch := list(islice(records, 256)):
+            yield (b'' if first else b',') + encoder.encode(batch)[1:-1].encode()
+            first = False
+        yield b']}'
+    if chunks is None:
+        yield b'}'
+    else:
+        prices = iter(chunks)
+        yield b',' + next(prices)[1:]
+        yield from prices
 
 
 class HistoryCache:
@@ -840,7 +845,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.respond(503, {'error': 'Price history is warming up. Please try again shortly.'})
                         return
                     chunks = encode_response((), None, False, None, raw=raw, streaming=streaming)
-            chunks = historic_response(chunks, histories, streaming)
+            chunks = historic_response(chunks, histories, streaming, raw=raw)
             self.send_headers(200, 'application/x-ndjson' if streaming else 'application/json', history_end=end)
             try:
                 for chunk in chunks:

@@ -15,6 +15,7 @@ from gap_repair import GapRepair
 from issuance import IssuanceCache
 from treasury import TreasuryHistory
 import server
+from test_server import decode_history, decode_stream
 
 
 class HistoricDiskTests(unittest.TestCase):
@@ -55,7 +56,7 @@ class HistoricDiskTests(unittest.TestCase):
 
     def get(self, query):
         with urlopen(self.base + query) as response:
-            return json.load(response)
+            return decode_history(json.load(response))
 
     def test_old_combined_window_boundaries_precedence_and_cursor(self):
         query = f'series=price,ti,treasury&format=raw&start={self.old+18}&end={self.old+24}'
@@ -80,7 +81,7 @@ class HistoricDiskTests(unittest.TestCase):
         self.assertEqual(body['extremes']['low'], [self.old+20, 1.01, 10])
         self.assertEqual(body['extremes']['high'], [self.old+24, 1.12, 12])
         with urlopen(self.base + 'series=price&format=stream' + bounds) as response:
-            messages = [json.loads(line) for line in response]
+            messages = decode_stream(response)
         self.assertEqual(messages[1]['ranges'], body['ranges'])
         self.assertEqual(messages[-1], {'done': True})
         with closing(self.http.issuance.database()) as db, db:
@@ -175,11 +176,11 @@ class HistoricDiskTests(unittest.TestCase):
                     query = f'series={series}&format={encoding}' + bounds
                     with urlopen(self.base + query) as response:
                         if encoding == 'stream':
-                            messages = [json.loads(line) for line in response]
+                            messages = decode_stream(response)
                             body = messages[0]
                             self.assertEqual(messages[-1], {'done': True})
                         else:
-                            body = json.load(response)
+                            body = decode_history(json.load(response))
                     self.assertEqual(body['treasury']['rows'],
                                      [[self.old+n*2, n*10., n] for n in (11, 12)])
                     self.assertTrue(body['treasury']['reset'])

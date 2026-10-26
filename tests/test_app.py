@@ -64,7 +64,7 @@ class AppTests(unittest.TestCase):
             require(!requests[0].includes('&end=') && !requests[0].includes('windowEnd='), 'live requests are open-ended');
             require(!requests[0].includes('windowStart='), 'incremental polls request no full-window statistics');
             respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 1) : APP_VERSION}, messages: [
-                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                {encoding: 'ranges-stream-v2', fetchedAt: now, historyReady: true},
                 {ranges: []}, {done: true},
             ]});
             await pending;
@@ -86,7 +86,7 @@ class AppTests(unittest.TestCase):
             const delta = refresh();
             require(!requests.at(-1).includes('windowStart='), 'delta still skips server extrema');
             respond({ok: true, headers: {get: key => key === 'X-History-End' ? String(now + 3) : APP_VERSION}, messages: [
-                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true, extremes: null},
+                {encoding: 'ranges-stream-v2', fetchedAt: now, historyReady: true, extremes: null},
                 {ranges: [[now + 1, 11, .9], [0, now + 2, 12, 1.1]]}, {done: true},
             ]});
             await delta;
@@ -98,7 +98,7 @@ class AppTests(unittest.TestCase):
             require(requests.at(-1).includes('windowStart=') && requests.at(-1).includes('windowEnd='),
                     'history loads retain early extrema for streaming');
             respond({ok: true, headers: {get: () => APP_VERSION}, messages: [
-                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true}, {done: true},
+                {encoding: 'ranges-stream-v2', fetchedAt: now, historyReady: true}, {done: true},
             ]});
             await fixed;
             return true;
@@ -153,7 +153,7 @@ class AppTests(unittest.TestCase):
                 } else {
                     respond({ok: true, headers: {get: key =>
                         key === 'X-History-End' ? String(now) : APP_VERSION}, messages: [
-                        {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                        {encoding: 'ranges-stream-v2', fetchedAt: now, historyReady: true},
                         {ranges: [[outcome === 'fresh' ? now - 2 : oldEnd, 11, 1]]},
                         {done: true},
                     ]});
@@ -223,7 +223,7 @@ class AppTests(unittest.TestCase):
         const fetch = async url => {
             requests.push(url);
             return {ok: true, headers: {get: key => key === 'X-History-End' ? String(now) : APP_VERSION}, messages: [
-                {encoding: 'ranges-stream-v1', fetchedAt: now, historyReady: true},
+                {encoding: 'ranges-stream-v2', fetchedAt: now, historyReady: true},
                 {ranges: url.includes('startpoint=') ? [] : [[now - 20, 10, 1], [0, now - 10, 15, 1]]},
                 {done: true},
             ]};

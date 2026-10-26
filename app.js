@@ -325,9 +325,13 @@ async function refresh(force = false, preferCache = false) {
         state.serverWarming = message.historyReady === false;
         state.fetchedAt = message.fetchedAt;
         if (includeIssuance) {
-          pendingIssuance = message.ti;
-          pendingTreasury = message.treasury;
+          pendingIssuance = message.ti ? {...message.ti, rows: []} : undefined;
+          pendingTreasury = message.treasury ? {...message.treasury, rows: []} : undefined;
         }
+      } else if (message.series) {
+        const pending = message.series === 'ti' ? pendingIssuance : pendingTreasury;
+        const batch = RangeSeries.fromWire(message.ranges);
+        for (let i = 0; i < batch.length; i++) pending.rows.push(batch.at(i));
       } else if (message.ranges) {
         const batch = RangeSeries.fromWire(message.ranges);
         runs.push(...(blockCursor === null ? batch.window(left, end) : batch).runs);
