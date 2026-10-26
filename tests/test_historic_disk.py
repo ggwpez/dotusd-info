@@ -167,8 +167,14 @@ class HistoricDiskTests(unittest.TestCase):
 
     def test_saved_state_is_unavailable_in_historical_windows(self):
         bounds = f'&start={self.old+18}&end={self.old+24}'
-        for series in ('ti', 'treasury', 'price,ti,treasury'):
+        for series in ('ti', 'treasury', 'ti,treasury'):
             with self.subTest(series=series), self.assertRaises(HTTPError) as error:
                 self.get(f'series={series}' + bounds)
             self.assertEqual(error.exception.code, 400)
             error.exception.close()
+        body = self.get('series=price,ti,treasury&format=raw' + bounds)
+        self.assertEqual(body['samples'], [[self.old+20, 1.01, 10],
+                                           [self.old+22, 1.011, 11],
+                                           [self.old+24, 1.12, 12]])
+        self.assertNotIn('ti', body)
+        self.assertNotIn('treasury', body)

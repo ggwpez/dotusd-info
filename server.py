@@ -838,8 +838,11 @@ class Handler(BaseHTTPRequestHandler):
                 params = urllib.parse.parse_qs(url.query, max_num_fields=20, keep_blank_values=True)
                 selected = params.get('series', [])
                 series = selected[0].split(',') if len(selected) == 1 else []
-                if series != ['price']:
+                if (len(set(series)) != len(series) or
+                        not set(series) <= {'price', 'ti', 'treasury'} or 'price' not in series):
                     raise ValueError('Only price data is currently available. Use series=price.')
+                # Older clients may still select disabled state series; serve only prices.
+                series = ['price']
                 raw = params.get('format', ['ranges-v1'])[0] == 'raw'
                 streaming = params.get('format', [''])[0] == 'stream'
                 histories = {}

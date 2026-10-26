@@ -127,7 +127,7 @@ class PageTests(unittest.TestCase):
                 for encoding in ('raw', 'ranges-v1', 'stream'):
                     with self.subTest(series=series, encoding=encoding):
                         route = base + f'series={series}&format={encoding}' + bounds
-                        if series != 'price':
+                        if 'price' not in series.split(','):
                             with self.assertRaises(HTTPError) as error:
                                 urlopen(route)
                             self.assertEqual(error.exception.code, 400)
@@ -232,7 +232,7 @@ class PageTests(unittest.TestCase):
             with patch.object(server.issuance, 'selection', side_effect=AssertionError('TI read')), \
                     patch.object(server.treasury, 'selection', side_effect=AssertionError('Treasury read')):
                 for series, status in (('price', 503), ('ti', 400), ('treasury', 400),
-                                       ('price,ti,treasury', 400)):
+                                       ('price,ti,treasury', 503)):
                     with self.subTest(series=series), self.assertRaises(HTTPError) as error:
                         urlopen(base + f'series={series}')
                     self.assertEqual(error.exception.code, status)

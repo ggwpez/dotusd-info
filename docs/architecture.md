@@ -40,9 +40,10 @@ globally.
 
 ## Historic API
 
-`GET /api/historic?series=price` currently serves prices only. TI and Treasury
-selections, including combinations with prices, return HTTP 400 before any
-state history read. State collection and persistence continue unchanged.
+`GET /api/historic?series=price` currently serves prices only. Mixed requests
+such as `series=price,ti,treasury` also return only prices, ignoring state windows
+and cursors without reading state history. Requests for only TI/Treasury return
+HTTP 400. State collection and persistence continue unchanged.
 The state encoding and cursor machinery described below is retained internally
 but is temporarily unavailable through HTTP.
 
@@ -94,7 +95,8 @@ stay individual records to avoid rounding drift.
 
 - Recent price requests return 503 until history is restored. Older saved
   windows can return 200 with `historyReady: false` and empty prices.
-- State selections return 400 regardless of loading, saved data or RPC status.
+- State-only selections return 400 regardless of loading, saved data or RPC status;
+  mixed selections follow the normal price response and omit state series.
 - Disk read failures return 503. Responses carry `Cache-Control: no-store` and
   `X-App-Version`.
 

@@ -95,9 +95,10 @@ come from the published archive and saved prices, not an on-demand chain
 query. Missing history remains missing. This does not extend the chart's controls.
 
 The browser uses one price-only history subscription,
-`/api/historic?series=price`, with a six-second refresh. Requests selecting TI,
-Treasury, or a combination containing either return HTTP 400; no state samples
-or cursors are returned. Normal range buttons and drag-to-zoom remain available
+`/api/historic?series=price`, with a six-second refresh. Older clients may still
+request `price,ti,treasury`: these requests succeed with only prices, ignoring
+state windows and cursors. Requests for only TI/Treasury return HTTP 400. No state
+samples or cursors are returned. Normal range buttons and drag-to-zoom remain available
 for prices, and failed refreshes retain successful data.
 `--hub-rpc URL` selects the archive RPC for prices, issuance, Treasury and history
 repair. `just run` uses the public endpoint by default and opens the chart in
