@@ -185,7 +185,7 @@ missing TI and Treasury samples across the retained price block range.
   period for live ingestion; timestamp pauses without missing blocks are not gaps.
   It never extends the live tip.
 - Each pass visits at most eight archive blocks shared by all series, then pauses
-  one second. Failures back off from two to fifteen minutes and never change the
+  one second. Failures back off from 30 seconds to two minutes and never change the
   live `error` field.
 - State fills a fixed grid of blocks divisible by 1,800, newest first, then
   bisects: 900, 450, 225, and so on down to single blocks. Each level runs

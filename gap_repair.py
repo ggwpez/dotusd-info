@@ -245,7 +245,7 @@ class GapRepair:
                     logging.exception('Archive gap repair paused; will retry')
                 with self.cache.lock:
                     ready = self.cache.history_ready
-                delay = min(900, 60 * 2 ** failures) if failures else PAUSE
+                delay = min(120, 15 * 2 ** failures) if failures else PAUSE
                 self.stop.wait(delay if ready or failures else 5)
         finally:
             if db is not None:

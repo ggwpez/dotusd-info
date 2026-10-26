@@ -117,7 +117,7 @@ class GapRepairTests(unittest.TestCase):
                 worker.stop.set()
         with patch.object(worker.stop, 'wait', side_effect=wait), patch.object(gap_repair.logging, 'exception'):
             worker.run()
-        self.assertEqual(waits, [gap_repair.PAUSE, 120, 240, gap_repair.PAUSE])
+        self.assertEqual(waits, [gap_repair.PAUSE, 30, 60, gap_repair.PAUSE])
 
     def test_leading_backfill_uses_only_unused_slots_and_retains_live_freshness(self):
         self.complete_prices()
