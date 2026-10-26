@@ -220,8 +220,8 @@ freshness, and live samples supersede repairs for the same block.
 - Historical and zoomed views show `-` for peg tightness, current price and spot
   price; range low/high remains. Dollar mode hides the redundant spot price with
   `visibility: hidden`.
-- The issuance setting is disabled and unchecked with a temporary-unavailability
-  explanation. The state-series rendering machinery is retained but inactive.
+- The issuance setting and its explanatory text are removed. The state-series
+  rendering machinery is retained but inactive.
 - Hover redraws are coalesced per animation frame.
 
 ### Loading

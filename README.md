@@ -67,7 +67,7 @@ locally and defaults to off, preserving the in-page expanded chart. Browsers
 without Fullscreen API support disable this setting and retain in-page expansion.
 A rejected fullscreen request displays an error without changing the chart mode.
 
-**Total dotUSD issuance** in **Settings** is temporarily disabled and unchecked.
+The **Total dotUSD issuance** setting is temporarily removed.
 Only price data is displayed and requested. Saved issuance preferences are kept
 but ignored, as are `ti=1` links and Back/Forward visibility changes.
 The chart toolbar shows only the title and controls, without a duplicate legend.

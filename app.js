@@ -861,7 +861,6 @@ window.addEventListener('popstate', () => {
   const issuance = view.issuance ?? preferredIssuance;
   const issuanceChanged = showIssuance !== issuance;
   showIssuance = issuance;
-  $('issuance-axis').checked = showIssuance;
   if (issuanceChanged && showIssuance) {
     issuanceCursor = null;
     issuanceCoverage = null;
@@ -897,8 +896,6 @@ $('axis-scale').addEventListener('change', event => {
   writeViewUrl();
   updateViewControls();
 });
-$('issuance-axis').checked = false;
-$('issuance-axis').disabled = true;
 const settings = document.querySelector('.settings');
 // The bell exists only when CHANGELOG.md has entries; its list is server-rendered.
 const changelog = $('changelog');

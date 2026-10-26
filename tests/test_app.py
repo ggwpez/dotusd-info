@@ -307,8 +307,6 @@ class AppTests(unittest.TestCase):
             require(requests.length === 1 && !requests[0].signal.aborted,
                 'online, visibility, and poll triggers share the in-flight request');
 
-            require(elements.get('issuance-axis').disabled && !elements.get('issuance-axis').checked,
-                'the unavailable state-series setting is disabled and unchecked');
             location.search = '?ti=1';
             URLSearchParams.prototype.get = name => name === 'ti' ? '1' : null;
             window.events.popstate();
