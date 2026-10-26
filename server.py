@@ -34,7 +34,7 @@ from treasury import TreasuryHistory
 ROOT = Path(__file__).resolve().parent
 HISTORY_SECONDS = 7 * 86400
 MAX_SAMPLES = 350000
-LIVE_BLOCKS = 8
+LIVE_BLOCKS = 15
 SUMMARY_SAMPLES = 256
 # Finality normally lags about a minute; matches the chart's "Data delayed" cutoff.
 HEALTH_STALE_SECONDS = 180
@@ -661,7 +661,7 @@ class HistoryWorker:
             self.head = head
         finally:
             # Commit successful samples even if a later RPC fails; publish once
-            # per batch, not eight full-cache rebuilds on a populated archive.
+            # per batch, not one full-cache rebuild per sample.
             incoming = list(restored.values())
             if prices and self.cache.history_path is not None:
                 with closing(price_database(self.cache.history_path)) as db, db:

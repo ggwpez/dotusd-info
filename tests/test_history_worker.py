@@ -36,10 +36,10 @@ class HistoryWorkerTests(unittest.TestCase):
         with patch.object(server, 'read_sample', side_effect=self.sample) as read, \
                 patch.object(self.cache, 'merge', wraps=self.cache.merge) as merge:
             self.worker.poll()
-        self.assertEqual([call.args[1] for call in read.call_args_list], list(range(100, 92, -1)))
+        self.assertEqual([call.args[1] for call in read.call_args_list], list(range(100, 85, -1)))
         self.assertEqual(merge.call_count, 1)
-        self.assertEqual([row[2] for row in self.cache.rows], list(range(93, 101)))
-        self.assertEqual([row[0] for row in self.saved()], list(range(93, 101)))
+        self.assertEqual([row[2] for row in self.cache.rows], list(range(86, 101)))
+        self.assertEqual([row[0] for row in self.saved()], list(range(86, 101)))
         self.assertEqual(self.cache.fetched_at, self.now)
         self.assertEqual(self.cache.finalized, (100, self.now - 30))
         self.chain.finalized.assert_called_once_with()
@@ -49,6 +49,16 @@ class HistoryWorkerTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in read.call_args_list], [102, 101])
         self.assertEqual(self.cache.rows[-1][2], 102)
         self.assertEqual(self.cache.finalized, (102, self.now - 26))
+
+    def test_fifteen_block_head_jump_leaves_no_live_price_hole(self):
+        with patch.object(server, 'read_sample', side_effect=self.sample):
+            self.worker.poll()
+            self.chain.finalized.return_value = 115
+            self.worker.poll()
+        self.assertEqual([row[2] for row in self.cache.read(self.now - 31, self.now)[0]],
+                         list(range(100, 116)))
+        self.assertEqual([row[0] for row in self.saved() if row[0] >= 100],
+                         list(range(100, 116)))
 
     def test_restart_reuses_saved_tip_and_retains_expired_evidence(self):
         with patch.object(server, 'read_sample', side_effect=self.sample):
@@ -86,7 +96,7 @@ class HistoryWorkerTests(unittest.TestCase):
             self.worker.poll()
             self.chain.finalized.return_value = 102
             self.worker.poll()
-        self.assertEqual([row[2] for row in self.cache.rows], list(range(93, 103)))
+        self.assertEqual([row[2] for row in self.cache.rows], list(range(86, 103)))
         self.assertTrue(all(a[0] < b[0] for a, b in zip(self.cache.rows, self.cache.rows[1:])))
         self.assertLessEqual(self.cache.rows[-1][0], self.now)
         self.assertEqual({row[2] for row in self.saved()}, {(self.now - 1) * 1000})
@@ -115,14 +125,14 @@ class HistoryWorkerTests(unittest.TestCase):
         self.assertEqual(self.cache.fetched_at, self.now - 5)
 
     def test_live_poll_keeps_nearest_block_neighbors_not_latest_timestamp(self):
-        self.cache.merge([(self.now - 200, 1., 92), (self.now - 180, 1., 91),
-                          (self.now - 100, 1., 94)], self.now)
+        self.cache.merge([(self.now - 200, 1., 85), (self.now - 180, 1., 84),
+                          (self.now - 100, 1., 87)], self.now)
         with patch.object(server, 'read_sample', side_effect=self.sample) as read, \
                 patch.object(server, 'price_time', wraps=server.price_time) as estimate:
             self.worker.poll()
-        self.assertEqual([call.args[1] for call in read.call_args_list], [100, 99, 98, 97, 96, 95, 93])
+        self.assertEqual([call.args[1] for call in read.call_args_list], [*range(100, 87, -1), 86])
         self.assertEqual(estimate.call_args_list[-1].args[2:],
-                         ((92, self.now - 200), (94, self.now - 100)))
+                         ((85, self.now - 200), (87, self.now - 100)))
 
     def test_large_archive_outage_never_changes_tip_priority_and_gaps_recover(self):
         self.cache.merge([(self.now - 1000, 1., 1)], self.now - 900)
@@ -147,7 +157,7 @@ class HistoryWorkerTests(unittest.TestCase):
             worker.poll()
         self.assertTrue(worker.load_history())
         self.assertTrue(worker.load_archive())
-        self.assertEqual([row[2] for row in cache.rows], list(range(93, 101)))
+        self.assertEqual([row[2] for row in cache.rows], list(range(86, 101)))
         old = (1, 'old', 1000, 1., .99, '[]')
         with closing(gap_repair.price_database(self.path)) as db, db:
             db.execute('INSERT INTO repairs VALUES(?,?,?,?,?,?)', old)

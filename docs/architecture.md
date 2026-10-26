@@ -8,7 +8,7 @@
   caches or bounded SQLite windows and never query the chain.
 - The live price worker polls the archive RPC selected by `--hub-rpc` (default
   `https://polkadot-asset-hub-rpc.polkadot.io`). It verifies the Hub genesis,
-  reads pool reserves at finalized block hashes, fetches at most eight recent
+  reads pool reserves at finalized block hashes, fetches at most fifteen recent
   blocks per pass, and waits six seconds between passes.
 - `issuance.py` polls total issuance independently.
 - With `--gap-repair-history PATH`, a repair worker backfills price gaps,

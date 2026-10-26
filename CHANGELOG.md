@@ -3,6 +3,10 @@
 User-facing changes only, newest first. One short sentence per entry.
 Format: `## X.Y.Z - YYYY-MM-DD`, then `- ` entries.
 
+## 1.14.6 - 2026-10-26
+
+- Fewer temporary gaps in live prices.
+
 ## 1.13.0 - 2026-10-26
 
 - New: a bell shows what changed.
