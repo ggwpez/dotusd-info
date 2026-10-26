@@ -205,6 +205,37 @@ class PageTests(unittest.TestCase):
             thread.join()
             directory.cleanup()
 
+    def test_health_reports_finalized_head_age_and_fails_when_stale(self):
+        server = page.CacheServer(('127.0.0.1', 0), page.Handler)
+        server.cache = page.HistoryCache()
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def health():
+            try:
+                with urlopen(f'http://127.0.0.1:{server.server_port}/health') as response:
+                    return response.status, response.headers['Cache-Control'], json.load(response)
+            except HTTPError as error:
+                with error:
+                    return error.code, error.headers['Cache-Control'], json.load(error)
+        now = 2_000_000_000
+        try:
+            with patch.object(page.time, 'time', return_value=now):
+                self.assertEqual(health(), (503, 'no-store', {
+                    'status': 'starting', 'finalizedBlock': None,
+                    'finalizedAgeSeconds': None, 'staleAfterSeconds': 180}))
+                for age, code, status in ((61.24, 200, 'ok'), (180, 200, 'ok'),
+                                          (180.04, 503, 'stale'), (-3, 200, 'ok')):
+                    with self.subTest(age=age):
+                        server.cache.finalized = (22_326_346, now - age)
+                        self.assertEqual(health(), (code, 'no-store', {
+                            'status': status, 'finalizedBlock': 22_326_346,
+                            'finalizedAgeSeconds': round(max(0, age), 1), 'staleAfterSeconds': 180}))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_historic_requires_valid_series_and_removes_old_endpoints(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()

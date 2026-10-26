@@ -41,12 +41,14 @@ class HistoryWorkerTests(unittest.TestCase):
         self.assertEqual([row[2] for row in self.cache.rows], list(range(93, 101)))
         self.assertEqual([row[0] for row in self.saved()], list(range(93, 101)))
         self.assertEqual(self.cache.fetched_at, self.now)
+        self.assertEqual(self.cache.finalized, (100, self.now - 30))
         self.chain.finalized.assert_called_once_with()
         self.chain.finalized.return_value = 102
         with patch.object(server, 'read_sample', side_effect=self.sample) as read:
             self.worker.poll()
         self.assertEqual([call.args[1] for call in read.call_args_list], [102, 101])
         self.assertEqual(self.cache.rows[-1][2], 102)
+        self.assertEqual(self.cache.finalized, (102, self.now - 26))
 
     def test_restart_reuses_saved_tip_and_retains_expired_evidence(self):
         with patch.object(server, 'read_sample', side_effect=self.sample):
@@ -97,6 +99,8 @@ class HistoryWorkerTests(unittest.TestCase):
         self.assertEqual(self.cache.rows, ())
         self.assertIsNone(self.cache.fetched_at)
         self.assertEqual(self.saved(), [])
+        # Head freshness is about finality, not whether the pools have a price.
+        self.assertEqual(self.cache.finalized, (100, self.now))
 
     def test_wrong_chain_or_backwards_finality_cannot_write_prices(self):
         self.chain.finalized.side_effect = ValueError('Wrong chain')

@@ -36,6 +36,8 @@ HISTORY_SECONDS = 7 * 86400
 MAX_SAMPLES = 350000
 LIVE_BLOCKS = 8
 SUMMARY_SAMPLES = 256
+# Finality normally lags about a minute; matches the chart's "Data delayed" cutoff.
+HEALTH_STALE_SECONDS = 180
 
 CHANGELOG_ENTRIES = 10
 BELL = ('<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -358,6 +360,8 @@ class HistoryCache:
         self.repaired = {}
         self.archive = archive
         self.history_path = history_path
+        # (block, chain seconds) of the newest finalized head read by the live poll.
+        self.finalized = None
 
     def _stored_rows(self, start, end, history=()):
         rows = {}
@@ -643,6 +647,8 @@ class HistoryWorker:
                 if number in existing:
                     continue
                 _, at, timestamp, price, reserves = read_sample(self.chain.rpc, number)
+                if number == head:
+                    self.cache.finalized = (number, timestamp / 1000)
                 if price is None:
                     continue
                 index = bisect_left(numbers, number)
@@ -817,6 +823,15 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlsplit(self.path)
         if url.path in ('/version', '/api/version'):
             self.respond(200, {'version': self.server.version})
+            return
+        if url.path == '/health':
+            finalized = self.server.cache.finalized
+            age = None if finalized is None else max(0., time.time() - finalized[1])
+            status = 'starting' if age is None else 'stale' if age > HEALTH_STALE_SECONDS else 'ok'
+            self.respond(200 if status == 'ok' else 503, {
+                'status': status, 'finalizedBlock': finalized and finalized[0],
+                'finalizedAgeSeconds': None if age is None else round(age, 1),
+                'staleAfterSeconds': HEALTH_STALE_SECONDS})
             return
         if url.path == '/api/historic':
             try:

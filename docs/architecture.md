@@ -266,3 +266,15 @@ The version appears in the footer, `X-App-Version`, and `/version`
 `X-App-Version` on every history response and reloads the current URL on a
 mismatch. Assets are frozen at startup; restart the server to pick up changes.
 See the [README](../README.md#working-on-the-code) for the release workflow.
+
+## Health
+
+`/health` reports chain freshness for external monitors:
+`{"status", "finalizedBlock", "finalizedAgeSeconds", "staleAfterSeconds"}`.
+The age is wall time minus the on-chain timestamp of the newest finalized head
+the live poll has read, recorded even when the pools have no price. Finality
+normally keeps it near a minute. It returns 200 `ok` up to 180 seconds (the
+chart's "Data delayed" cutoff), 503 `stale` beyond that, and 503 `starting`
+before the first head is read after startup. A failing RPC leaves the last head
+in place, so the age keeps growing. `/version` stays the process liveness check
+used by the container `HEALTHCHECK`.
