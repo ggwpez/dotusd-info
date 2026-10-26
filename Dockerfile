@@ -18,6 +18,8 @@ RUN python -c 'import os, pathlib, re; commit = os.environ.get("DEPLOY_COMMIT", 
 USER 10001:10001
 VOLUME ["/data"]
 EXPOSE 3001
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c 'import json, urllib.request; response = urllib.request.urlopen("http://127.0.0.1:3001/version", timeout=3); assert json.load(response)["version"]'
+# /health answers 503 until the first finalized head is read and once it is over
+# 180 s old, so an unreachable RPC or stalled finality also marks this unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:3001/health", timeout=3)'
 CMD ["python", "server.py", "--bind", "0.0.0.0", "--port", "3001", "--no-browser", "--hub-rpc", "https://polkadot-asset-hub-rpc.polkadot.io", "--archive", "/data/archive.sqlite3", "--gap-repair-history", "/data/pool-repairs.sqlite3"]

@@ -269,12 +269,17 @@ See the [README](../README.md#working-on-the-code) for the release workflow.
 
 ## Health
 
-`/health` reports chain freshness for external monitors:
+`/health` reports chain freshness for monitors and the container `HEALTHCHECK`:
 `{"status", "finalizedBlock", "finalizedAgeSeconds", "staleAfterSeconds"}`.
 The age is wall time minus the on-chain timestamp of the newest finalized head
 the live poll has read, recorded even when the pools have no price. Finality
 normally keeps it near a minute. It returns 200 `ok` up to 180 seconds (the
 chart's "Data delayed" cutoff), 503 `stale` beyond that, and 503 `starting`
 before the first head is read after startup. A failing RPC leaves the last head
-in place, so the age keeps growing. `/version` stays the process liveness check
-used by the container `HEALTHCHECK`.
+in place, so the age keeps growing.
+
+The image `HEALTHCHECK` requests `/health` every 30 seconds after a 60-second
+start period; three consecutive non-200 responses or timeouts mark the container
+unhealthy about 3–3.5 minutes after finalized data stops advancing. Docker
+does not restart unhealthy containers; the status is for operators and the
+deployment platform. `/version` remains the release check used by deployment.
