@@ -1,5 +1,8 @@
 """Persistent pool-gap, total-issuance and Treasury recovery from Parity archive."""
+from bisect import bisect_left
+from itertools import islice
 import logging
+from operator import itemgetter
 import sqlite3
 import threading
 import time
@@ -12,6 +15,15 @@ from treasury import read_history
 BATCH = 8
 PAUSE = 1
 ISSUANCE_STRIDE = 1800
+
+_number = itemgetter(2)
+
+
+def _has_block(rows, number):
+    if isinstance(rows, set):
+        return number in rows
+    index = bisect_left(rows, number, key=_number)
+    return index < len(rows) and rows[index][2] == number
 
 
 def _issuance_numbers(lower, upper):
@@ -60,21 +72,24 @@ class GapRepair:
 
     def poll(self, db):
         now = time.time()
-        histories = [(history, name, set(), [])
-                     for history, name in ((self.issuance, 'issuance'),
-                                           (self.treasury, 'treasury'))
-                     if history is not None]
-        for history, _, known, _ in histories:
-            # Expire only memory, never persisted history.
+        histories = []
+        for history, name in ((self.issuance, 'issuance'), (self.treasury, 'treasury')):
+            if history is None:
+                continue
+            # Expire only memory, never persisted history. Persisted snapshots
+            # are block-ordered, so membership does not need a full-history set.
             history.merge((), now=now)
-            known.update(row[2] for row in history.snapshot()['rows'])
+            known = history.snapshot()['rows']
+            if history.history_path is None:
+                known = {row[2] for row in known}
+            histories.append((history, name, known, []))
         with self.cache.lock:
             if not self.cache.history_ready:
                 return 0
             rows = self.cache.rows
         # Preserve a short ingestion grace period for internal price gaps.
         cutoff = now - 120
-        gap = next(((a, b) for a, b in zip(reversed(rows[:-1]), reversed(rows[1:]))
+        gap = next(((a, b) for a, b in zip(islice(reversed(rows), 1, None), reversed(rows))
                     if a[2] is not None and b[2] is not None and
                     b[2] > a[2] + 1 and b[0] < cutoff), None)
         price_numbers = list(range(gap[0][2] + 1, min(gap[1][2], gap[0][2] + BATCH + 1))) if gap else []
@@ -89,7 +104,7 @@ class GapRepair:
             # Saved and already-selected blocks also deduplicate rounded
             # midpoints at the final, single-block resolution.
             for number in _issuance_numbers(lower, upper):
-                if any(number not in known for _, _, known, _ in histories) and number not in missing:
+                if any(not _has_block(known, number) for _, _, known, _ in histories) and number not in missing:
                     missing.append(number)
                     if len(missing) == BATCH + BATCH // 2:
                         break
@@ -110,7 +125,7 @@ class GapRepair:
         def read_histories(number, at=None, timestamp=None):
             nonlocal history_error
             needed = {name: samples for _, name, known, samples in histories
-                      if number not in known}
+                      if not _has_block(known, number)}
             if not needed:
                 return
             try:

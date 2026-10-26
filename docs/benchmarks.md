@@ -4,6 +4,35 @@
 
 Run the commands below from the repository root.
 
+## Seven-day memory regression
+
+On October 26, 2026, the deployed `4402d4e` image was compared with the
+bounded-history implementation in isolated Python 3.12 containers on the same
+host, each limited to 512 MiB with no swap, network or production data mounts.
+A temporary SQLite fixture contained 302,400 prices and approximately 302,400
+rows in each state series: a fully backfilled seven-day workload, denser than the
+current production state history.
+
+The scenario restored all three caches, applied small updates every second,
+then requested seven-day combined NDJSON history once and in two groups of four
+concurrent clients. Clients consumed 64 KiB chunks without retaining/decoding the
+whole response inside the measured container. Peaks are cgroup `memory.peak`,
+not sampled RSS. The fixture and container were removed after each run.
+
+| Measurement | Original image | Optimized |
+| --- | ---: | ---: |
+| Restored container memory | 223.7 MiB | 207.4 MiB |
+| Peak after one request | 433.6 MiB | 243.5 MiB |
+| Four concurrent requests | OOM kill, exit 137 | All completed |
+| Peak across all nine requests | 512 MiB limit reached | 298.4 MiB |
+
+The optimized requests all returned HTTP 200; the single request took 6.11 s,
+and the four-client groups completed within 25.47 s and 21.57 s respectively.
+SQLite `quick_check` returned `ok`. These are bounded-load measurements, not a
+guarantee of latency under arbitrary traffic. Historical scans serialize, while
+live updates and streamed output remain concurrent. The test exercises memory
+under full state coverage rather than accepting a healthy post-restart snapshot.
+
 ## Concurrent requests and bursts
 
 Run `python3 tools/benchmark_requests.py --fixture /tmp/prices.json --output /tmp/results.json`

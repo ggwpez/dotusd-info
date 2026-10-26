@@ -38,6 +38,10 @@ references existing samples, and never grows with the number of requested window
 Summaries are rebuilt on merges, including corrections and eviction, and are
 released with their snapshot when its readers finish.
 
+Small price/state updates merge sorted rows and reuse immutable samples rather
+than rebuilding full-history dictionaries. Live workers keep only their recent
+block lookup; repair membership uses the ordered state snapshots.
+
 Historic API requests may select any past `(start, end]` window, not just the
 latest seven days. Each price/TI window must span one second to seven days,
 with at most 350,000 samples per series; oversized windows return HTTP 400
@@ -52,6 +56,14 @@ the chain, expand the live cache, or recover data that was never saved.
 Absent samples remain gaps. Disk read failures return HTTP 503.
 Historical price responses bypass the live response cache so saved corrections
 are visible; historical TI returns full reset snapshots rather than live deltas.
+
+Historical reads consume SQLite cursors and reuse cached row objects instead of
+retaining a second decoded copy of seven days. They still inspect the complete
+requested disk range so unpublished writes and corrections remain visible.
+One shared admission lock serializes historical disk scans across the three
+series to avoid concurrent SQLite row-decoding contention. It does not lock
+live publication or network streaming; SQLite WAL permits writers during reads.
+Cursors close before network output, so slow clients do not pin read transactions.
 
 Packed JSON and NDJSON responses share a six-second LRU across the four workers.
 It retains at most 32 entries and 8 MiB of encoded bytes, with a 4 MiB per-response
@@ -72,6 +84,11 @@ returns 503 with `Retry-After: 6`. Requests waiting two seconds expire with the
 same response; idle-server expiry checks run every 0.5 seconds. The separate TCP
 listen backlog is 64 connections. Responses stream in batches
 and client sockets have a ten-second inactivity timeout.
+
+Issuance and Treasury JSON is encoded in 256-row batches, including the initial
+NDJSON record. Streaming no longer constructs and copies a full state-history
+JSON string before sending it. The wire format and browser decoding are unchanged.
+
 Prices follow dotUSD → DOT → USDT; timestamps are estimated and missing blocks
 remain gaps. This is a USDT pool reference, with no fees or slippage included.
 

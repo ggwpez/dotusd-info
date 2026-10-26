@@ -404,3 +404,108 @@ class IssuanceTests(unittest.TestCase):
                     self.assertTrue(reset['reset'])
                     self.assertEqual(reset['rows'], ((now - 20, 2., 2), (now - 10, 3., 3)))
             self.assertNotEqual(restarted.selection(now - 100, now)['cursor'], expired['cursor'])
+
+    def test_small_merge_preserves_snapshots_and_last_duplicate_correction(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        original = ((now - 30, 1., 1), (now - 20, 2., 2), (now - 10, 3., 3))
+        with patch('issuance.time.time', return_value=now):
+            cache.merge(original)
+            saved = cache.snapshot()
+            cursor = cache.selection(now - 40, now)['cursor']
+            expired = (now - RETENTION, 11., 1)
+            correction = (now - 20, 22., 2)
+            cache.merge(iter([correction, expired, (now - 20, 222., 2), correction]))
+            self.assertEqual(saved['rows'], original)
+            self.assertEqual(cache.snapshot()['rows'], (correction, original[2]))
+            self.assertEqual(cache.selection(now - 40, now, cursor)['rows'], (correction,))
+            restarted = IssuanceCache(cache.history_path)
+            restarted.restore()
+            self.assertEqual(restarted.snapshot()['rows'], cache.rows)
+            self.assertEqual(cache.selection(expired[0] - 1, now)['rows'],
+                             (expired, correction, original[2]))
+
+    def test_historical_prefix_and_retained_rows_remain_block_ordered(self):
+        now = 1_700_001_000
+        cutoff = now - RETENTION
+        cache = self.persistent_cache()
+        first = (cutoff + 10, 1., 10)
+        # Historical corrections need not be timestamp-ordered relative to the
+        # retained cache, but selections still return every block in block order.
+        historical = (cutoff - 10, 2., 15)
+        last = (cutoff + 20, 3., 20)
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([last, historical, first])
+            selected = cache.selection(cutoff - 11, cutoff + 20)
+            self.assertEqual(selected['rows'], (first, historical, last))
+            self.assertTrue(selected['reset'])
+
+    def test_snapshot_expiration_does_not_clip_cross_retention_selection(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        rows = ((now - 30, 1., 1), (now - 20, 2., 2), (now - 10, 3., 3))
+        with patch('issuance.time.time', return_value=now):
+            cache.merge(rows)
+        with patch('issuance.time.time', return_value=now + RETENTION - 15):
+            self.assertEqual(cache.snapshot()['rows'], rows[2:])
+            self.assertEqual(cache.selection(now - 40, now)['rows'], rows)
+
+    def test_historical_read_interleaved_with_correction_never_duplicates_blocks(self):
+        now = 1_700_001_000
+        cutoff = now - RETENTION
+        cache = self.persistent_cache()
+        old, recent = (cutoff - 10, 1., 1), (cutoff + 10, 2., 2)
+        corrected = (cutoff, 22., 2)
+        database = cache.database
+        changed = False
+        def interleaved_database():
+            nonlocal changed
+            db = database()
+            if not changed:
+                changed = True
+                cache.merge([corrected], now=now)
+            return db
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([old, recent])
+            with patch.object(cache, 'database', side_effect=interleaved_database):
+                selected = cache.selection(cutoff - 11, cutoff + 10)
+            self.assertEqual(selected['rows'], (old, corrected))
+            self.assertEqual(cache.rows, ())
+
+    def test_historical_prefix_and_suffix_share_one_sample_limit(self):
+        now = 1_700_001_000
+        cutoff = now - RETENTION
+        cache = self.persistent_cache()
+        rows = ((cutoff, 1., 1), (cutoff + 10, 2., 2), (cutoff + 20, 3., 3))
+        with patch('issuance.time.time', return_value=now):
+            cache.merge(rows)
+            with patch('issuance.MAX_SAMPLES', 2):
+                self.assertEqual(cache.selection(cutoff - 1, cutoff + 10)['rows'], rows[:2])
+                with self.assertRaisesRegex(ValueError, 'exceeds 2 samples'):
+                    cache.selection(cutoff - 1, cutoff + 20)
+
+    def test_historical_read_reports_disk_failure_with_complete_recent_suffix(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([(now - 10, 1., 1)])
+            with patch.object(cache, 'database', side_effect=OSError('Disk unavailable')):
+                with self.assertRaisesRegex(OSError, 'Disk unavailable'):
+                    cache.selection(now - RETENTION - 1, now)
+
+    def test_historical_selection_observes_unpublished_disk_changes_in_recent_suffix(self):
+        now = 1_700_001_000
+        cache = self.persistent_cache()
+        old = (now - RETENTION - 10, 1., 1)
+        recent = ((now - 20, 2., 2), (now - 10, 4., 4))
+        corrected, added = (now - 20, 22., 2), (now - 15, 3., 3)
+        with patch('issuance.time.time', return_value=now):
+            cache.merge([old, *recent])
+            with closing(cache.database()) as db, db:
+                db.execute('UPDATE issuance SET supply=? WHERE number=?', (22., 2))
+                db.execute('DELETE FROM issuance WHERE number=?', (4,))
+                db.execute('INSERT INTO issuance VALUES(?,?,?)', (3, added[0], added[1]))
+            selected = cache.selection(old[0] - 1, now)
+            self.assertEqual(selected['rows'], (old, corrected, added))
+            self.assertTrue(selected['reset'])
+            self.assertEqual(cache.snapshot()['rows'], recent)

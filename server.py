@@ -3,6 +3,7 @@
 import argparse
 import base64
 import hashlib
+import heapq
 from bisect import bisect_left, bisect_right
 from collections import deque, OrderedDict
 from concurrent.futures import Future
@@ -24,7 +25,7 @@ from pathlib import Path
 from archive_reader import price_time, read_sample
 from gap_repair import GapRepair, price_database
 from hub_quotes import HubChain, RPC
-from issuance import IssuanceCache, IssuanceWorker
+from issuance import HISTORY_READ_LOCK, IssuanceCache, IssuanceWorker
 from release import read_sources, read_version, source_hash
 from treasury import TreasuryHistory
 
@@ -119,6 +120,17 @@ def pack_ranges(rows):
         yield record
         t, price, block = rows[i + count - 1]
         i += count
+
+
+def merge_price_rows(earlier, later):
+    """Merge sorted streams; later rows win equal timestamps without copying."""
+    pending = None
+    for row in heapq.merge(earlier, later, key=lambda row: row[0]):
+        if pending is not None and pending[0] != row[0]:
+            yield pending
+        pending = row
+    if pending is not None:
+        yield pending
 
 
 class HistorySummaries:
@@ -233,18 +245,38 @@ def historic_response(chunks, histories, streaming):
     if not histories:
         yield from chunks
         return
-    encoded = json.dumps(histories, allow_nan=False, separators=(',', ':')).encode()
+    encoder = json.JSONEncoder(allow_nan=False, separators=(',', ':'))
+
+    def body():
+        for index, (name, history) in enumerate(histories.items()):
+            yield ((',' if index else '') + encoder.encode(name) + ':{').encode()
+            for field, (key, value) in enumerate(history.items()):
+                yield ((',' if field else '') + encoder.encode(key) + ':').encode()
+                if key != 'rows':
+                    yield encoder.encode(value).encode()
+                    continue
+                yield b'['
+                rows = iter(value)
+                first = True
+                while batch := list(islice(rows, 256)):
+                    yield (b'' if first else b',') + encoder.encode(batch)[1:-1].encode()
+                    first = False
+                yield b']'
+            yield b'}'
+
     if chunks is None:
+        yield b'{"encoding":"ranges-stream-v1",' if streaming else b'{'
+        yield from body()
+        yield b'}\n' if streaming else b'}'
         if streaming:
-            yield b'{"encoding":"ranges-stream-v1",' + encoded[1:] + b'\n'
             yield b'{"done":true}\n'
-        else:
-            yield encoded
         return
     chunks = iter(chunks)
     first = next(chunks)
-    # Both price formats begin with one object; only its first chunk changes.
-    yield encoded[:-1] + b',' + first[1:]
+    # Stream state fields into the first object without materializing its JSON.
+    yield b'{'
+    yield from body()
+    yield b',' + first[1:]
     yield from chunks
 
 
@@ -263,19 +295,35 @@ class HistoryCache:
         self.archive = archive
         self.history_path = history_path
 
-    def _stored_rows(self, start, end):
+    def _stored_rows(self, start, end, history=()):
         rows = {}
+
+        def remember(cursor, divisor=1):
+            index = bisect_right(history, start, key=lambda row: row[0])
+            for count, row in enumerate(cursor, 1):
+                if count > MAX_SAMPLES:
+                    raise ValueError('Too many price samples; request a smaller window.')
+                if divisor != 1:
+                    row = (row[0] / divisor, row[1], row[2])
+                stamp, _, number = row
+                while index < len(history) and history[index][0] < stamp:
+                    index += 1
+                if (number is not None and index < len(history) and
+                        history[index][0] == stamp and history[index][2] == number):
+                    # This block already has a cached correction. Do not retain
+                    # another tuple for it, even when its stored price differs.
+                    rows.pop(number, None)
+                else:
+                    rows[number] = row
+
         if self.history_path is not None and self.history_path.exists():
             with closing(sqlite3.connect(
                     self.history_path.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
                 if db.execute("SELECT 1 FROM sqlite_master WHERE name='repairs'").fetchone():
-                    saved = db.execute(
+                    remember(db.execute(
                         'SELECT sample_time,price,number FROM repairs '
                         'WHERE sample_time>? AND sample_time<=? ORDER BY sample_time LIMIT ?',
-                        (start, end, MAX_SAMPLES + 1)).fetchall()
-                    if len(saved) > MAX_SAMPLES:
-                        raise ValueError('Too many price samples; request a smaller window.')
-                    rows.update((row[2], row) for row in saved)
+                        (start, end, MAX_SAMPLES + 1)))
         if self.archive is not None and self.archive.exists():
             with closing(sqlite3.connect(
                     self.archive.resolve().as_uri() + '?mode=ro', uri=True, timeout=1)) as db:
@@ -299,14 +347,10 @@ class HistoryCache:
                                 high = middle
                         return low
                     lower, upper = boundary(start), boundary(end)
-                    saved = db.execute(
+                    remember(db.execute(
                         'SELECT sample_time,price,number FROM samples '
                         'WHERE number>=? AND number<? AND price IS NOT NULL ORDER BY number LIMIT ?',
-                        (lower, upper, MAX_SAMPLES + 1)).fetchall()
-                    if len(saved) > MAX_SAMPLES:
-                        raise ValueError('Too many price samples; request a smaller window.')
-                    rows.update((number, (stamp / 1000, price, number))
-                                for stamp, price, number in saved)
+                        (lower, upper, MAX_SAMPLES + 1)), divisor=1000)
         return rows
 
     def merge(self, rows, now, mark_fresh=True, replace=False, missing_only=False):
@@ -315,33 +359,75 @@ class HistoryCache:
         with self.writer_lock:
             with self.lock:
                 previous = () if replace else self.rows
-            # Merge by timestamp to deduplicate overlapping refreshes and preserve gaps.
-            by_time = {row[0]: row for row in previous if row[0] > now - HISTORY_SECONDS}
-            rows = list(rows)
+            cutoff = now - HISTORY_SECONDS
+            left = bisect_right(previous, cutoff, key=lambda row: row[0])
+            rows = [tuple(row) for row in rows]
             candidates = {row[2] for row in rows} if missing_only else set()
-            present = {row[2] for row in by_time.values() if row[2] in candidates} if missing_only else set()
-            repaired = {} if replace else dict(self.repaired)
+            present = {row[2] for row in islice(previous, left, None)
+                       if row[2] in candidates} if missing_only else set()
+            repaired = {} if replace else self.repaired
+            edits = {}
+            changed_blocks = set()
+
+            def forget(row):
+                changed_blocks.add(row[2])
+
+            for row in islice(previous, left):
+                forget(row)
+
+            def original(stamp):
+                index = bisect_left(previous, stamp, lo=left, key=lambda row: row[0])
+                return previous[index] if index < len(previous) and previous[index][0] == stamp else None
+
+            def change(stamp, row):
+                before = original(stamp)
+                current = edits.get(stamp, before)
+                if current is not None:
+                    forget(current)
+                if row == before:
+                    edits.pop(stamp, None)
+                else:
+                    edits[stamp] = row
+
             for row in rows:
                 stamp, _, block = row
-                if not now - HISTORY_SECONDS < stamp <= now:
+                if not cutoff < stamp <= now:
                     continue
-                if missing_only and (stamp in by_time or block in present):
-                    continue
-                # Live data supersedes restored evidence by block even when its
-                # estimated timestamp differs.
                 if missing_only:
+                    if block in present or edits.get(stamp, original(stamp)) is not None:
+                        continue
+                    change(stamp, row)
                     repaired[block] = stamp
                     present.add(block)
-                elif block is not None:
-                    old = repaired.pop(block, None)
+                else:
+                    # Live data supersedes restored evidence by block even
+                    # when its estimated timestamp differs.
+                    old = repaired.pop(block, None) if block is not None else None
                     if old is not None:
-                        by_time.pop(old, None)
-                by_time[stamp] = tuple(row)
-            replacement = tuple(by_time[t] for t in sorted(by_time)[-MAX_SAMPLES:])
-            self.repaired = {block: stamp for block, stamp in repaired.items()
-                             if replacement and stamp >= replacement[0][0] and
-                             by_time.get(stamp, (None, None, None))[2] == block}
-            summaries = HistorySummaries(replacement)
+                        change(old, None)
+                    change(stamp, row)
+            if edits:
+                retained = (row for row in islice(previous, left, None) if row[0] not in edits)
+                additions = sorted((row for row in edits.values() if row is not None),
+                                   key=lambda row: row[0])
+                replacement = tuple(heapq.merge(retained, additions, key=lambda row: row[0]))
+            else:
+                replacement = previous[left:] if left else previous
+            if len(replacement) > MAX_SAMPLES:
+                for row in islice(replacement, len(replacement) - MAX_SAMPLES):
+                    forget(row)
+                replacement = replacement[-MAX_SAMPLES:]
+            for block in changed_blocks:
+                stamp = repaired.get(block)
+                if stamp is None:
+                    continue
+                index = bisect_left(replacement, stamp, key=lambda row: row[0])
+                if (index == len(replacement) or replacement[index][0] != stamp or
+                        replacement[index][2] != block):
+                    repaired.pop(block, None)
+            self.repaired = repaired
+            summaries = (self.summaries if not replace and replacement is previous
+                         else HistorySummaries(replacement))
             with self.lock:
                 self.rows = replacement
                 self.summaries = summaries
@@ -357,19 +443,25 @@ class HistoryCache:
         cutoff = time.time() - HISTORY_SECONDS
         query_start, query_end = window if window is not None else (start, end)
         if query_start < cutoff and (self.archive is not None or self.history_path is not None):
-            saved = self._stored_rows(query_start, query_end)
-            # Cached samples supersede persisted prices by block, even when
-            # a correction moves the timestamp outside the selected window.
-            saved.update((row[2], row) for row in history if row[2] is not None and
-                         (row[2] in saved or query_start < row[0] <= query_end))
-            by_time = {row[0]: row for row in saved.values() if query_start < row[0] <= query_end}
-            by_time.update((row[0], row) for row in history if query_start < row[0] <= query_end)
-            if len(by_time) > MAX_SAMPLES:
-                raise ValueError('Too many price samples; request a smaller window.')
-            history = tuple(by_time[stamp] for stamp in sorted(by_time))
-            summaries = HistorySummaries(history)
-            generation = None
+            with HISTORY_READ_LOCK:
+                saved = self._stored_rows(query_start, query_end, history)
+            # Consult every cached block, not just the selected timestamps:
+            # corrections can move a persisted sample outside this window.
+            for row in history:
+                if row[2] is not None:
+                    saved.pop(row[2], None)
+            if saved:
+                stored = sorted(saved.values(), key=lambda row: row[0])
+                del saved
+                selected_left = bisect_right(history, query_start, key=lambda row: row[0])
+                selected_right = bisect_right(history, query_end, key=lambda row: row[0])
+                history = tuple(merge_price_rows(stored, islice(history, selected_left, selected_right)))
+                if len(history) > MAX_SAMPLES:
+                    raise ValueError('Too many price samples; request a smaller window.')
+                summaries = HistorySummaries(history)
+                generation = None
             history_ready = query_end <= cutoff or history_ready
+            start, end = max(start, query_start), min(end, query_end)
         else:
             if fetched_at is None and not history_ready:
                 raise RuntimeError('History is warming up')
@@ -399,7 +491,7 @@ class HistoryCache:
         left, right = selection['left'], selection['right']
         bounds = selection['bounds']
         extremes = summaries.extremes(history, *bounds) if bounds is not None else None
-        rows = (list(history[left:right]) if after_block is None else
+        rows = (list(islice(history, left, right)) if after_block is None else
                 summaries.after(history, left, right, after_block))
         return rows, selection['fetched_at'], selection['history_ready'], extremes
 
@@ -456,7 +548,21 @@ class HistoryWorker:
     def poll(self):
         head = self.chain.finalized()
         with self.cache.lock:
-            existing = {row[2]: row for row in self.cache.rows if row[2] is not None}
+            history = self.cache.rows
+        existing = {}
+        lower = None
+        for row in history:
+            number = row[2]
+            if number is None:
+                continue
+            if number > head:
+                raise ValueError('Hub finalized head moved backwards')
+            if number > head - LIVE_BLOCKS:
+                existing[number] = row
+            elif lower is None or number >= lower[2]:
+                lower = row
+        if lower is not None:
+            existing[lower[2]] = lower
         restored = self.recent_saved(head)
         restored.update((n, existing[n]) for n in restored if n in existing)
         existing.update(restored)

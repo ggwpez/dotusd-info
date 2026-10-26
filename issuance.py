@@ -1,8 +1,11 @@
 """Finalized dotUSD issuance, with permanent storage and a seven-day cache."""
 import hashlib
+from bisect import bisect_left, bisect_right
 from collections import deque
 from contextlib import closing
 import logging
+from itertools import islice
+from operator import itemgetter
 import secrets
 import sqlite3
 import threading
@@ -16,6 +19,29 @@ BLOCKS = 15
 RETENTION = 7 * 86400
 MAX_CHANGES = 4096
 MAX_SAMPLES = 350000
+# Serialize historical SQLite scans across all three series. Concurrent Python
+# row decoding multiplies working memory and contends on the interpreter lock.
+# Live publication and HTTP streaming do not acquire this admission lock.
+HISTORY_READ_LOCK = threading.Lock()
+
+_timestamp = itemgetter(0)
+_number = itemgetter(2)
+
+
+def _overlay(previous, incoming):
+    """Merge ordered block rows, with incoming corrections taking precedence."""
+    previous = iter(previous)
+    old = next(previous, None)
+    for row in incoming:
+        while old is not None and old[2] < row[2]:
+            yield old
+            old = next(previous, None)
+        if old is not None and old[2] == row[2]:
+            old = next(previous, None)
+        yield row
+    if old is not None:
+        yield old
+    yield from previous
 
 
 def asset_key(asset):
@@ -108,33 +134,63 @@ class IssuanceCache:
         cutoff = now - RETENTION
         with closing(self.database()) as db:
             with db:
-                retained = {row[2]: row for row in self.rows if row[0] > cutoff}
+                retained = self.rows[bisect_right(self.rows, cutoff, key=_timestamp):]
                 if not self.restored:
-                    for row in db.execute(
-                            f'SELECT timestamp,{self.value_column},number FROM {self.table} WHERE timestamp>? ORDER BY number',
-                            (cutoff,)):
-                        retained.setdefault(row[2], row)
-                incoming = [tuple(row) for row in rows]
-                for row in incoming:
-                    retained.pop(row[2], None)
-                    if row[0] > cutoff:
-                        retained[row[2]] = row
-                merged = tuple(retained[number] for number in sorted(retained))
-                if any(a[0] > b[0] for a, b in zip(merged, merged[1:])):
-                    raise ValueError(f'{self.label} timestamps moved backwards')
+                    saved = db.execute(
+                        f'SELECT timestamp,{self.value_column},number FROM {self.table} WHERE timestamp>? ORDER BY number',
+                        (cutoff,))
+                    retained = tuple(_overlay(saved, retained))
+                # Only the incoming batch needs a block map; permanent history
+                # stays sorted and shares its immutable row objects.
+                incoming = {row[2]: tuple(row) for row in rows}
+                updates = []
+                for number in sorted(incoming):
+                    row = incoming[number]
+                    index = bisect_left(retained, number, key=_number)
+                    if index == len(retained) or retained[index] != row:
+                        updates.append(row)
+                if updates:
+                    def retained_rows():
+                        last = None
+                        for row in _overlay(retained, updates):
+                            if row[0] <= cutoff:
+                                continue
+                            if last is not None and last > row[0]:
+                                raise ValueError(f'{self.label} timestamps moved backwards')
+                            last = row[0]
+                            yield row
+                    merged = tuple(retained_rows())
+                else:
+                    merged = retained
+                    if not self.restored and any(
+                            a[0] > b[0] for a, b in zip(merged, islice(merged, 1, None))):
+                        raise ValueError(f'{self.label} timestamps moved backwards')
                 db.executemany(f'INSERT OR REPLACE INTO {self.table} VALUES(?,?,?)',
-                               [(row[2], row[0], row[1]) for row in incoming])
+                               ((row[2], row[0], row[1]) for row in incoming.values()))
             self._publish(merged)
             self.restored = True
             if self.rows and self.error and self.error.startswith('Loading'):
                 self.error = None
 
     def _publish(self, rows):
-        previous = {row[2]: row for row in self.rows}
-        for row in rows:
-            if previous.get(row[2]) != row:
-                self.revision += 1
-                self.changes.append((self.revision, row))
+        if rows is self.rows:
+            return
+        if self.history_path is None:
+            previous = {row[2]: row for row in self.rows}
+            changed = (row for row in rows if previous.get(row[2]) != row)
+        else:
+            def changed_rows():
+                previous = iter(self.rows)
+                old = next(previous, None)
+                for row in rows:
+                    while old is not None and old[2] < row[2]:
+                        old = next(previous, None)
+                    if old != row:
+                        yield row
+            changed = changed_rows()
+        for row in changed:
+            self.revision += 1
+            self.changes.append((self.revision, row))
         self.rows = rows
 
     def selection(self, start, end, cursor=None):
@@ -144,12 +200,14 @@ class IssuanceCache:
         with self.lock:
             next_cursor, error = f'{self.instance}:{self.revision}', self.error
             if not historical:
-                count = 0
-                for row in self.rows:
-                    if start < row[0] <= end:
-                        count += 1
-                        if count > MAX_SAMPLES:
-                            raise ValueError(limit_error)
+                if self.history_path is not None:
+                    first = bisect_right(self.rows, start, key=_timestamp)
+                    last = max(first, bisect_right(self.rows, end, key=_timestamp))
+                    count = last - first
+                else:
+                    count = sum(start < row[0] <= end for row in self.rows)
+                if count > MAX_SAMPLES:
+                    raise ValueError(limit_error)
                 revision = None
                 if isinstance(cursor, str):
                     instance, separator, value = cursor.partition(':')
@@ -160,25 +218,36 @@ class IssuanceCache:
                 oldest = self.changes[0][0] - 1 if self.changes else self.revision
                 reset = revision is None or not oldest <= revision <= self.revision
                 if reset:
-                    rows = self.rows
+                    rows = (self.rows[first:last] if self.history_path is not None
+                            else tuple(row for row in self.rows if start < row[0] <= end))
                 else:
                     changed = {row[2]: row for version, row in self.changes if version > revision}
-                    rows = (changed[number] for number in sorted(changed))
-                rows = tuple(row for row in rows if start < row[0] <= end)
+                    rows = tuple(changed[number] for number in sorted(changed)
+                                 if start < changed[number][0] <= end)
+            else:
+                retained = self.rows
         if historical:
             # Historical corrections do not enter the live revision journal.
             # Always reset so callers replace their entire selected window.
             # Disk reads must not hold up live publication.
-            with closing(self.database()) as db:
-                rows = db.execute(
-                    f'SELECT timestamp,{self.value_column},number FROM {self.table} '
-                    'WHERE timestamp>? AND timestamp<=? '
-                    'ORDER BY timestamp,number LIMIT ?',
-                    (start, end, MAX_SAMPLES + 1)).fetchall()
-            if len(rows) > MAX_SAMPLES:
-                raise ValueError(limit_error)
-            rows.sort(key=lambda row: row[2])
-            rows = tuple(rows)
+            with HISTORY_READ_LOCK, closing(self.database()) as db:
+                selected = []
+                for row in db.execute(
+                        f'SELECT timestamp,{self.value_column},number FROM {self.table} '
+                        'WHERE timestamp>? AND timestamp<=? '
+                        'ORDER BY timestamp,number LIMIT ?',
+                        (start, end, MAX_SAMPLES + 1)):
+                    # Read every persisted row so external corrections and
+                    # committed-but-unpublished writes remain authoritative.
+                    # Equal rows can share the captured immutable live objects.
+                    index = bisect_left(retained, row[2], key=_number)
+                    if index < len(retained) and retained[index] == row:
+                        row = retained[index]
+                    selected.append(row)
+                if len(selected) > MAX_SAMPLES:
+                    raise ValueError(limit_error)
+                selected.sort(key=_number)
+                rows = tuple(selected)
             reset = True
         return {
             'rows': rows,
@@ -191,7 +260,7 @@ class IssuanceCache:
         with self.lock:
             if self.history_path is not None:
                 cutoff = time.time() - RETENTION
-                self.rows = tuple(row for row in self.rows if row[0] > cutoff)
+                self.rows = self.rows[bisect_right(self.rows, cutoff, key=_timestamp):]
             return {'rows': self.rows, 'error': self.error}
 
 
@@ -206,7 +275,11 @@ class IssuanceWorker:
         try:
             self.cache.restore()
             head = self.chain.finalized()
-            existing = {row[2]: row for row in self.cache.snapshot()['rows']}
+            retained = self.cache.snapshot()['rows']
+            if self.cache.history_path is not None:
+                retained = retained[bisect_left(
+                    retained, max(1, head - BLOCKS + 1), key=_number):]
+            existing = {row[2]: row for row in retained}
             if existing and head < max(existing):
                 raise ValueError('Hub finalized head moved backwards')
             rows = []
@@ -220,7 +293,7 @@ class IssuanceWorker:
                 if self.stop.is_set():
                     return
             # Hub MinimumPeriod is zero: consecutive blocks may share chain time.
-            if any(a[0] > b[0] for a, b in zip(rows, rows[1:])):
+            if any(a[0] > b[0] for a, b in zip(rows, islice(rows, 1, None))):
                 raise ValueError('Issuance timestamps moved backwards')
             self.cache.merge(rows, live=True)
         except Exception as error:

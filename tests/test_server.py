@@ -23,6 +23,34 @@ spec.loader.exec_module(page)
 
 
 class PageTests(unittest.TestCase):
+    def test_large_state_history_streams_bounded_chunks_without_losing_rows(self):
+        rows = [[1_700_000_000 + n, n / 1000, n] for n in range(4097)]
+        histories = {
+            name: {'rows': rows, 'cursor': 'instance:4097', 'reset': True, 'error': None}
+            for name in ('ti', 'treasury')
+        }
+        for streaming in (False, True):
+            for include_price in (False, True):
+                with self.subTest(streaming=streaming, include_price=include_price):
+                    price = (page.encode_response(rows[:1], 1_700_000_001, True, None,
+                                                  raw=True, streaming=streaming)
+                             if include_price else None)
+                    chunks = list(page.historic_response(price, histories, streaming))
+                    # A large state response must not require a whole-history
+                    # encoded buffer before the first network write.
+                    self.assertLess(max(map(len, chunks)), 64 * 1024)
+                    encoded = b''.join(chunks)
+                    if streaming:
+                        records = [json.loads(line) for line in encoded.splitlines()]
+                        result = records[0]
+                        self.assertEqual(records[-1], {'done': True})
+                    else:
+                        result = json.loads(encoded)
+                    for name in histories:
+                        self.assertEqual(result[name], histories[name])
+                    if include_price and not streaming:
+                        self.assertEqual(result['samples'], rows[:1])
+
     def test_historic_series_selection_formats_and_fresh_state_deltas(self):
         server = page.CacheServer(('127.0.0.1', 0), page.Handler)
         server.cache = page.HistoryCache()
@@ -679,6 +707,42 @@ class CacheTests(unittest.TestCase):
         self.assertEqual(len(cache.rows), 2)
         with patch.object(page.time, 'time', return_value=now + 604800):
             self.assertEqual(cache.read(0, now + 604800)[0], [])
+
+    def test_small_live_merges_share_unchanged_rows_and_retire_repaired_timestamps(self):
+        cache = page.HistoryCache()
+        now = time.time()
+        rows = [(now - 2000 + number, 1., number) for number in range(1000)]
+        cache.merge(rows, now, missing_only=True)
+        snapshot, summaries = cache.rows, cache.summaries
+        cache.merge([rows[-1]], now)
+        self.assertIs(cache.rows, snapshot)
+        self.assertIs(cache.summaries, summaries)
+        self.assertNotIn(999, cache.repaired)
+        corrected = (now - 5, 1.02, 998)
+        cache.merge([corrected], now)
+        self.assertEqual(cache.rows, (*rows[:998], rows[-1], corrected))
+        self.assertTrue(all(row is original for row, original in zip(cache.rows[:998], snapshot)))
+        self.assertNotIn(998, cache.repaired)
+        cache.merge([(now - 4, .99, 997), (now - 3, 1., 1001)], now, missing_only=True)
+        self.assertEqual(cache.rows[-1], (now - 3, 1., 1001))
+        self.assertEqual(cache.repaired[997], rows[997][0])
+        self.assertEqual(cache.repaired[1001], now - 3)
+        cache.merge([], now, replace=True)
+        self.assertEqual(cache.rows, ())
+        self.assertEqual(cache.repaired, {})
+        self.assertEqual(cache.summaries.chunks, ())
+
+    def test_batch_corrections_preserve_repaired_block_and_timestamp_precedence(self):
+        cache = page.HistoryCache()
+        now = time.time()
+        original = (now - 20, 1., 10)
+        cache.merge([original], now, missing_only=True)
+        # The later correction of restored block 10 removes its old timestamp,
+        # including a preceding update at that timestamp in the same batch.
+        corrected = (now - 10, 1.01, 10)
+        cache.merge([(original[0], .99, 11), corrected], now)
+        self.assertEqual(cache.rows, (corrected,))
+        self.assertEqual(cache.repaired, {})
 
     def test_chunk_extremes_cover_selected_window_not_just_chunk(self):
         now = time.time()

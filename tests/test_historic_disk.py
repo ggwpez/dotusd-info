@@ -113,6 +113,58 @@ class HistoricDiskTests(unittest.TestCase):
         self.assertEqual(body['samples'], [[recent+1, 1.02, 100]])
         self.assertEqual(self.cache.rows, ((recent+1, 1.02, 100),))
 
+    def test_retention_boundary_keeps_only_uncached_disk_rows(self):
+        cutoff = self.now - server.HISTORY_SECONDS
+        older = (cutoff - .25, .97, 100)
+        recent = [(cutoff + number * 2, 1. + number / 1000, 100 + number)
+                  for number in range(1, 1001)]
+        with closing(self.http.issuance.database()) as db, db:
+            db.executemany('INSERT INTO repairs VALUES(?,?,?,?,?,?)', [
+                (block, f'h{block}', stamp * 1000, stamp, price, '[]')
+                for stamp, price, block in [older, *recent]])
+        self.cache.merge(recent, self.now)
+        self.cache.history_ready = True
+        snapshot, summaries = self.cache.rows, self.cache.summaries
+        with patch.object(server.time, 'time', return_value=self.now + .125):
+            self.assertEqual(self.cache._stored_rows(cutoff - .5, self.now, snapshot),
+                             {100: older})
+            selection = self.cache.selection(cutoff - .5, self.now, (cutoff - .5, self.now))
+            rows, _, ready, extremes = self.cache.read_selection(selection, None)
+            self.assertEqual(rows, [older, *recent])
+            self.assertTrue(ready)
+            self.assertEqual(extremes, {'low': older, 'high': recent[-1]})
+            self.assertTrue(all(row is original for row, original in zip(rows[1:], snapshot)))
+            self.assertEqual(self.cache.read_selection(selection, 1099)[0], [recent[-1]])
+            # Crossing by a fraction of a second must not rebuild the full
+            # snapshot when the persisted prefix contains no extra samples.
+            selection = self.cache.selection(cutoff, self.now, None)
+            self.assertIs(selection['history'], snapshot)
+            self.assertIs(selection['summaries'], summaries)
+
+    def test_cached_blocks_override_disk_even_after_moving_outside_window(self):
+        self.cache.merge([(self.now - 10, .98, 10)], self.now)
+        body = self.get(f'series=price&format=raw&start={self.old+18}&end={self.old+24}')
+        self.assertEqual(body['samples'], [[self.old+22, 1.011, 11], [self.old+24, 1.12, 12]])
+
+    def test_ready_cache_still_discovers_unpublished_recent_disk_rows(self):
+        first, extra = (self.now - 20, 1., 100), (self.now - 10, 1.02, 101)
+        self.cache.merge([first], self.now)
+        self.cache.history_ready = True
+        with closing(self.http.issuance.database()) as db, db:
+            db.executemany('INSERT INTO repairs VALUES(?,?,?,?,?,?)', [
+                (block, f'h{block}', stamp * 1000, stamp, price, '[]')
+                for stamp, price, block in (first, extra)])
+        start = self.now - server.HISTORY_SECONDS - 1
+        self.assertEqual(self.cache.read(start, self.now)[0], [first, extra])
+        empty = server.HistoryCache(history_path=self.path)
+        empty.history_ready = True
+        self.assertEqual(empty.read(start, self.now)[0], [first, extra])
+
+    def test_archive_and_repairs_already_cached_do_not_retain_duplicate_rows(self):
+        cached = ((self.old + 20, .98, 10), (self.old + 22, 1., 11))
+        self.assertEqual(self.cache._stored_rows(self.old + 18, self.old + 24, cached),
+                         {12: (self.old + 24, 1.12, 12)})
+
     def test_treasury_historical_formats_independent_bounds_and_corrections(self):
         bounds = (f'&start={self.old+18}&end={self.old+24}'
                   f'&tiStart={self.old+18}&tiEnd={self.old+20}'

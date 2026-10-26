@@ -110,6 +110,16 @@ class HistoryWorkerTests(unittest.TestCase):
         read.assert_not_called()
         self.assertEqual(self.cache.fetched_at, self.now - 5)
 
+    def test_live_poll_keeps_nearest_block_neighbors_not_latest_timestamp(self):
+        self.cache.merge([(self.now - 200, 1., 92), (self.now - 180, 1., 91),
+                          (self.now - 100, 1., 94)], self.now)
+        with patch.object(server, 'read_sample', side_effect=self.sample) as read, \
+                patch.object(server, 'price_time', wraps=server.price_time) as estimate:
+            self.worker.poll()
+        self.assertEqual([call.args[1] for call in read.call_args_list], [100, 99, 98, 97, 96, 95, 93])
+        self.assertEqual(estimate.call_args_list[-1].args[2:],
+                         ((92, self.now - 200), (94, self.now - 100)))
+
     def test_large_archive_outage_never_changes_tip_priority_and_gaps_recover(self):
         self.cache.merge([(self.now - 1000, 1., 1)], self.now - 900)
         with patch.object(server, 'read_sample', side_effect=self.sample) as read:
