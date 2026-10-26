@@ -7,6 +7,8 @@ import heapq
 from bisect import bisect_left, bisect_right
 from collections import deque, OrderedDict
 from concurrent.futures import Future
+from datetime import date
+import html
 from itertools import islice
 import logging
 from contextlib import closing
@@ -34,6 +36,62 @@ HISTORY_SECONDS = 7 * 86400
 MAX_SAMPLES = 350000
 LIVE_BLOCKS = 8
 SUMMARY_SAMPLES = 256
+
+CHANGELOG_ENTRIES = 10
+BELL = ('<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        '<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>')
+
+
+def parse_changelog(text):
+    """Strict release sections: `## X.Y.Z - YYYY-MM-DD`, then `- ` entries."""
+    releases, entry = [], None
+    for number, line in enumerate(text.splitlines(), 1):
+        heading = re.fullmatch(r'## (\d+)\.(\d+)\.(\d+) - (\d{4}-\d{2}-\d{2})', line)
+        if heading:
+            version = tuple(map(int, heading.groups()[:3]))
+            try:
+                day = date.fromisoformat(heading[4])
+            except ValueError:
+                raise ValueError(f'CHANGELOG.md:{number}: invalid date') from None
+            if releases and not releases[-1]['changes']:
+                raise ValueError(f'CHANGELOG.md:{number}: previous release has no entries')
+            if releases and (version >= releases[-1]['key'] or day > releases[-1]['date']):
+                raise ValueError(f'CHANGELOG.md:{number}: releases must be newest first')
+            releases.append({'key': version, 'version': '.'.join(map(str, version)),
+                             'date': day, 'changes': []})
+            entry = None
+        elif line.startswith('## '):
+            raise ValueError(f'CHANGELOG.md:{number}: expected "## X.Y.Z - YYYY-MM-DD"')
+        elif not releases or not line.strip():
+            entry = None if releases else entry
+        elif line.startswith('- ') and line[2:].strip():
+            releases[-1]['changes'].append(line[2:].strip())
+            entry = len(releases[-1]['changes']) - 1
+        elif line.startswith('  ') and entry is not None:
+            releases[-1]['changes'][entry] += ' ' + line.strip()
+        else:
+            raise ValueError(f'CHANGELOG.md:{number}: expected "- " entry or indented continuation')
+    if releases and not releases[-1]['changes']:
+        raise ValueError('CHANGELOG.md: last release has no entries')
+    return releases
+
+
+def render_changelog(releases, limit=CHANGELOG_ENTRIES):
+    """Server-rendered menu; the client only tracks the unseen marker."""
+    items = [(release, change) for release in releases for change in release['changes']][:limit]
+    if not items:
+        return ''
+    rows = ''.join(
+        f'<li><div class="changelog-meta"><span>{release["version"]}</span>'
+        f'<time datetime="{release["date"].isoformat()}">'
+        f'{release["date"]:%b} {release["date"].day}, {release["date"].year}</time></div>'
+        f'<p>{html.escape(change)}</p></li>'
+        for release, change in items)
+    return (f'<details class="changelog" id="changelog" data-latest="{releases[0]["version"]}">'
+            f'<summary aria-label="What\'s new" title="What\'s new">{BELL}'
+            '<span class="changelog-dot" id="changelog-dot" hidden></span></summary>'
+            f'<div class="changelog-menu"><h2>What\'s new</h2><ol>{rows}</ol></div></details>')
 
 
 def load_release():
@@ -67,7 +125,8 @@ def load_release():
         b'__SHORT_VERSION__', version.encode())
     details = (b'<section class="explain-grid" aria-label="About dotUSD">\n' +
                files['about-dotusd.html'] + b'\n</section>')
-    html = html.replace(b'__DETAILS__', details)
+    html = html.replace(b'__DETAILS__', details).replace(
+        b'__CHANGELOG__', render_changelog(parse_changelog(files['CHANGELOG.md'].decode())).encode())
     for key, value in values.items():
         html = html.replace(f'__{key}__'.encode(), value.encode())
     html = html.replace(b'<p></p>\n', b'')

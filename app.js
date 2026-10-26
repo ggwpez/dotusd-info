@@ -913,8 +913,40 @@ $('issuance-axis').addEventListener('change', event => {
   refresh(true);
 });
 const settings = document.querySelector('.settings');
+// The bell exists only when CHANGELOG.md has entries; its list is server-rendered.
+const changelog = $('changelog');
+const CHANGELOG_SEEN = 'dotusd-changelog-seen';
+function versionKey(version) {
+  const parts = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? '');
+  return parts ? parts.slice(1).map(Number) : null;
+}
+// Unknown or older seen versions count as unseen, including first visits.
+function changelogUnseen(latest, seen) {
+  const a = versionKey(latest), b = versionKey(seen);
+  if (!a) return false;
+  if (!b) return true;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+function showChangelogDot(unseen) {
+  $('changelog-dot').hidden = !unseen;
+  changelog.querySelector('summary').setAttribute('aria-label', unseen ? "What's new (unseen changes)" : "What's new");
+}
+if (changelog?.dataset.latest) {
+  let seen = null;
+  try { seen = localStorage.getItem(CHANGELOG_SEEN); } catch {}
+  showChangelogDot(changelogUnseen(changelog.dataset.latest, seen));
+  changelog.addEventListener('toggle', () => {
+    if (!changelog.open) return;
+    settings.open = false;
+    showChangelogDot(false);
+    try { localStorage.setItem(CHANGELOG_SEEN, changelog.dataset.latest); } catch {}
+  });
+  settings.addEventListener('toggle', () => { if (settings.open) changelog.open = false; });
+}
 document.addEventListener('click', event => {
   if (settings.open && !settings.contains(event.target)) settings.open = false;
+  if (changelog?.open && !changelog.contains(event.target)) changelog.open = false;
 });
 applyScale();
 updateRangeButtons();

@@ -79,6 +79,11 @@ the range and scale. Explicit URL values override the local preference without
 changing it; links without a valid `ti` value use the saved preference.
 Browser Back/Forward restores the linked visibility.
 The chart toolbar shows only the title and controls, without a duplicate legend.
+The bell at the top right lists the latest 10 entries from `CHANGELOG.md`. A
+yellow dot marks releases newer than the last one this browser opened (stored in
+`dotusd-changelog-seen`); first visits also show it. The automatic reload after a
+deployment brings the new list and marker. Entries ship inside the release, so
+no Git checkout or commit metadata is needed at runtime.
 An independent server-side live poll reads the latest 15 finalized blocks from the public
 Asset Hub RPC and refreshes every six seconds after each fetch. With
 `--gap-repair-history PATH` (enabled in production), successful live samples and
@@ -139,6 +144,10 @@ then runs the test suite. It defaults to a patch bump; use `just test minor` for
 a feature release. Minor bumps reset the patch number to zero. Running tests
 again without application changes leaves the version unchanged. Fix any test
 failures before committing, and include `VERSION` in the same commit.
+
+For user-visible changes, add an entry to the top of `CHANGELOG.md` with the
+version `just test` will produce and the release date. Startup rejects malformed,
+misordered or empty sections. Internal-only releases need no entry.
 
 Production exposes `MAJOR.MINOR.PATCH+<short Git commit SHA>`: the suffix is the
 first seven hexadecimal characters of the deployed `master` commit. Use
@@ -203,6 +212,8 @@ instructions here so they stay in sync.
   deploy from a clean checkout; never amend that commit after deployment.
   Resolve failures before committing. Do not run separate release/check commands
   or rerun tests in deploy.
+- Add a `CHANGELOG.md` entry only for user-facing changes a visitor can notice.
+  Never add entries for CI, deployment, refactoring, formatting, tests or docs.
 - Deployment validates the release internally, refuses unchanged or older
   version numbers, and fails if the expected public version is not observed
   within 60 seconds.

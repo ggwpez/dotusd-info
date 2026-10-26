@@ -782,3 +782,37 @@ class AppTests(unittest.TestCase):
         JSON.stringify(true);
         """
         self.assertTrue(evaluate(source))
+
+    def test_changelog_dot_marks_unseen_releases_until_opened(self):
+        app = (ROOT / 'ranges.js').read_text().replace('export ', '') + '\n' + \
+            (ROOT / 'app.js').read_text().split('\n', 1)[1]
+        for seen, unseen in ((None, True), ('1.12.6', True), ('1.9.9', True), ('garbage', True),
+                             ('1.13.0', False), ('1.14.0', False)):
+            with self.subTest(seen=seen):
+                source = (ROOT / 'tests/app_test.js').read_text() + r"""
+                const stored = new Map(%s);
+                const localStorage = {getItem: key => stored.get(key) ?? null,
+                                      setItem: (key, value) => stored.set(key, value)};
+                const changelogElement = document.getElementById('changelog');
+                changelogElement.dataset.latest = '1.13.0';
+                changelogElement.querySelector = () => document.getElementById('changelog-summary');
+                changelogElement.contains = target => target === changelogElement;
+                const settingsElement = document.getElementById('settings');
+                settingsElement.contains = target => target === settingsElement;
+                document.querySelector = selector => selector === '.settings' ? settingsElement :
+                    selector.includes('icon') ? {href: 'icon.svg'} : {content: 'old-version'};
+                """ % ('[]' if seen is None else f"[['dotusd-changelog-seen', '{seen}']]") + '\n' + app + r"""
+                function require(value, message) { if (!value) throw new Error(message); }
+                const dot = elements.get('changelog-dot');
+                require(dot.hidden === %s, 'initial unseen marker');
+                settingsElement.open = true;
+                changelogElement.open = true;
+                changelogElement.events.toggle();
+                require(dot.hidden && stored.get('dotusd-changelog-seen') === '1.13.0',
+                        'opening marks the latest release seen');
+                require(!settingsElement.open, 'opening the changelog closes settings');
+                document.events.click({target: {}});
+                require(!changelogElement.open, 'outside clicks close the changelog');
+                JSON.stringify(true);
+                """ % ('false' if unseen else 'true')
+                self.assertTrue(evaluate(source))

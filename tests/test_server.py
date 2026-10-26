@@ -414,6 +414,31 @@ class PageTests(unittest.TestCase):
             server.server_close()
             thread.join()
 
+    def test_changelog_lists_latest_ten_entries_and_rejects_malformed_sections(self):
+        text = '# Changelog\n\nFree text.\n\n' + ''.join(
+            f'## 1.{n}.0 - 2026-10-{10 + n:02d}\n\n- Change {n}a <b>\n- Change {n}b\n  continued\n\n'
+            for n in range(8, 0, -1))
+        releases = page.parse_changelog(text)
+        self.assertEqual([r['version'] for r in releases][:2], ['1.8.0', '1.7.0'])
+        self.assertEqual(releases[0]['changes'], ['Change 8a <b>', 'Change 8b continued'])
+        menu = page.render_changelog(releases)
+        self.assertIn('data-latest="1.8.0"', menu)
+        self.assertEqual(menu.count('<li>'), 10)
+        self.assertIn('Change 8a &lt;b&gt;', menu)
+        self.assertIn('Change 4b', menu)
+        self.assertNotIn('Change 3a', menu)
+        self.assertIn('Oct 18, 2026', menu)
+        self.assertEqual(page.render_changelog(page.parse_changelog('# Changelog\n')), '')
+        for bad in ('## 1.0.0 - 2026-10-01\n',
+                    '## 1.0.0 - 2026-02-30\n- x\n',
+                    '## 1.0.0 2026-10-01\n- x\n',
+                    '## 1.0.0 - 2026-10-01\n- x\n## 1.1.0 - 2026-09-01\n- y\n',
+                    '## 1.1.0 - 2026-10-01\n- x\n## 1.0.0 - 2026-10-02\n- y\n',
+                    '## 1.1.0 - 2026-10-01\n- x\n## 1.0.0 - 2026-09-01\n\n## 0.9.0 - 2026-09-01\n- y\n',
+                    '## 1.0.0 - 2026-10-01\nloose text\n'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                page.parse_changelog(bad)
+
     def test_release_version_tracks_code_and_freezes_assets(self):
         names = (*page.read_sources().keys(), 'VERSION')
         with tempfile.TemporaryDirectory() as directory:

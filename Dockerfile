@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && install -d -o dotusd -g dotusd /data
 
 COPY release.py server.py gap_repair.py archive_reader.py hub_quotes.py issuance.py treasury.py ./
-COPY VERSION about-dotusd.html index.html app.js ranges.js style.css favicon.svg social-preview.png ./
+COPY VERSION about-dotusd.html CHANGELOG.md index.html app.js ranges.js style.css favicon.svg social-preview.png ./
 ARG DEPLOY_COMMIT
 RUN python -c 'import os, pathlib, re; commit = os.environ.get("DEPLOY_COMMIT", ""); assert re.fullmatch("[0-9a-f]{40}", commit), "DEPLOY_COMMIT must be a full Git SHA"; pathlib.Path("DEPLOY_COMMIT").write_text(commit + "\n")'
 
