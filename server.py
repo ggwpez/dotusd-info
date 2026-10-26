@@ -24,7 +24,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from archive_reader import price_time, read_sample
+from archive_reader import Unavailable, price_time, read_sample
 from gap_repair import GapRepair, price_database
 from hub_quotes import HubChain, RPC
 from issuance import HISTORY_READ_LOCK, IssuanceCache, IssuanceWorker
@@ -360,7 +360,7 @@ class HistoryCache:
         self.repaired = {}
         self.archive = archive
         self.history_path = history_path
-        # (block, chain seconds) of the newest finalized head read by the live poll.
+        # (block, chain seconds) of the newest finalized head read by ingestion.
         self.finalized = None
 
     def _stored_rows(self, start, end, history=()):
@@ -589,14 +589,56 @@ class HistoryWorker:
         self.chain = chain or HubChain()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, name='price-history', daemon=True)
+        self.listener = threading.Thread(target=self.listen, name='price-finality', daemon=True)
+        self.loader = threading.Thread(target=self.restore, name='price-restore', daemon=True)
+        self.changed = threading.Condition()
+        self.target = None
         self.archive = archive if archive is not None else cache.archive
         self.archive_seq = 0
         self.archive_ready = False
         self.restore_before = None
         self.restored = cache.history_path is None
         self.head = None
+        self.cursor = None
+        self.processed = set()
 
-    def recent_saved(self, head):
+    def saved_state(self, head):
+        """Seek durable progress and table tips without scanning retained history."""
+        with self.cache.lock:
+            tip = max((row[2] for row in self.cache.rows if row[2] is not None), default=0)
+        cursor = None
+        finalized = None
+        for path, table in ((self.cache.history_path, 'repairs'), (self.archive, 'samples')):
+            if path is None or not path.exists():
+                continue
+            with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro',
+                                         uri=True, timeout=1)) as db:
+                if db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone():
+                    row = db.execute(f'SELECT number FROM {table} ORDER BY number DESC LIMIT 1').fetchone()
+                    if row is not None:
+                        tip = max(tip, row[0])
+                        if row[0] == head and any(
+                                column[1] == 'timestamp' for column in db.execute(f'PRAGMA table_info({table})')):
+                            stamp = db.execute(f'SELECT timestamp FROM {table} WHERE number=?',
+                                               (head,)).fetchone()[0]
+                            finalized = (head, stamp / 1000)
+                if table == 'repairs' and db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='price_progress'").fetchone():
+                    row = db.execute('SELECT number FROM price_progress WHERE id=1').fetchone()
+                    if row is not None:
+                        cursor = row[0]
+                        tip = max(tip, cursor)
+        if head < tip:
+            raise ValueError('Hub finalized head moved backwards')
+        if finalized is not None:
+            with self.cache.lock:
+                self.cache.finalized = finalized
+        # Older installations wrote tip-first without a cursor. Revisit their
+        # bounded retained tail before advancing; genuinely new installs seed 15.
+        return cursor if cursor is not None else max(0, (tip or head) - LIVE_BLOCKS)
+
+    def batch_rows(self, first, last, head):
+        """Read one bounded range and its immutable neighboring price clocks."""
         rows = {}
         for path, table, divisor in ((self.cache.history_path, 'repairs', 1),
                                      (self.archive, 'samples', 1000)):
@@ -606,73 +648,123 @@ class HistoryWorker:
                                          uri=True, timeout=1)) as db:
                 if not db.execute('SELECT 1 FROM sqlite_master WHERE name=?', (table,)).fetchone():
                     continue
-                for stamp, price, number in db.execute(
-                        f'SELECT sample_time,price,number FROM {table} '
-                        'WHERE number>? AND number<=? AND price IS NOT NULL',
-                        (head - LIVE_BLOCKS, head)):
-                    rows[number] = (stamp / divisor, price, number)
-        return rows
-
-    def poll(self):
-        head = self.chain.finalized()
+                select = f'SELECT sample_time,price,number FROM {table} WHERE price IS NOT NULL AND '
+                saved = list(db.execute(select + 'number>=? AND number<=?', (first, last)))
+                for clause, args in (
+                        ('number<? ORDER BY number DESC LIMIT 1', (first,)),
+                        ('number>? ORDER BY number LIMIT 1', (last,)),
+                        ('number=?', (head,))):
+                    saved.extend(db.execute(select + clause, args))
+                rows.update((number, (stamp / divisor, price, number))
+                            for stamp, price, number in saved)
         with self.cache.lock:
             history = self.cache.rows
-        existing = {}
-        lower = None
+        lower = upper = None
         for row in history:
             number = row[2]
             if number is None:
                 continue
             if number > head:
                 raise ValueError('Hub finalized head moved backwards')
-            if number > head - LIVE_BLOCKS:
-                existing[number] = row
-            elif lower is None or number >= lower[2]:
+            if first <= number <= last or number == head or number in rows:
+                rows[number] = row
+            elif number < first and (lower is None or number > lower[2]):
                 lower = row
-        if lower is not None:
-            existing[lower[2]] = lower
-        restored = self.recent_saved(head)
-        restored.update((n, existing[n]) for n in restored if n in existing)
-        existing.update(restored)
-        numbers = sorted(existing)
-        if (numbers and head < numbers[-1]) or (self.head is not None and head < self.head):
+            elif number > last and (upper is None or number < upper[2]):
+                upper = row
+        for row in (lower, upper):
+            if row is not None:
+                rows[row[2]] = row
+        return rows
+
+    @staticmethod
+    def save_progress(db, cursor):
+        db.execute('''CREATE TABLE IF NOT EXISTS price_progress (
+            id INTEGER PRIMARY KEY CHECK(id=1), number INTEGER NOT NULL)''')
+        db.execute('INSERT OR REPLACE INTO price_progress VALUES(1,?)', (cursor,))
+
+    def ingest(self, head):
+        """Consume a notified target in bounded batches; return whether caught up."""
+        if self.head is not None and head < self.head:
             raise ValueError('Hub finalized head moved backwards')
+        initial = self.cursor is None
+        if self.cursor is None:
+            self.chain.verify()
+            cursor = self.saved_state(head)
+            # Record the lower boundary before a tip-first read can persist a
+            # newer sample. A crash must not mistake that sample for completion.
+            if self.cache.history_path is not None:
+                with closing(price_database(self.cache.history_path)) as db, db:
+                    self.save_progress(db, cursor)
+            self.cursor = cursor
+        self.head = head
+        if self.cursor >= head:
+            if initial:
+                existing = self.batch_rows(max(1, head - LIVE_BLOCKS + 1), head, head)
+                self.cache.merge(existing.values(), time.time(), mark_fresh=head in existing)
+            return True
+        last = min(head, self.cursor + LIVE_BLOCKS)
+        if head > last:
+            last -= 1  # Reserve one read for the newest finalized tip.
+        existing = self.batch_rows(self.cursor + 1, last, head)
+        numbers = sorted(existing)
+        incoming = list(existing.values())
         prices = []
+        completed = set()
+        finalized = None
         try:
-            # Tip first, bounded work: an outage never becomes a blocking
-            # catch-up loop. Missing older blocks belong to the repair worker.
-            for number in range(head, max(0, head - LIVE_BLOCKS), -1):
+            # Read the newest tip first, then fill this contiguous batch
+            # backwards between preserved clocks. This also fits repeated
+            # chain timestamps without pushing estimates into the future.
+            pending = [head]
+            pending.extend(range(last, self.cursor, -1))
+            for number in dict.fromkeys(pending):
                 if self.stop.is_set():
-                    return
-                if number in existing:
+                    break
+                if number in existing or number in self.processed:
+                    completed.add(number)
                     continue
-                _, at, timestamp, price, reserves = read_sample(self.chain.rpc, number)
+                try:
+                    _, at, timestamp, price, reserves = read_sample(self.chain.rpc, number)
+                except Unavailable:
+                    completed.add(number)
+                    continue
                 if number == head:
-                    self.cache.finalized = (number, timestamp / 1000)
-                if price is None:
-                    continue
-                index = bisect_left(numbers, number)
-                lower = (numbers[index - 1], existing[numbers[index - 1]][0]) if index else None
-                upper = (numbers[index], existing[numbers[index]][0]) if index < len(numbers) else None
-                stamp = price_time(number, timestamp, lower, upper, now=time.time())
-                prices.append((number, at, timestamp, stamp, price, reserves))
-                existing[number] = (stamp, price, number)
-                numbers.insert(index, number)
-            self.head = head
+                    finalized = (number, timestamp / 1000)
+                if price is not None:
+                    index = bisect_left(numbers, number)
+                    lower = (numbers[index - 1], existing[numbers[index - 1]][0]) if index else None
+                    upper = (numbers[index], existing[numbers[index]][0]) if index < len(numbers) else None
+                    stamp = price_time(number, timestamp, lower, upper, now=time.time())
+                    prices.append((number, at, timestamp, stamp, price, reserves))
+                    existing[number] = (stamp, price, number)
+                    numbers.insert(index, number)
+                completed.add(number)
         finally:
-            # Commit successful samples even if a later RPC fails; publish once
-            # per batch, not one full-cache rebuild per sample.
-            incoming = list(restored.values())
-            if prices and self.cache.history_path is not None:
+            # Persist every successful sample even if a later read fails. The
+            # cursor only crosses blocks actually processed, including genuine
+            # missing-pool prices, which remain gaps rather than fabricated rows.
+            processed = self.processed | completed
+            cursor = self.cursor
+            while cursor + 1 in processed:
+                cursor += 1
+            if self.cache.history_path is not None:
                 with closing(price_database(self.cache.history_path)) as db, db:
                     db.executemany('INSERT OR IGNORE INTO repairs VALUES(?,?,?,?,?,?)', prices)
+                    self.save_progress(db, cursor)
                     for row in prices:
                         incoming.append(db.execute(
                             'SELECT sample_time,price,number FROM repairs WHERE number=?',
                             (row[0],)).fetchone())
             else:
-                incoming.extend((r[3], r[4], r[0]) for r in prices)
+                incoming.extend((row[3], row[4], row[0]) for row in prices)
             self.cache.merge(incoming, time.time(), mark_fresh=head in existing)
+            self.cursor = cursor
+            self.processed = {number for number in processed if number > cursor}
+            if finalized is not None:
+                with self.cache.lock:
+                    self.cache.finalized = finalized
+        return self.cursor >= head
 
     def load_history(self):
         if self.restored:
@@ -709,15 +801,32 @@ class HistoryWorker:
                               if price is not None], time.time(), mark_fresh=False, missing_only=True)
         return len(rows) < 2000
 
-    def run(self):
-        next_poll = 0
+    def listen(self):
+        delay = 1
         while not self.stop.is_set():
-            if time.monotonic() >= next_poll:
-                try:
-                    self.poll()
-                except Exception:
-                    logging.exception('Finalized Hub price refresh failed')
-                next_poll = time.monotonic() + 6
+            try:
+                with closing(self.chain.finalized_heads(self.stop)) as heads:
+                    for head in heads:
+                        if self.stop.is_set():
+                            break
+                        with self.changed:
+                            if self.target is not None and head < self.target:
+                                raise ValueError('Hub finalized head moved backwards')
+                            if self.target is None or head > self.target:
+                                self.target = head
+                                delay = 1
+                                self.changed.notify_all()
+                    if not self.stop.is_set():
+                        raise ConnectionError('Hub finalized-head subscription ended')
+            except Exception:
+                if not self.stop.is_set():
+                    logging.exception('Finalized Hub subscription failed')
+            if self.stop.wait(delay):
+                return
+            delay = min(delay * 2, 30)
+
+    def restore(self):
+        while not self.stop.is_set():
             failed = False
             try:
                 self.load_history()
@@ -727,9 +836,41 @@ class HistoryWorker:
                 logging.exception('Saved price history load failed')
             with self.cache.lock:
                 self.cache.history_ready = self.archive_ready and self.restored
-            # Local pages drain promptly; network polling never depends on their
-            # completion. Previously restored data remains usable during failures.
+            # Only local SQLite refreshes are periodic; subscription startup and
+            # live ingestion do not depend on historical loading or its failures.
             self.stop.wait(6 if failed or (self.archive_ready and self.restored) else 0.05)
+
+    def run(self):
+        self.listener.start()
+        self.loader.start()
+        delay = 1
+        retry_at = 0
+        try:
+            while not self.stop.is_set():
+                with self.changed:
+                    head = self.target
+                    if (head is None or self.cursor is not None and self.cursor >= head or
+                            time.monotonic() < retry_at):
+                        self.changed.wait(timeout=.25)
+                        continue
+                try:
+                    self.ingest(head)
+                    delay = 1
+                    retry_at = 0
+                except Exception:
+                    logging.exception('Finalized Hub price ingestion failed')
+                    retry_at = time.monotonic() + delay
+                    delay = min(delay * 2, 30)
+        finally:
+            self.stop.set()
+            self.listener.join()
+            self.loader.join()
+
+    def shutdown(self):
+        self.stop.set()
+        with self.changed:
+            self.changed.notify_all()
+        self.thread.join(timeout=25)
 
 
 class CacheServer(HTTPServer):
@@ -973,7 +1114,9 @@ def main():
     parser.add_argument('--bind', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=3001)
     parser.add_argument('--hub-rpc', default=RPC,
-                        help='Polkadot Asset Hub HTTP archive RPC for all finalized prices and state history')
+                        help='Polkadot Asset Hub HTTP archive RPC for finalized prices and state history')
+    parser.add_argument('--hub-ws',
+                        help='Asset Hub finalized-head WebSocket URL (default: derived from --hub-rpc)')
     parser.add_argument('--archive', type=Path, default=Path('/var/lib/dotusd-info/archive.sqlite3'))
     parser.add_argument('--gap-repair-history', type=Path,
                         help='Persist live prices, issuance and Treasury indefinitely; gradually recover recent history')
@@ -991,7 +1134,8 @@ def main():
     repair = None
     issuance = None
     try:
-        worker = HistoryWorker(server.cache, chain=HubChain(args.hub_rpc), archive=args.archive)
+        worker = HistoryWorker(server.cache, chain=HubChain(args.hub_rpc, ws_endpoint=args.hub_ws),
+                               archive=args.archive)
         worker.thread.start()
         issuance = IssuanceWorker(server.issuance, chain=HubChain(args.hub_rpc))
         issuance.thread.start()
@@ -1014,8 +1158,7 @@ def main():
         if repair is not None:
             repair.stop.set()
         if worker is not None:
-            worker.stop.set()
-            worker.thread.join(timeout=25)
+            worker.shutdown()
         if repair is not None:
             repair.thread.join(timeout=15)
         if issuance is not None:

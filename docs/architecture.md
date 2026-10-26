@@ -6,10 +6,14 @@
 
 - `server.py` serves the chart and `/api/historic`. Requests read in-process
   caches or bounded SQLite windows and never query the chain.
-- The live price worker polls the archive RPC selected by `--hub-rpc` (default
-  `https://polkadot-asset-hub-rpc.polkadot.io`). It verifies the Hub genesis,
-  reads pool reserves at finalized block hashes, fetches at most fifteen recent
-  blocks per pass, and waits six seconds between passes.
+- The live price worker subscribes to `chain_subscribeFinalizedHeads` over
+  WebSocket. Its endpoint defaults to the `ws://` / `wss://` equivalent of
+  `--hub-rpc`; `--hub-ws` overrides it. The subscription verifies the Hub genesis
+  and starts before reading the initial finalized head, avoiding a bootstrap
+  race. HTTP archive calls still read pool reserves at finalized block hashes.
+  A fresh installation seeds fifteen recent blocks; subsequent head jumps and
+  reconnects catch up every intervening block in bounded batches. Normal price
+  ingestion has no timed finalized-head polling or HTTP polling fallback.
 - `issuance.py` polls total issuance independently.
 - With `--gap-repair-history PATH`, a repair worker backfills price gaps,
   issuance and Treasury holdings, and new samples persist to that SQLite file.
@@ -19,16 +23,24 @@ Prices follow dotUSD → DOT → USDT: a USDT pool reference without fees or
 slippage. Pool timestamps are estimated; issuance and Treasury use each block's
 `Timestamp.Now`. Missing blocks remain gaps; nothing is synthesized.
 
-`hub_quotes.py` owns the RPC default and transport limits: 100 ms between
-requests, 10-second timeout, 16 MiB response cap. Limits apply per client, not
-globally.
+`hub_quotes.py` owns the RPC default and transport limits: HTTP calls have a
+100 ms pause, 10-second timeout and 16 MiB response cap, per client. The finalized
+head WebSocket uses a 64 KiB message cap, a 16-frame receive queue, and protocol
+ping/pong heartbeats. Disconnects trigger reconnects, not HTTP head polling.
 
 ## Price cache
 
 - At most seven days / 350,000 samples, readable during RPC outages.
 - Startup restores saved history in 2,000-row pages, independently of live
-  polling. `historyReady` means local restoration finished, not complete chain
-  coverage.
+  subscription ingestion. `historyReady` means local restoration finished, not
+  complete chain coverage.
+- A durable `price_progress` cursor records contiguous ingestion progress in the
+  repair database. Successful samples and progress commit together; a partial
+  batch or restart cannot mistake a saved tip for completed catch-up.
+  Reconnects resume from that cursor. A separate listener coalesces new target
+  heads while ingestion fills the intervening blocks, with the newest tip read
+  first for freshness. Transient RPC failures retain successful samples and retry
+  without advancing over the failed block; explicitly unavailable state stays a gap.
 - The estimated clock allows up to two seconds per block, compresses spacing
   between close immutable boundaries, and never places the head in the future.
 - Readers take an immutable snapshot under a brief lock and scan it unlocked;
@@ -275,7 +287,7 @@ See the [README](../README.md#working-on-the-code) for the release workflow.
 `/health` reports chain freshness for monitors and the container `HEALTHCHECK`:
 `{"status", "finalizedBlock", "finalizedAgeSeconds", "staleAfterSeconds"}`.
 The age is wall time minus the on-chain timestamp of the newest finalized head
-the live poll has read, recorded even when the pools have no price. Finality
+the live price worker has read, recorded even when the pools have no price. Finality
 normally keeps it near a minute. It returns 200 `ok` up to 180 seconds (the
 chart's "Data delayed" cutoff), 503 `stale` beyond that, and 503 `starting`
 before the first head is read after startup. A failing RPC leaves the last head

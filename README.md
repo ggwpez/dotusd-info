@@ -39,9 +39,11 @@ These shortcuts require `just`. Without it, create the environment with
 `python3 -m venv .venv` and install dependencies with
 `.venv/bin/python -m pip install -r requirements.txt`.
 
-The only live data source is a normal Polkadot Asset Hub archive RPC. The default
-is `https://polkadot-asset-hub-rpc.polkadot.io`; no SSH tunnel, Prometheus, or
-external price collector is needed. To start the chart:
+The live data source is a Polkadot Asset Hub archive RPC with WebSocket
+subscriptions. The default HTTP endpoint is
+`https://polkadot-asset-hub-rpc.polkadot.io`; finalized price blocks arrive through
+`chain_subscribeFinalizedHeads` at the matching `wss://` endpoint. No SSH tunnel,
+Prometheus, or external price collector is needed. To start the chart:
 
 ```sh
 just run --hub-rpc https://polkadot-asset-hub-rpc.polkadot.io --no-browser
@@ -76,7 +78,7 @@ yellow dot marks releases newer than the last one this browser opened (stored in
 `dotusd-changelog-seen`); first visits also show it. The automatic reload after a
 deployment brings the new list and marker. Entries ship inside the release, so
 no Git checkout or commit metadata is needed at runtime.
-An independent server-side live poll reads the latest 15 finalized blocks from the public
+An independent server-side issuance poll reads the latest 15 finalized blocks from the public
 Asset Hub RPC and refreshes every six seconds after each fetch. With
 `--gap-repair-history PATH` (enabled in production), successful live samples and
 historical issuance and Treasury holdings share the price-repair SQLite database and are kept indefinitely.
@@ -94,16 +96,23 @@ Larger requests return HTTP 400; split them into smaller windows. Older prices
 come from the published archive and saved prices, not an on-demand chain
 query. Missing history remains missing. This does not extend the chart's controls.
 
-The browser uses one price-only history subscription,
+The browser uses one price-only history poll,
 `/api/historic?series=price`, with a six-second refresh. Older clients may still
 request `price,ti,treasury`: these requests succeed with only prices, ignoring
 state windows and cursors. Requests for only TI/Treasury return HTTP 400. No state
 samples or cursors are returned. Normal range buttons and drag-to-zoom remain available
 for prices, and failed refreshes retain successful data.
-`--hub-rpc URL` selects the archive RPC for prices, issuance, Treasury and history
-repair. `just run` uses the public endpoint by default and opens the chart in
-your browser. Keep existing `--archive PATH` and `--gap-repair-history PATH`
-settings to retain access to imported historical data and persist new samples.
+`--hub-rpc URL` selects the HTTP archive RPC for prices, issuance, Treasury and
+history repair. The server subscribes to finalized price blocks over WebSocket,
+deriving `ws://` or `wss://` from that URL; use `--hub-ws URL` when the provider
+uses a different subscription endpoint. Price ingestion catches up intervening
+blocks after a notification jump or reconnect instead of skipping to the latest
+15 blocks. A new installation seeds the latest 15 blocks. There is no HTTP
+finalized-head polling fallback for prices. Browser polling and the independent
+issuance poll are unchanged.
+`just run` uses the public endpoint by default and opens the chart in your
+browser. Keep existing `--archive PATH` and `--gap-repair-history PATH` settings
+to retain access to imported historical data and persist new samples.
 
 For more options, including the listening port and archive path, run
 `just run --help`. All arguments are forwarded to `server.py`.

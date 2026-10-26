@@ -94,7 +94,6 @@ class BackfillTests(unittest.TestCase):
     def test_archive_failure_does_not_revoke_loaded_history(self):
         cache = server.HistoryCache()
         worker = server.HistoryWorker(cache)
-        worker.poll = Mock()
         worker.load_archive = Mock(side_effect=[True, sqlite3.OperationalError('archive unavailable')])
         readiness = []
         def wait(_):
@@ -103,5 +102,5 @@ class BackfillTests(unittest.TestCase):
                 worker.stop.set()
         worker.stop.wait = wait
         with patch.object(server.logging, 'exception'):
-            worker.run()
+            worker.restore()
         self.assertEqual(readiness, [True, True])
